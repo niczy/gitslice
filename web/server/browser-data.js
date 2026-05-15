@@ -194,6 +194,10 @@ function pageNeedsSlices(page) {
   return ['browser', 'projects', 'slice-commits', 'slice-changesets', 'slice-agents', 'slice-settings'].includes(page);
 }
 
+function isSliceScopedPage(page) {
+  return page === 'browser' || page === 'slice-commits' || page === 'slice-changesets' || page === 'slice-agents';
+}
+
 function routeNeedsSlices(routeInfo, session) {
   return pageNeedsSlices(routeInfo?.page) || (routeInfo?.page === 'landing' && Boolean(session?.user?.username));
 }
@@ -210,6 +214,30 @@ async function loadSlices(request, session, data, setCookies, options = {}) {
   data.slices = (payload?.slices || []).map(normalizeSliceInfo);
 }
 
+async function loadSelectedSliceInfo(request, session, routeInfo, data, setCookies, options = {}) {
+  if (!isSliceScopedPage(routeInfo?.page) || !data.selectedSliceId) {
+    return;
+  }
+  if ((data.slices || []).some((slice) => slice?.slice_id === data.selectedSliceId || slice?.slug === data.selectedSliceId)) {
+    return;
+  }
+
+  const { payload, setCookies: cookies } = await fetchJSON(
+    request,
+    session,
+    '/v1/slices:resolve',
+    new URLSearchParams({ ref: data.selectedSliceId }),
+    options,
+  );
+  setCookies.push(...cookies);
+  const slice = normalizeSliceInfo(payload || {});
+  if (!slice.slice_id) {
+    return;
+  }
+  data.selectedSliceId = slice.slice_id;
+  data.slices = [slice, ...(data.slices || [])];
+}
+
 async function loadBrowserData(request, session, routeInfo, data, setCookies, options = {}) {
   if (routeInfo?.page !== 'browser' || !data.selectedSliceId) {
     return;
@@ -217,13 +245,14 @@ async function loadBrowserData(request, session, routeInfo, data, setCookies, op
 
   try {
     const params = new URLSearchParams();
+    const pathname = `/v1/slices/${encodeURIComponent(data.selectedSliceId)}/entries`;
     if (routeInfo.browserState?.sliceHash) {
       params.set('slice_version.slice_hash', routeInfo.browserState.sliceHash);
     }
     const { payload, setCookies: cookies } = await fetchJSON(
       request,
       session,
-      `/v1/slices/${encodeURIComponent(data.selectedSliceId)}/entries`,
+      pathname,
       params,
       options,
     );
@@ -241,14 +270,15 @@ async function loadBrowserData(request, session, routeInfo, data, setCookies, op
 
   try {
     const params = new URLSearchParams();
+    const encodedFile = encodePath(data.selectedFile);
+    const pathname = `/v1/slices/${encodeURIComponent(data.selectedSliceId)}/files/${encodedFile}`;
     if (routeInfo.browserState?.sliceHash) {
       params.set('slice_version.slice_hash', routeInfo.browserState.sliceHash);
     }
-    const encodedFile = encodePath(data.selectedFile);
     const { payload, setCookies: cookies } = await fetchJSON(
       request,
       session,
-      `/v1/slices/${encodeURIComponent(data.selectedSliceId)}/files/${encodedFile}`,
+      pathname,
       params,
       options,
     );
@@ -551,6 +581,12 @@ export async function loadBrowserRouteData(request, session, routeInfo, options 
   const markAuthExpired = (error) => {
     authExpired = authExpired || Boolean(error?.authExpired);
   };
+
+  try {
+    await loadSelectedSliceInfo(request, session, routeInfo, data, setCookies, options);
+  } catch (error) {
+    markAuthExpired(error);
+  }
 
   try {
     await loadBrowserData(request, session, routeInfo, data, setCookies, options);

@@ -10,6 +10,8 @@ import (
 	accountv1 "github.com/niczy/gitslice/proto/account"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func newDoctorCommand() *cobra.Command {
@@ -60,7 +62,11 @@ func handleDoctor(ctx context.Context, cli *CLI, authConfig cliAuth, args []stri
 		out.Services.Admin.Username = meResp.GetUsername()
 	}
 	if rootResp, err := cli.sliceClient.GetRootSlice(ctx, &slicev1.GetRootSliceRequest{}); err != nil {
-		out.Services.Slice.Error = err.Error()
+		if status.Code(err) == codes.PermissionDenied {
+			out.Services.Slice.OK = true
+		} else {
+			out.Services.Slice.Error = err.Error()
+		}
 	} else {
 		out.Services.Slice.OK = true
 		out.Services.Slice.RootSliceID = rootResp.GetSliceId()

@@ -83,6 +83,14 @@ func TestGatewayListEntries(t *testing.T) {
 	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
 		t.Fatalf("init root slice: %v", err)
 	}
+	t.Setenv("ADMIN_USER_EMAILS", "system@example.com")
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     "system",
+		PrimaryEmail: "system@example.com",
+		RootPath:     "system",
+	}); err != nil && err != storage.ErrEntryExists {
+		t.Fatalf("CreateUser(system) failed: %v", err)
+	}
 
 	rootSlice, err := st.GetRootSlice(ctx)
 	if err != nil {

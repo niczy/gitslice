@@ -70,6 +70,15 @@ func (s *sliceServiceServer) optionalUsername(ctx context.Context) (string, erro
 	return identity.Username, nil
 }
 
+func (s *sliceServiceServer) hasSliceViewAccess(ctx context.Context, slice *models.Slice, username string) bool {
+	ok, err := authz.CanViewSlice(ctx, s.storage, slice, username)
+	if err != nil {
+		log.Printf("slice: failed to resolve slice access for %s: %v", strings.TrimSpace(username), err)
+		return false
+	}
+	return ok
+}
+
 func (s *sliceServiceServer) loadAuthorizedChangeset(ctx context.Context, changesetID, username string) (*models.Changeset, *models.Slice, error) {
 	cs, err := s.storage.GetChangeset(ctx, changesetID)
 	if err != nil {
@@ -79,7 +88,7 @@ func (s *sliceServiceServer) loadAuthorizedChangeset(ctx context.Context, change
 	if err != nil {
 		return nil, nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", cs.SliceID))
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
+	if !s.hasSliceViewAccess(ctx, slice, username) {
 		return nil, nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 	return cs, slice, nil
@@ -182,19 +191,6 @@ func protoVisibilityToModel(v commonv1.Visibility) (models.Visibility, error) {
 	}
 }
 
-func normalizePathPropagationMode(mode commonv1.PathVisibilityPropagationMode) (commonv1.PathVisibilityPropagationMode, error) {
-	switch mode {
-	case commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_UNSPECIFIED,
-		commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_UNCHANGED:
-		return commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_UNCHANGED, nil
-	case commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_PUBLIC,
-		commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_PRIVATE:
-		return mode, nil
-	default:
-		return commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_UNCHANGED, status.Error(codes.InvalidArgument, "invalid path_propagation_mode")
-	}
-}
-
 func canManageSliceVisibility(slice *models.Slice, username string) bool {
 	if slice == nil || strings.TrimSpace(username) == "" {
 		return false
@@ -217,6 +213,72 @@ func externalSliceSlug(slice *models.Slice) string {
 	return storage.QualifiedSliceSlug(slice)
 }
 
+func (s *sliceServiceServer) canReadSliceInfo(ctx context.Context, slice *models.Slice, username string) bool {
+	if s.hasSliceViewAccess(ctx, slice, username) {
+		return true
+	}
+	return slice != nil && !slice.IsRoot && slice.Visibility.IsPublic()
+}
+
+func (s *sliceServiceServer) authorizeSliceRead(ctx context.Context, slice *models.Slice) (string, error) {
+	username, err := s.optionalUsername(ctx)
+	if err != nil {
+		return "", err
+	}
+	if !s.canReadSliceInfo(ctx, slice, username) {
+		return "", sliceReadAccessError(username)
+	}
+	return username, nil
+}
+
+func (s *sliceServiceServer) loadReadableChangeset(ctx context.Context, changesetID string) (*models.Changeset, *models.Slice, string, error) {
+	cs, err := s.storage.GetChangeset(ctx, changesetID)
+	if err != nil {
+		return nil, nil, "", status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", changesetID))
+	}
+	slice, err := s.storage.GetSlice(ctx, cs.SliceID)
+	if err != nil {
+		return nil, nil, "", status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", cs.SliceID))
+	}
+	username, err := s.authorizeSliceRead(ctx, slice)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return cs, slice, username, nil
+}
+
+func sliceReadAccessError(username string) error {
+	if strings.TrimSpace(username) == "" {
+		return status.Error(codes.Unauthenticated, "login required")
+	}
+	return status.Error(codes.PermissionDenied, "not authorized for slice")
+}
+
+func (s *sliceServiceServer) loadReadableSliceByRef(ctx context.Context, ref string) (*models.Slice, error) {
+	if strings.TrimSpace(ref) == "" {
+		return nil, status.Error(codes.InvalidArgument, "slice ref cannot be empty")
+	}
+	slice, err := s.resolveSliceByRef(ctx, ref)
+	if err != nil {
+		if errors.Is(err, storage.ErrSliceNotFound) {
+			return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", ref))
+		}
+		if errors.Is(err, storage.ErrInvalidInput) {
+			return nil, status.Error(codes.InvalidArgument, "slice ref cannot be empty")
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to look up slice: %v", err))
+	}
+
+	username, err := s.optionalUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !s.canReadSliceInfo(ctx, slice, username) {
+		return nil, sliceReadAccessError(username)
+	}
+	return slice, nil
+}
+
 func (s *sliceServiceServer) resolveSliceByRef(ctx context.Context, ref string) (*models.Slice, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -224,6 +286,11 @@ func (s *sliceServiceServer) resolveSliceByRef(ctx context.Context, ref string) 
 	}
 	if owner, slug, ok := storage.SplitQualifiedSliceRef(ref); ok {
 		return s.storage.GetSliceByOwnerAndSlug(ctx, owner, slug)
+	}
+	if slice, err := s.storage.GetSlice(ctx, ref); err == nil {
+		return slice, nil
+	} else if !errors.Is(err, storage.ErrSliceNotFound) {
+		return nil, err
 	}
 	username, err := s.optionalUsername(ctx)
 	if err != nil {
@@ -239,64 +306,6 @@ func (s *sliceServiceServer) resolveSliceByRef(ctx context.Context, ref string) 
 		}
 	}
 	return s.storage.GetSliceBySlug(ctx, ref)
-}
-
-func addSliceVisibilityTarget(targets map[string]models.PathVisibilityEntryType, rawPath string, entryType models.PathVisibilityEntryType) {
-	cleaned := common.CleanRelativePath(rawPath)
-	if cleaned == "" {
-		return
-	}
-	if existing, ok := targets[cleaned]; ok {
-		if existing == models.PathVisibilityEntryTypeDirectory {
-			return
-		}
-		if entryType == models.PathVisibilityEntryTypeDirectory {
-			targets[cleaned] = entryType
-		}
-		return
-	}
-	targets[cleaned] = entryType
-}
-
-func addSliceVisibilityAncestors(targets map[string]models.PathVisibilityEntryType, rawPath string) {
-	cleaned := common.CleanRelativePath(rawPath)
-	if cleaned == "" {
-		return
-	}
-	for dir := path.Dir(cleaned); dir != "." && dir != ""; dir = path.Dir(dir) {
-		addSliceVisibilityTarget(targets, dir, models.PathVisibilityEntryTypeDirectory)
-	}
-}
-
-func collectSliceVisibilityTargets(slice *models.Slice, entries []*models.DirectoryEntry) map[string]models.PathVisibilityEntryType {
-	targets := make(map[string]models.PathVisibilityEntryType)
-	for _, entry := range entries {
-		if entry == nil || strings.TrimSpace(entry.Path) == "" {
-			continue
-		}
-		displayPath := common.SliceDisplayPath(slice, entry.Path)
-		if displayPath == "" {
-			displayPath = common.CleanRelativePath(entry.Path)
-		}
-		switch entry.Type {
-		case "directory":
-			addSliceVisibilityTarget(targets, displayPath, models.PathVisibilityEntryTypeDirectory)
-		default:
-			addSliceVisibilityTarget(targets, displayPath, models.PathVisibilityEntryTypeFile)
-		}
-		addSliceVisibilityAncestors(targets, displayPath)
-	}
-	if slice != nil {
-		for _, filePath := range slice.Files {
-			displayPath := common.SliceDisplayPath(slice, filePath)
-			if displayPath == "" {
-				displayPath = common.CleanRelativePath(filePath)
-			}
-			addSliceVisibilityTarget(targets, displayPath, models.PathVisibilityEntryTypeFile)
-			addSliceVisibilityAncestors(targets, displayPath)
-		}
-	}
-	return targets
 }
 
 // RunGenesisInit populates the root slice from the git repository by creating
@@ -981,7 +990,7 @@ func (s *sliceServiceServer) resolveCheckoutTarget(
 	if err != nil {
 		return nil, nil, "", err
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
+	if !s.hasSliceViewAccess(ctx, slice, username) {
 		if username == "" {
 			return nil, nil, "", status.Error(codes.Unauthenticated, "login required")
 		}
@@ -1331,7 +1340,7 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		if err != nil {
 			return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", existing.SliceID))
 		}
-		if !authz.HasSliceViewAccess(slice, username) {
+		if !s.hasSliceViewAccess(ctx, slice, username) {
 			return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 		}
 		modifiedFiles, fileContents = filterChangesetChangesForSlice(slice, modifiedFiles, fileContents)
@@ -1381,7 +1390,7 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
+	if !s.hasSliceViewAccess(ctx, slice, username) {
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 	modifiedFiles, fileContents = filterChangesetChangesForSlice(slice, modifiedFiles, fileContents)
@@ -1457,21 +1466,9 @@ func (s *sliceServiceServer) CreateAndMergeChangeset(ctx context.Context, req *s
 func (s *sliceServiceServer) ReviewChangeset(ctx context.Context, req *slicev1.ReviewChangesetRequest) (*slicev1.ReviewChangesetResponse, error) {
 	log.Printf("ReviewChangeset called: changeset_id=%s", req.ChangesetId)
 
-	username, err := s.requireUsername(ctx)
+	cs, _, _, err := s.loadReadableChangeset(ctx, req.GetChangesetId())
 	if err != nil {
 		return nil, err
-	}
-
-	cs, err := s.storage.GetChangeset(ctx, req.ChangesetId)
-	if err != nil {
-		return nil, status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", req.ChangesetId))
-	}
-	slice, err := s.storage.GetSlice(ctx, cs.SliceID)
-	if err != nil {
-		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", cs.SliceID))
-	}
-	if !authz.HasSliceViewAccess(slice, username) {
-		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
 	snapshot, err := s.resolveChangesetSnapshotForReview(ctx, cs, req.GetSnapshotVersion())
@@ -1519,11 +1516,7 @@ func (s *sliceServiceServer) GetChangesetArtifactLinks(ctx context.Context, req 
 		return nil, status.Error(codes.InvalidArgument, "changeset_id is required")
 	}
 
-	username, err := s.requireUsername(ctx)
-	if err != nil {
-		return nil, err
-	}
-	cs, _, err := s.loadAuthorizedChangeset(ctx, changesetID, username)
+	cs, _, _, err := s.loadReadableChangeset(ctx, changesetID)
 	if err != nil {
 		return nil, err
 	}
@@ -1551,11 +1544,6 @@ func (s *sliceServiceServer) GetCommitArtifactLinks(ctx context.Context, req *sl
 		return nil, status.Error(codes.InvalidArgument, "commit_hash is required")
 	}
 
-	username, err := s.requireUsername(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	resp := &slicev1.GetCommitArtifactLinksResponse{CommitHash: commitHash}
 	mergeStore, ok := s.storage.(storage.MergeEventStore)
 	if !ok {
@@ -1572,7 +1560,7 @@ func (s *sliceServiceServer) GetCommitArtifactLinks(ctx context.Context, req *sl
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load merge event: %v", err))
 	}
 
-	cs, _, err := s.loadAuthorizedChangeset(ctx, event.ChangesetID, username)
+	cs, _, _, err := s.loadReadableChangeset(ctx, event.ChangesetID)
 	if err != nil {
 		return nil, err
 	}
@@ -1589,22 +1577,9 @@ func (s *sliceServiceServer) GetCommitArtifactLinks(ctx context.Context, req *sl
 func (s *sliceServiceServer) ListChangesetSnapshots(ctx context.Context, req *slicev1.ListChangesetSnapshotsRequest) (*slicev1.ListChangesetSnapshotsResponse, error) {
 	log.Printf("ListChangesetSnapshots called: changeset_id=%s", req.GetChangesetId())
 
-	username, err := s.requireUsername(ctx)
+	cs, _, _, err := s.loadReadableChangeset(ctx, req.GetChangesetId())
 	if err != nil {
 		return nil, err
-	}
-
-	cs, err := s.storage.GetChangeset(ctx, req.GetChangesetId())
-	if err != nil {
-		return nil, status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", req.GetChangesetId()))
-	}
-
-	slice, err := s.storage.GetSlice(ctx, cs.SliceID)
-	if err != nil {
-		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", cs.SliceID))
-	}
-	if !authz.HasSliceViewAccess(slice, username) {
-		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
 	limit := int(req.GetLimit())
@@ -1653,11 +1628,8 @@ func (s *sliceServiceServer) StreamChangesetSnapshot(req *slicev1.ChangesetSnaps
 	if err != nil {
 		return err
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
-		if username == "" {
-			return status.Error(codes.Unauthenticated, "login required")
-		}
-		return status.Error(codes.PermissionDenied, "not authorized for slice")
+	if !s.canReadSliceInfo(ctx, slice, username) {
+		return sliceReadAccessError(username)
 	}
 
 	snapshot, err := s.resolveChangesetSnapshotForStream(ctx, cs, req.GetSnapshotVersion(), req.GetSnapshotHash())
@@ -1780,7 +1752,7 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", cs.SliceID))
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
+	if !s.hasSliceViewAccess(ctx, slice, username) {
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
@@ -2427,7 +2399,7 @@ func (s *sliceServiceServer) CloseChangeset(ctx context.Context, req *slicev1.Cl
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", cs.SliceID))
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
+	if !s.hasSliceViewAccess(ctx, slice, username) {
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 	if cs.Status == models.ChangesetStatusMerged {
@@ -2531,7 +2503,7 @@ func (s *sliceServiceServer) RevertCommitChange(ctx context.Context, req *slicev
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", sliceID))
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
+	if !s.hasSliceViewAccess(ctx, slice, username) {
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
@@ -4124,7 +4096,7 @@ func (s *sliceServiceServer) RebaseChangeset(ctx context.Context, req *slicev1.R
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", cs.SliceID))
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
+	if !s.hasSliceViewAccess(ctx, slice, username) {
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
@@ -4169,11 +4141,8 @@ func (s *sliceServiceServer) GetSliceCommits(ctx context.Context, req *slicev1.C
 	if err != nil {
 		return nil, err
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
-		if username == "" {
-			return nil, status.Error(codes.Unauthenticated, "login required")
-		}
-		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	if !s.canReadSliceInfo(ctx, slice, username) {
+		return nil, sliceReadAccessError(username)
 	}
 
 	commits, err := s.storage.ListSliceCommits(ctx, req.SliceId, int(req.Limit), req.FromCommitHash)
@@ -4208,11 +4177,8 @@ func (s *sliceServiceServer) GetSliceState(ctx context.Context, req *slicev1.Sta
 	if err != nil {
 		return nil, err
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
-		if username == "" {
-			return nil, status.Error(codes.Unauthenticated, "login required")
-		}
-		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	if !s.canReadSliceInfo(ctx, slice, username) {
+		return nil, sliceReadAccessError(username)
 	}
 
 	// Get slice metadata
@@ -4231,16 +4197,12 @@ func (s *sliceServiceServer) GetSliceState(ctx context.Context, req *slicev1.Sta
 func (s *sliceServiceServer) ListChangesets(ctx context.Context, req *slicev1.ListChangesetsRequest) (*slicev1.ListChangesetsResponse, error) {
 	log.Printf("ListChangesets called: slice_id=%s", req.SliceId)
 
-	username, err := s.requireUsername(ctx)
-	if err != nil {
-		return nil, err
-	}
 	slice, err := s.storage.GetSlice(ctx, req.SliceId)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
-		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	if _, err := s.authorizeSliceRead(ctx, slice); err != nil {
+		return nil, err
 	}
 
 	var statusFilter *models.ChangesetStatus
@@ -4646,7 +4608,7 @@ func convertProtoStatusToModel(status slicev1.ChangesetStatus) models.ChangesetS
 func (s *sliceServiceServer) GetRootSlice(ctx context.Context, req *slicev1.GetRootSliceRequest) (*slicev1.GetRootSliceResponse, error) {
 	log.Printf("GetRootSlice called")
 
-	_, err := s.requireUsername(ctx)
+	username, err := s.requireUsername(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -4654,6 +4616,9 @@ func (s *sliceServiceServer) GetRootSlice(ctx context.Context, req *slicev1.GetR
 	rootSlice, err := s.storage.GetRootSlice(ctx)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, "root slice not found")
+	}
+	if !s.hasSliceViewAccess(ctx, rootSlice, username) {
+		return nil, status.Error(codes.PermissionDenied, "not authorized for root slice")
 	}
 
 	metadata, _ := s.storage.GetSliceMetadata(ctx, rootSlice.ID)
@@ -4703,7 +4668,7 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("parent slice not found: %s", req.ParentSliceId))
 	}
-	if !authz.HasSliceViewAccess(parentSlice, username) {
+	if !s.hasSliceViewAccess(ctx, parentSlice, username) {
 		return nil, status.Error(codes.PermissionDenied, "not authorized for parent slice")
 	}
 
@@ -4782,12 +4747,16 @@ func (s *sliceServiceServer) initializeSliceFromFolderHead(ctx context.Context, 
 			return err
 		}
 		for _, rawPath := range normalizeModifiedFiles(selectedFiles) {
-			filePath := cleanDiffPath(rawPath)
-			hash := strings.TrimSpace(parentHashes[filePath])
-			if !isUsableContentHash(filePath, hash) {
+			sourcePath := cleanDiffPath(rawPath)
+			hash := strings.TrimSpace(parentHashes[sourcePath])
+			displayPath := common.SliceDisplayPath(slice, sourcePath)
+			if displayPath == "" {
+				displayPath = sourcePath
+			}
+			if !isUsableContentHash(displayPath, hash) {
 				continue
 			}
-			files[filePath] = hash
+			files[displayPath] = hash
 		}
 	}
 
@@ -4827,7 +4796,7 @@ func (s *sliceServiceServer) RenameSlice(ctx context.Context, req *slicev1.Renam
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
+	if !s.hasSliceViewAccess(ctx, slice, username) {
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
@@ -4863,7 +4832,7 @@ func (s *sliceServiceServer) AddSliceFolder(ctx context.Context, req *slicev1.Ad
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
+	if !s.hasSliceViewAccess(ctx, slice, username) {
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 	if slice.IsRoot {
@@ -4964,7 +4933,7 @@ func (s *sliceServiceServer) RemoveSliceFolder(ctx context.Context, req *slicev1
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
+	if !s.hasSliceViewAccess(ctx, slice, username) {
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 	if slice.IsRoot {
@@ -5042,7 +5011,7 @@ func (s *sliceServiceServer) DeleteSlice(ctx context.Context, req *slicev1.Delet
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.GetSliceId()))
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
+	if !s.hasSliceViewAccess(ctx, slice, username) {
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 	if slice.IsRoot {
@@ -5104,11 +5073,8 @@ func (s *sliceServiceServer) GetSliceByName(ctx context.Context, req *slicev1.Ge
 	if err != nil {
 		return nil, err
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
-		if username == "" {
-			return nil, status.Error(codes.Unauthenticated, "login required")
-		}
-		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	if !s.canReadSliceInfo(ctx, slice, username) {
+		return nil, sliceReadAccessError(username)
 	}
 
 	return &slicev1.GetSliceByNameResponse{
@@ -5126,30 +5092,32 @@ func (s *sliceServiceServer) GetSliceByName(ctx context.Context, req *slicev1.Ge
 func (s *sliceServiceServer) GetSliceBySlug(ctx context.Context, req *slicev1.GetSliceBySlugRequest) (*slicev1.GetSliceBySlugResponse, error) {
 	log.Printf("GetSliceBySlug called: slug=%s", req.Slug)
 
-	if strings.TrimSpace(req.Slug) == "" {
-		return nil, status.Error(codes.InvalidArgument, "slug cannot be empty")
-	}
-
-	slice, err := s.resolveSliceByRef(ctx, req.GetSlug())
-	if err != nil {
-		if errors.Is(err, storage.ErrSliceNotFound) {
-			return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found with slug: %s", req.Slug))
-		}
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to look up slice: %v", err))
-	}
-
-	username, err := s.optionalUsername(ctx)
+	slice, err := s.loadReadableSliceByRef(ctx, req.GetSlug())
 	if err != nil {
 		return nil, err
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
-		if username == "" {
-			return nil, status.Error(codes.Unauthenticated, "login required")
-		}
-		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
-	}
 
 	return &slicev1.GetSliceBySlugResponse{
+		SliceId:       slice.ID,
+		Name:          slice.Name,
+		Description:   slice.Description,
+		ParentSliceId: slice.ParentSlice,
+		Files:         slice.Files,
+		Environment:   slice.Environment,
+		Slug:          externalSliceSlug(slice),
+		Visibility:    modelVisibilityToProto(slice.Visibility),
+	}, nil
+}
+
+func (s *sliceServiceServer) ResolveSlice(ctx context.Context, req *slicev1.ResolveSliceRequest) (*slicev1.ResolveSliceResponse, error) {
+	log.Printf("ResolveSlice called: ref=%s", req.GetRef())
+
+	slice, err := s.loadReadableSliceByRef(ctx, req.GetRef())
+	if err != nil {
+		return nil, err
+	}
+
+	return &slicev1.ResolveSliceResponse{
 		SliceId:       slice.ID,
 		Name:          slice.Name,
 		Description:   slice.Description,
@@ -5173,7 +5141,7 @@ func (s *sliceServiceServer) GetSliceVisibility(ctx context.Context, req *slicev
 	if err != nil {
 		return nil, err
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
+	if !s.hasSliceViewAccess(ctx, slice, username) {
 		if username == "" {
 			return nil, status.Error(codes.Unauthenticated, "login required")
 		}
@@ -5206,13 +5174,6 @@ func (s *sliceServiceServer) SetSliceVisibility(ctx context.Context, req *slicev
 	if err != nil {
 		return nil, err
 	}
-	propagationMode, err := normalizePathPropagationMode(req.GetPathPropagationMode())
-	if err != nil {
-		return nil, err
-	}
-	if visibility != models.VisibilityPublic && propagationMode != commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_UNCHANGED {
-		return nil, status.Error(codes.InvalidArgument, "path_propagation_mode is only supported when making a slice public")
-	}
 
 	if err := s.storage.UpdateSliceVisibility(ctx, slice.ID, visibility); err != nil {
 		if errors.Is(err, storage.ErrSliceNotFound) {
@@ -5221,44 +5182,14 @@ func (s *sliceServiceServer) SetSliceVisibility(ctx context.Context, req *slicev
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update slice visibility: %v", err))
 	}
 
-	if propagationMode != commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_UNCHANGED {
-		entries, err := s.collectSliceEntries(ctx, slice.ID)
-		if err != nil {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to collect slice entries: %v", err))
-		}
-		targets := collectSliceVisibilityTargets(slice, entries)
-		keys := make([]string, 0, len(targets))
-		for key := range targets {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-
-		propagatedVisibility := models.VisibilityPrivate
-		if propagationMode == commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_PUBLIC {
-			propagatedVisibility = models.VisibilityPublic
-		}
-
-		for _, targetPath := range keys {
-			if err := s.storage.UpsertPathVisibilityRule(ctx, &models.PathVisibilityRule{
-				Path:       targetPath,
-				EntryType:  targets[targetPath],
-				Visibility: propagatedVisibility,
-				UpdatedBy:  username,
-			}); err != nil {
-				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update path visibility for %s: %v", targetPath, err))
-			}
-		}
-	}
-
 	updatedSlice, err := s.storage.GetSlice(ctx, slice.ID)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to reload slice visibility: %v", err))
 	}
 
 	return &slicev1.SetSliceVisibilityResponse{
-		SliceId:             updatedSlice.ID,
-		Visibility:          modelVisibilityToProto(updatedSlice.Visibility),
-		PathPropagationMode: propagationMode,
+		SliceId:    updatedSlice.ID,
+		Visibility: modelVisibilityToProto(updatedSlice.Visibility),
 	}, nil
 }
 

@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/niczy/gitslice/internal/authz"
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
@@ -49,6 +48,7 @@ func sliceInfoToProto(slice *models.Slice) *slicev1.SliceInfo {
 		IsRoot:       slice.IsRoot,
 		Environment:  slice.Environment,
 		FolderMounts: mounts,
+		Visibility:   modelVisibilityToProto(slice.Visibility),
 	}
 }
 
@@ -260,7 +260,7 @@ func (s *sliceServiceServer) scopedDivergentConflicts(ctx context.Context, usern
 		if err != nil {
 			return nil, status.Error(codes.NotFound, "slice not found")
 		}
-		if !authz.HasSliceViewAccess(slice, username) {
+		if !s.hasSliceViewAccess(ctx, slice, username) {
 			return nil, status.Error(codes.PermissionDenied, "forbidden")
 		}
 	}
@@ -279,7 +279,7 @@ func (s *sliceServiceServer) scopedDivergentConflicts(ctx context.Context, usern
 		allVisible := true
 		for _, sliceID := range conflict.ConflictingSlices {
 			slice, err := s.storage.GetSlice(ctx, sliceID)
-			if err != nil || !authz.HasSliceViewAccess(slice, username) {
+			if err != nil || !s.hasSliceViewAccess(ctx, slice, username) {
 				allVisible = false
 				break
 			}

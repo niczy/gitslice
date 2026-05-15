@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/niczy/gitslice/internal/authresolver"
+	"github.com/niczy/gitslice/internal/authz"
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/gitrepo"
 	"github.com/niczy/gitslice/internal/homeslice"
@@ -121,7 +122,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeGitAuthError(w, err)
 		return
 	}
-	if !canReadSlice(slice, id) {
+	if !h.canReadSlice(r.Context(), slice, id) {
 		if id == nil || strings.TrimSpace(id.Username) == "" {
 			writeGitAuthChallenge(w, "authentication required")
 			return
@@ -245,32 +246,26 @@ func (h *Handler) resolveSlice(ctx context.Context, ref string) (*models.Slice, 
 	return slice, nil
 }
 
-func canReadSlice(slice *models.Slice, id *authresolver.Identity) bool {
+func (h *Handler) canReadSlice(ctx context.Context, slice *models.Slice, id *authresolver.Identity) bool {
 	if slice == nil {
 		return false
-	}
-	if slice.Visibility == models.VisibilityPublic {
-		return true
 	}
 	username := ""
 	if id != nil {
 		username = strings.TrimSpace(id.Username)
 	}
+	if !slice.IsRoot && slice.Visibility == models.VisibilityPublic {
+		return true
+	}
 	if username == "" {
 		return false
 	}
-	if slice.IsRoot {
-		return true
+	ok, err := authz.CanViewSlice(ctx, h.st, slice, username)
+	if err != nil {
+		log.Printf("gitlayer: failed to resolve slice access for %s: %v", username, err)
+		return false
 	}
-	if slice.CreatedBy == username {
-		return true
-	}
-	for _, owner := range slice.Owners {
-		if owner == username {
-			return true
-		}
-	}
-	return false
+	return ok
 }
 
 func canWriteSlice(slice *models.Slice, id *authresolver.Identity) bool {

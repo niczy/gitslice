@@ -138,9 +138,8 @@ type sliceRenameJSON struct {
 }
 
 type sliceVisibilityJSON struct {
-	SliceID             string `json:"slice_id"`
-	Visibility          string `json:"visibility"`
-	PathPropagationMode string `json:"path_propagation_mode"`
+	SliceID    string `json:"slice_id"`
+	Visibility string `json:"visibility"`
 }
 
 type sliceRootJSON struct {
@@ -482,14 +481,10 @@ type filesystemStatJSON struct {
 	} `json:"entry"`
 }
 
-type pathVisibilityJSON struct {
-	WorkspaceID         string `json:"workspace_id"`
-	Path                string `json:"path"`
-	Visibility          string `json:"visibility"`
-	ExplicitRule        bool   `json:"explicit_rule"`
-	ResolvedFromPath    string `json:"resolved_from_path"`
-	EffectiveVisibility string `json:"effective_visibility"`
-	Recursive           bool   `json:"recursive"`
+type pathSliceVisibilityJSON struct {
+	SliceID    string `json:"slice_id"`
+	Path       string `json:"path"`
+	Visibility string `json:"visibility"`
 }
 
 type contextJSON struct {

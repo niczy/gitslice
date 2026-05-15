@@ -39,7 +39,7 @@ export default function SliceDropdown({
 
   const currentSliceMeta = useMemo(() => {
     if (!currentSlice) {
-      return currentSliceId ? 'Requested slice' : 'Choose workspace';
+      return currentSliceId ? 'Requested slice' : 'Choose slice';
     }
     if (currentSlice.is_root) {
       return 'Root collection';
@@ -47,7 +47,7 @@ export default function SliceDropdown({
     if (currentSlice.slug) {
       return currentSlice.slug;
     }
-    return currentSlice.slice_id || 'Workspace slice';
+    return currentSlice.slice_id || 'Slice';
   }, [currentSlice, currentSliceId]);
 
   const filteredSlices = useMemo(() => {

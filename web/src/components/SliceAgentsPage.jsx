@@ -15,6 +15,7 @@ export default function SliceAgentsPage({
   sliceId,
   routeSessionId = '',
   slices,
+  isAuthenticated = false,
   publicApiBaseUrl = '',
   onOpenCode,
   onOpenCommits,
@@ -52,6 +53,7 @@ export default function SliceAgentsPage({
     sessionsLoading,
     setEventPollingBusy,
   } = useAgentSessionsData({
+    isAuthenticated,
     onSelectSession,
     routeSessionId,
     sliceId,
@@ -94,6 +96,7 @@ export default function SliceAgentsPage({
     liveStreamState,
     localChangesPanelOpen,
     runnerSessions,
+    isAuthenticated,
     selectedRunner,
     selectedRunnerSessions,
     selectedSession,

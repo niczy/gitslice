@@ -286,7 +286,7 @@ func TestFileHistoryWithDefaultSlice(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ctx = withWorkflowUser(t, ctx)
+	ctx = withUsername(ctx, workflowRootAdminUser(t))
 
 	// Get root slice
 	rootSlice, err := testStorage.GetRootSlice(ctx)

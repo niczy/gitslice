@@ -513,14 +513,6 @@ CREATE TABLE organizations (
     root_path text DEFAULT ''::text NOT NULL
 );
 
-CREATE TABLE path_visibility (
-    path text NOT NULL,
-    entry_type text DEFAULT 'file'::text NOT NULL,
-    visibility text DEFAULT 'private'::text NOT NULL,
-    updated_by text DEFAULT ''::text NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
 CREATE TABLE projection_offsets (
     projection_name text NOT NULL,
     shard_id integer NOT NULL,
@@ -759,9 +751,6 @@ ALTER TABLE ONLY organization_members
 ALTER TABLE ONLY organizations
     ADD CONSTRAINT organizations_pkey PRIMARY KEY (slug);
 
-ALTER TABLE ONLY path_visibility
-    ADD CONSTRAINT path_visibility_pkey PRIMARY KEY (path);
-
 ALTER TABLE ONLY projection_offsets
     ADD CONSTRAINT projection_offsets_pkey PRIMARY KEY (projection_name, shard_id);
 
@@ -918,8 +907,6 @@ CREATE INDEX idx_organization_invites_org ON organization_invites USING btree (o
 CREATE UNIQUE INDEX idx_organization_invites_pending_email_unique ON organization_invites USING btree (org_slug, lower(target_email)) WHERE (status = 'pending'::text);
 
 CREATE UNIQUE INDEX idx_organizations_root_path_unique ON organizations USING btree (root_path);
-
-CREATE INDEX idx_path_visibility_path_prefix ON path_visibility USING btree (path);
 
 CREATE UNIQUE INDEX idx_slice_commits_hash ON slice_commits USING btree (slice_id, commit_hash);
 

@@ -3,6 +3,85 @@ import { test, expect } from '@playwright/test';
 // Genesis populates files under o/genesis/projects/gitslice/
 // so root entries should include the "o" directory.
 
+const E2E_CORE_PORT = process.env.E2E_CORE_PORT || process.env.E2E_GATEWAY_PORT || '50151';
+const E2E_API_BASE_URL = process.env.E2E_API_BASE_URL || `http://127.0.0.1:${E2E_CORE_PORT}`;
+
+function encodeRoutePath(path) {
+  return encodeURIComponent(path);
+}
+
+async function expectOk(response, label) {
+  if (response.ok()) {
+    return;
+  }
+  throw new Error(`${label} failed (${response.status()}): ${await response.text()}`);
+}
+
+async function createSliceVisibilityFixture(request, { makePublic = false } = {}) {
+  const username = `publicweb${Date.now().toString(36)}`;
+  const authHeaders = {
+    Authorization: `User ${username}`,
+  };
+  const filePath = `${username}/public-demo/README.md`;
+  const content = 'hello public browser';
+
+  await expectOk(await request.post(`${E2E_API_BASE_URL}/v1/auth/login`, {
+    data: { username },
+  }), 'login');
+  await expectOk(await request.post(`${E2E_API_BASE_URL}/v1/fs/workspaces/home_${username}/mkdir/${encodeRoutePath(`/${username}/public-demo`)}`, {
+    headers: authHeaders,
+    data: {},
+  }), 'mkdir');
+  await expectOk(await request.put(`${E2E_API_BASE_URL}/v1/fs/workspaces/home_${username}/files/${encodeRoutePath(`/${filePath}`)}`, {
+    headers: authHeaders,
+    data: {
+      content: Buffer.from(content, 'utf8').toString('base64'),
+    },
+  }), 'write public file');
+
+  const createResponse = await request.post(`${E2E_API_BASE_URL}/v1/slices:createFromFolder`, {
+    headers: authHeaders,
+    data: {
+      parentSliceId: `home_${username}`,
+      folderPaths: ['public-demo'],
+      name: 'Public Browser Demo',
+    },
+  });
+  await expectOk(createResponse, 'create public slice');
+  const createPayload = await createResponse.json();
+  const sliceId = createPayload?.sliceId || createPayload?.slice_id || '';
+  expect(sliceId).toBeTruthy();
+
+  if (makePublic) {
+    await expectOk(await request.post(`${E2E_API_BASE_URL}/v1/slices/${sliceId}:setVisibility`, {
+      headers: authHeaders,
+      data: {
+        visibility: 2,
+      },
+    }), 'set public visibility');
+  }
+
+  return {
+    authHeaders,
+    content,
+    filePath,
+    sliceId,
+    slug: createPayload?.slug || `${username}/public-browser-demo`,
+    username,
+  };
+}
+
+async function createPublicSliceFixture(request) {
+  return createSliceVisibilityFixture(request, { makePublic: true });
+}
+
+async function setSliceVisibility(request, fixture, visibility, label) {
+  await expectOk(await request.post(`${E2E_API_BASE_URL}/v1/slices/${fixture.sliceId}:setVisibility`, {
+    headers: fixture.authHeaders,
+    data: { visibility },
+  }), label);
+}
+
 async function openRootRepository(page) {
   await page.goto('/slices/root');
   await expect(page.getByRole('heading', { name: /Root Slice/i })).toBeVisible();
@@ -131,6 +210,69 @@ test.describe('Slice-specific Browsing (real server)', () => {
     await expect(page.getByRole('heading', { name: /Page not found/i })).toBeVisible();
     await expect(page.getByTestId('slice-detail-nav')).toHaveCount(0);
     await expect(page.locator('.folder-preview-list')).toHaveCount(0);
+  });
+
+  test('renders public slice direct URLs for signed-out users', async ({ page, request }) => {
+    const fixture = await createPublicSliceFixture(request);
+
+    const response = await page.goto(`/slices/${fixture.sliceId}?file=${encodeURIComponent(fixture.filePath)}`);
+
+    expect(response?.status()).toBe(200);
+    await expect(page.getByTestId('not-found-page')).toHaveCount(0);
+    await expect(page.getByTestId('route-auth-required')).toHaveCount(0);
+    await expect(page.getByTestId('slice-detail-nav')).toBeVisible();
+    await expect(page.getByTestId('slice-detail-nav')).toContainText(fixture.slug);
+    await expect(page.getByTestId('slice-detail-nav')).not.toContainText(fixture.sliceId);
+    await expect(page.locator('.code-header .breadcrumb').filter({ hasText: /README\.md/i })).toBeVisible();
+    await expect(page.locator('.file-preview')).toContainText(fixture.content);
+    await expect(page.getByRole('button', { name: /^Edit$/i })).toHaveCount(0);
+  });
+
+  test('renders public slice activity tabs for signed-out users', async ({ page, request }) => {
+    const fixture = await createPublicSliceFixture(request);
+
+    let response = await page.goto(`/slices/${fixture.sliceId}/commits`);
+    expect(response?.status()).toBe(200);
+    await expect(page.getByTestId('route-auth-required')).toHaveCount(0);
+    await expect(page.getByTestId('slice-commits-page')).toBeVisible();
+    await expect(page.getByTestId('slice-detail-nav')).toContainText(fixture.slug);
+    await expect(page.locator('.slice-activity-panel .panel-error')).toHaveCount(0);
+
+    response = await page.goto(`/slices/${fixture.sliceId}/changesets`);
+    expect(response?.status()).toBe(200);
+    await expect(page.getByTestId('route-auth-required')).toHaveCount(0);
+    await expect(page.getByTestId('slice-changesets-page')).toBeVisible();
+    await expect(page.getByTestId('slice-detail-nav')).toContainText(fixture.slug);
+    await expect(page.locator('.slice-activity-panel .panel-error')).toHaveCount(0);
+
+    response = await page.goto(`/slices/${fixture.sliceId}/agents`);
+    expect(response?.status()).toBe(200);
+    await expect(page.getByTestId('route-auth-required')).toHaveCount(0);
+    await expect(page.getByTestId('slice-agents-page')).toBeVisible();
+    await expect(page.getByTestId('slice-detail-nav')).toContainText(fixture.slug);
+    await expect(page.locator('.slice-agents-page .panel-error')).toHaveCount(0);
+  });
+
+  test('enforces slice visibility changes for signed-out direct URLs', async ({ page, request }) => {
+    const fixture = await createSliceVisibilityFixture(request);
+    const url = `/slices/${fixture.sliceId}?file=${encodeURIComponent(fixture.filePath)}`;
+
+    let response = await page.goto(url);
+    expect(response?.status()).toBe(404);
+    await expect(page.getByTestId('not-found-page')).toBeVisible();
+
+    await setSliceVisibility(request, fixture, 2, 'set public visibility');
+    response = await page.goto(url);
+    expect(response?.status()).toBe(200);
+    await expect(page.getByTestId('slice-detail-nav')).toContainText(fixture.slug);
+    await expect(page.getByTestId('slice-detail-nav')).not.toContainText(fixture.sliceId);
+    await expect(page.locator('.file-preview')).toContainText(fixture.content);
+
+    await setSliceVisibility(request, fixture, 1, 'set private visibility');
+    response = await page.goto(url);
+    expect(response?.status()).toBe(404);
+    await expect(page.getByTestId('not-found-page')).toBeVisible();
+    await expect(page.getByTestId('slice-detail-nav')).toHaveCount(0);
   });
 });
 
@@ -652,7 +794,7 @@ test.describe('Slice Home Page', () => {
 });
 
 test.describe('Repo Browser Search', () => {
-  test('submits indexed workspace search and renders structured results', async ({ page }) => {
+  test('submits indexed slice search and renders structured results', async ({ page }) => {
     const username = `zzsrch${Date.now()}`;
 
     await page.goto('/login');
@@ -1484,7 +1626,6 @@ test.describe('Repo Browser Settings', () => {
         body: JSON.stringify({
           slice_id: sliceId,
           visibility: sliceVisibility,
-          path_propagation_mode: 1,
         }),
       });
     });
@@ -1499,7 +1640,6 @@ test.describe('Repo Browser Settings', () => {
         body: JSON.stringify({
           slice_id: sliceId,
           visibility: sliceVisibility,
-          path_propagation_mode: payload.pathPropagationMode,
         }),
       });
     });
@@ -1538,13 +1678,11 @@ test.describe('Repo Browser Settings', () => {
     await expect(page.getByText('Public slice URL', { exact: true })).toHaveCount(0);
     await expect(page.getByText('Raw file URL pattern', { exact: true })).toHaveCount(0);
 
-    await page.getByTestId('slice-visibility-propagation').selectOption('public');
     await page.getByTestId('slice-visibility-set-public').click();
     await expect(page.getByTestId('slice-visibility-status')).toContainText('Public');
     expect(sliceSetBodies).toEqual([
       {
         visibility: 2,
-        pathPropagationMode: 2,
       },
     ]);
   });

@@ -15,6 +15,18 @@ function buildSliceHashQuery(sliceHash) {
   return queryString ? `?${queryString}` : '';
 }
 
+function buildPublicSliceQuery({ sliceId, sliceSlug = '' }) {
+  const params = new URLSearchParams();
+  if (sliceId) {
+    params.set('slice_id', sliceId);
+  }
+  if (sliceSlug) {
+    params.set('slice_slug', sliceSlug);
+  }
+  const queryString = params.toString();
+  return queryString ? `?${queryString}` : '';
+}
+
 export function buildBrowserEntriesUrl({
   apiBaseUrl,
   sliceId,
@@ -24,6 +36,17 @@ export function buildBrowserEntriesUrl({
   const encodedPath = path ? encodeBrowserPath(path) : '';
   const pathSuffix = encodedPath ? `/${encodedPath}` : '';
   return `${apiBaseUrl}/v1/slices/${sliceId}/entries${pathSuffix}${buildSliceHashQuery(sliceHash)}`;
+}
+
+export function buildPublicBrowserEntriesUrl({
+  apiBaseUrl,
+  sliceId,
+  path,
+  sliceSlug = '',
+}) {
+  const encodedPath = path ? encodeBrowserPath(path) : '';
+  const pathSuffix = encodedPath ? `/${encodedPath}` : '';
+  return `${apiBaseUrl}/v1/public/entries${pathSuffix}${buildPublicSliceQuery({ sliceId, sliceSlug })}`;
 }
 
 export function buildBrowserFileUrl({
@@ -37,6 +60,17 @@ export function buildBrowserFileUrl({
   return `${apiBaseUrl}/v1/slices/${sliceId}/files${pathSuffix}${buildSliceHashQuery(sliceHash)}`;
 }
 
+export function buildPublicBrowserFileUrl({
+  apiBaseUrl,
+  sliceId,
+  filePath,
+  sliceSlug = '',
+}) {
+  const encodedPath = filePath ? encodeBrowserPath(filePath) : '';
+  const pathSuffix = encodedPath ? `/${encodedPath}` : '';
+  return `${apiBaseUrl}/v1/public/files${pathSuffix}${buildPublicSliceQuery({ sliceId, sliceSlug })}`;
+}
+
 export function buildBrowserRawFileUrl({
   sliceId,
   filePath,
@@ -44,6 +78,15 @@ export function buildBrowserRawFileUrl({
 }) {
   const encodedPath = filePath ? encodeBrowserPath(filePath) : '';
   return `/raw/slices/${encodeURIComponent(sliceId)}/${encodedPath}${buildSliceHashQuery(sliceHash)}`;
+}
+
+export function buildPublicBrowserRawFileUrl({
+  sliceId,
+  filePath,
+  sliceSlug = '',
+}) {
+  const encodedPath = filePath ? encodeBrowserPath(filePath) : '';
+  return `/raw/public/${encodedPath}${buildPublicSliceQuery({ sliceId, sliceSlug })}`;
 }
 
 export function buildBrowserFileHistoryUrl({

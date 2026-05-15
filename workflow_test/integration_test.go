@@ -694,35 +694,19 @@ func TestChangesetWorkflowEndToEnd(t *testing.T) {
 func TestRootSliceAndSliceCreateWorkflow(t *testing.T) {
 	workdir := t.TempDir()
 
-	output := runCLIOrFail(t, workdir, "root")
+	output := runCLIAsRootAdminOrFail(t, workdir, "root")
 	if !strings.Contains(output, "Root Slice ID: root") {
 		t.Fatalf("Expected root slice info, got: %s", output)
 	}
 
 	rootSliceArg := sliceIDArg("root")
-	output = runCLIOrFail(t, workdir, "init", rootSliceArg)
+	output = runCLIAsRootAdminOrFail(t, workdir, "init", rootSliceArg)
 	if !strings.Contains(output, "Initialized empty gitslice checkout") {
 		t.Fatalf("Expected init output, got: %s", output)
 	}
 
 	srcFolder := fmt.Sprintf("src_%d", time.Now().UnixNano())
-	srcFile := filepath.Join(workdir, filepath.FromSlash(srcFolder+"/main.go"))
-	if err := os.MkdirAll(filepath.Dir(srcFile), 0o755); err != nil {
-		t.Fatalf("failed to create src folder: %v", err)
-	}
-	if err := os.WriteFile(srcFile, nil, 0o644); err != nil {
-		t.Fatalf("failed to write src file: %v", err)
-	}
-	output = runCLIOrFail(t, workdir, "changeset", "create", "--message", "Create src folder", "--files", srcFolder+"/main.go")
-	changesetID := extractChangesetID(output)
-	if changesetID == "" {
-		t.Fatalf("Failed to extract changeset ID from output: %s", output)
-	}
-
-	output = runCLIOrFail(t, workdir, "changeset", "merge", changesetID, "--wait")
-	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
-		t.Fatalf("Expected merge success, got: %s", output)
-	}
+	seedWorkflowHomeFile(t, srcFolder, "main.go", nil)
 
 	newSliceID := fmt.Sprintf("slice-create-%d", time.Now().UnixNano())
 	output = runCLIOrFail(t, workdir, "slice", "create", newSliceID, srcFolder)
@@ -750,7 +734,7 @@ func TestRootSliceAndSliceCreateWorkflow(t *testing.T) {
 		t.Fatalf("failed to write components file: %v", err)
 	}
 	output = runCLIOrFail(t, newSliceWorkdir, "changeset", "create", "--message", "Create components subfolder", "--files", subFolder+"/index.ts")
-	changesetID = extractChangesetID(output)
+	changesetID := extractChangesetID(output)
 	if changesetID == "" {
 		t.Fatalf("Failed to extract changeset ID from output: %s", output)
 	}
@@ -1017,13 +1001,14 @@ func TestSliceSyncNoGitUpdatesCurrentCheckout(t *testing.T) {
 func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	workdir := t.TempDir()
 
-	output := runCLIOrFail(t, workdir, "root")
-	if !strings.Contains(output, "Root Slice ID: root") {
-		t.Fatalf("expected root slice info, got: %s", output)
+	rootResp := runCLIJSONAsRootAdminOrFail[sliceRootJSON](t, workdir, "root")
+	if rootResp.SliceID != "root" {
+		t.Fatalf("expected root slice info, got: %+v", rootResp)
 	}
+	rootCommit := rootResp.CommitHash
 
 	rootSliceArg := sliceIDArg("root")
-	output = runCLIOrFail(t, workdir, "init", rootSliceArg)
+	output := runCLIAsRootAdminOrFail(t, workdir, "init", rootSliceArg)
 	if !strings.Contains(output, "Initialized empty gitslice checkout") {
 		t.Fatalf("expected init output, got: %s", output)
 	}
@@ -1034,28 +1019,7 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	docsFolder := "docs-" + rootSuffix
 	rootFiles := []string{appsFolder + "/README.md", servicesFolder + "/README.md", docsFolder + "/README.md"}
 	for _, filePath := range rootFiles {
-		localPath := filepath.Join(workdir, filepath.FromSlash(filePath))
-		if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
-			t.Fatalf("failed to create root folder for %s: %v", filePath, err)
-		}
-		if err := os.WriteFile(localPath, nil, 0o644); err != nil {
-			t.Fatalf("failed to write root file %s: %v", filePath, err)
-		}
-	}
-	output = runCLIOrFail(t, workdir, "changeset", "create", "--message", "Add root folders", "--files", strings.Join(rootFiles, ","))
-	changesetID := extractChangesetID(output)
-	if changesetID == "" {
-		t.Fatalf("failed to extract changeset ID from output: %s", output)
-	}
-
-	output = runCLIOrFail(t, workdir, "changeset", "merge", changesetID, "--wait")
-	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
-		t.Fatalf("expected merge success, got: %s", output)
-	}
-
-	rootCommit := extractCommitHash(output)
-	if rootCommit == "" {
-		t.Fatalf("expected root commit hash from merge output, got: %s", output)
+		seedWorkflowHomeFile(t, path.Dir(filePath), path.Base(filePath), nil)
 	}
 
 	sliceID := fmt.Sprintf("slice-apps-%d", time.Now().UnixNano())
@@ -1097,7 +1061,7 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 		t.Fatalf("failed to write apps readme: %v", err)
 	}
 	output = runCLIOrFail(t, sliceWorkdir, "changeset", "create", "--message", "Add apps readme", "--files", appsFolder+"/readme.md")
-	changesetID = extractChangesetID(output)
+	changesetID := extractChangesetID(output)
 	if changesetID == "" {
 		t.Fatalf("failed to extract changeset ID from output: %s", output)
 	}
@@ -1129,11 +1093,12 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 
 	rootCheckoutArg := sliceIDArg("root")
+	rootAdminUsername := workflowRootAdminUser(t)
 	var rootCheckoutResp sliceCheckoutJSON
 	if err := waitForCondition(2*time.Second, 50*time.Millisecond, func() (bool, error) {
 		rootCheckoutDir := t.TempDir()
 		var err error
-		output, err = runCLIWithDirForTest(t, rootCheckoutDir, "slice", "checkout", rootCheckoutArg, "--here", "--files", "--json")
+		output, err = runCLIWithDirInputEnvLegacyUser(rootCheckoutDir, "", workflowProcessEnv(t, nil), true, rootAdminUsername, "slice", "checkout", rootCheckoutArg, "--here", "--files", "--json")
 		if err != nil {
 			return false, nil
 		}
@@ -2361,10 +2326,11 @@ func TestGatewayHTTPListEntriesIntegration(t *testing.T) {
 		}
 	}
 
-	rootEntries := fetchGatewayEntries(t, gatewayServiceURL+"/v1/files/entries", "User "+workflowUsername(t))
+	rootAdminAuth := "User " + workflowRootAdminUser(t)
+	rootEntries := fetchGatewayEntries(t, gatewayServiceURL+"/v1/files/entries", rootAdminAuth)
 	assertGatewayEntryNames(t, rootEntries.Entries, "gateway")
 
-	gatewayEntries := fetchGatewayEntries(t, gatewayServiceURL+"/v1/files/entries/gateway", "User "+workflowUsername(t))
+	gatewayEntries := fetchGatewayEntries(t, gatewayServiceURL+"/v1/files/entries/gateway", rootAdminAuth)
 	assertGatewayEntryNames(t, gatewayEntries.Entries, "readme.md", "docs")
 }
 
@@ -2732,7 +2698,10 @@ func TestGlobalStateTrackingIntegration(t *testing.T) {
 		t.Fatalf("expected merged slice %s to be recorded in history", sliceID)
 	}
 
-	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: "root"})
+	rootCtx, rootCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer rootCancel()
+	rootCtx = withUsername(rootCtx, workflowRootAdminUser(t))
+	rootState, err := sliceClient.GetSliceState(rootCtx, &slicev1.StateRequest{SliceId: "root"})
 	if err != nil {
 		t.Fatalf("failed to get root slice state: %v", err)
 	}
@@ -3051,7 +3020,10 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 		t.Fatalf("expected %d new promoted history entries after concurrent merges, got %d: %v", mergeCount, gotLen-len(initialState.History), err)
 	}
 
-	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: "root"})
+	rootCtx, rootCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer rootCancel()
+	rootCtx = withUsername(rootCtx, workflowRootAdminUser(t))
+	rootState, err := sliceClient.GetSliceState(rootCtx, &slicev1.StateRequest{SliceId: "root"})
 	if err != nil {
 		t.Fatalf("failed to fetch root slice state: %v", err)
 	}

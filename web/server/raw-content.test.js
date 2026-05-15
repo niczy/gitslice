@@ -122,7 +122,7 @@ test('handleRawContentRequest supports slice raw URLs and forwards version query
   assert.equal(await response.text(), 'package main\n');
 });
 
-test('handleRawContentRequest uses public visibility for anonymous slice raw URLs', async () => {
+test('handleRawContentRequest uses slice file API for anonymous slice raw URLs', async () => {
   configureEnv();
   const calls = [];
   global.fetch = async (url) => {
@@ -140,14 +140,14 @@ test('handleRawContentRequest uses public visibility for anonymous slice raw URL
   const response = await handleRawContentRequest(request, 'slices/sl_123/README.md');
 
   assert.deepEqual(calls, [
-    'http://api.test/v1/public/files/README.md?slice_id=sl_123',
+    'http://api.test/v1/slices/sl_123/files/README.md',
   ]);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('Cache-Control'), 'public, no-cache');
   assert.equal(await response.text(), '# Public\n');
 });
 
-test('handleRawContentRequest falls back to public files when authenticated access is unavailable', async () => {
+test('handleRawContentRequest falls back to anonymous slice files when authenticated access is unavailable', async () => {
   configureEnv();
   const calls = [];
   global.fetch = async (url) => {
@@ -171,7 +171,7 @@ test('handleRawContentRequest falls back to public files when authenticated acce
 
   assert.deepEqual(calls, [
     'http://api.test/v1/slices/sl_123/files/README.md',
-    'http://api.test/v1/public/files/README.md?slice_id=sl_123',
+    'http://api.test/v1/slices/sl_123/files/README.md',
   ]);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('Cache-Control'), 'public, no-cache');

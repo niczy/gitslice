@@ -34,6 +34,12 @@ export function useRepoBrowserSlice({
 
     const normalizedAuthUsername = String(authUsername || '').trim().toLowerCase();
     const normalizedRequested = requested.toLowerCase();
+    const matchingSlice = slices.find((slice) => {
+      return slice?.slice_id === requested || slice?.slug === requested;
+    });
+    if (matchingSlice?.slice_id) {
+      return matchingSlice.slice_id;
+    }
     if (
       normalizedAuthUsername &&
       (normalizedRequested === normalizedAuthUsername || normalizedRequested === `home_${normalizedAuthUsername}`)
@@ -120,20 +126,24 @@ export function useRepoBrowserSlice({
     return slices.find((slice) => slice.slice_id === sliceId) || null;
   }, [slices, sliceId]);
 
-  const canLoad = sliceId !== '' && (sliceId === 'root' || Boolean(String(authUsername || '').trim()));
+  const isSignedIn = Boolean(String(authUsername || '').trim());
+  const canLoad = sliceId !== '' && (isSignedIn || sliceId !== 'root');
 
   const currentSliceLabel = useMemo(() => {
+    if (!isSignedIn && currentSlice?.slug) {
+      return currentSlice.slug;
+    }
     if (currentSlice?.name) {
       return currentSlice.name;
     }
     return sliceId === 'root' ? 'Root Slice' : sliceId;
-  }, [currentSlice, sliceId]);
+  }, [currentSlice, isSignedIn, sliceId]);
 
   const currentSliceDisplayName = useMemo(() => {
     return getSliceDisplayName(currentSliceLabel);
   }, [currentSliceLabel]);
 
-  const canShowSettings = canLoad && !currentSlice?.is_root;
+  const canShowSettings = canLoad && isSignedIn && !currentSlice?.is_root;
 
   const buildRoutePath = useCallback(({ dir = '', file = '' } = {}) => {
     return buildBrowserPath({

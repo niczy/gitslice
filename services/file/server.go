@@ -144,6 +144,34 @@ func (s *fileServiceServer) optionalUsername(ctx context.Context) (string, error
 	return identity.Username, nil
 }
 
+func (s *fileServiceServer) hasSliceViewAccess(ctx context.Context, slice *models.Slice, username string) bool {
+	ok, err := authz.CanViewSlice(ctx, s.storage, slice, username)
+	if err != nil {
+		log.Printf("file: failed to resolve slice access for %s: %v", strings.TrimSpace(username), err)
+		return false
+	}
+	return ok
+}
+
+func (s *fileServiceServer) authorizeSliceRead(ctx context.Context, slice *models.Slice, username, requestedPath string) (publicRead bool, err error) {
+	if s.hasSliceViewAccess(ctx, slice, username) {
+		return false, nil
+	}
+	if slice != nil && !slice.IsRoot {
+		public, visibilityErr := visibility.IsPublic(slice, requestedPath)
+		if visibilityErr != nil {
+			return false, status.Error(codes.Internal, fmt.Sprintf("failed to resolve visibility: %v", visibilityErr))
+		}
+		if public {
+			return true, nil
+		}
+	}
+	if strings.TrimSpace(username) == "" {
+		return false, status.Error(codes.Unauthenticated, "login required")
+	}
+	return false, status.Error(codes.PermissionDenied, "not authorized for slice")
+}
+
 func (s *fileServiceServer) resolvePublicSlice(ctx context.Context, sliceID, sliceSlug string) (*models.Slice, error) {
 	if trimmed := strings.TrimSpace(sliceSlug); trimmed != "" {
 		slice, err := s.storage.GetSliceBySlug(ctx, trimmed)
@@ -170,7 +198,10 @@ func (s *fileServiceServer) resolvePublicSlice(ctx context.Context, sliceID, sli
 }
 
 func (s *fileServiceServer) ensurePublicPathVisible(ctx context.Context, slice *models.Slice, requestedPath string) error {
-	public, err := visibility.IsPublic(ctx, s.storage, slice, requestedPath)
+	if slice == nil || slice.IsRoot {
+		return status.Error(codes.NotFound, "path not found")
+	}
+	public, err := visibility.IsPublic(slice, requestedPath)
 	if err != nil {
 		return status.Error(codes.Internal, fmt.Sprintf("failed to resolve visibility: %v", err))
 	}
@@ -181,23 +212,14 @@ func (s *fileServiceServer) ensurePublicPathVisible(ctx context.Context, slice *
 }
 
 func (s *fileServiceServer) ensurePublicDirectoryVisible(ctx context.Context, slice *models.Slice, requestedPath string) error {
-	if slice != nil && slice.Visibility.IsPublic() {
-		return nil
+	if slice == nil || slice.IsRoot {
+		return status.Error(codes.NotFound, "path not found")
 	}
-
-	public, err := visibility.IsPublic(ctx, s.storage, slice, requestedPath)
+	public, err := visibility.IsPublic(slice, requestedPath)
 	if err != nil {
 		return status.Error(codes.Internal, fmt.Sprintf("failed to resolve visibility: %v", err))
 	}
 	if public {
-		return nil
-	}
-
-	hasDescendant, _, err := s.directoryHasPublicDescendant(ctx, slice.ID, slice, requestedPath)
-	if err != nil {
-		return status.Error(codes.Internal, fmt.Sprintf("failed to resolve visibility: %v", err))
-	}
-	if hasDescendant {
 		return nil
 	}
 	return status.Error(codes.NotFound, "path not found")
@@ -224,19 +246,11 @@ func (s *fileServiceServer) publicEntryVisible(ctx context.Context, slice *model
 	if entry == nil {
 		return false, nil
 	}
-	public, err := visibility.IsPublic(ctx, s.storage, slice, entry.GetPath())
+	public, err := visibility.IsPublic(slice, entry.GetPath())
 	if err != nil {
 		return false, err
 	}
-	if public || entry.GetType() != filev1.EntryType_ENTRY_TYPE_DIRECTORY {
-		return public, nil
-	}
-
-	hasDescendant, _, err := s.directoryHasPublicDescendant(ctx, slice.ID, slice, entry.GetPath())
-	if err != nil {
-		return false, err
-	}
-	return hasDescendant, nil
+	return public, nil
 }
 
 func sliceBackingSliceID(sliceID string, slice *models.Slice) string {
@@ -323,42 +337,6 @@ func (s *fileServiceServer) sliceDisplayPathExists(ctx context.Context, sliceID 
 		return false, false, err
 	}
 	return false, false, nil
-}
-
-func (s *fileServiceServer) directoryHasPublicDescendant(ctx context.Context, sliceID string, slice *models.Slice, displayPath string) (bool, string, error) {
-	prefix := ""
-	normalizedDisplayPath := cleanPath(displayPath)
-	if normalizedDisplayPath != "" {
-		prefix = visibility.NormalizePath(normalizedDisplayPath) + "/"
-	}
-
-	rules, err := s.storage.ListPathVisibilityRules(ctx, prefix)
-	if err != nil {
-		return false, "", err
-	}
-	for _, rule := range rules {
-		if rule == nil || !models.NormalizeVisibility(rule.Visibility).IsPublic() {
-			continue
-		}
-
-		ruleDisplayPath := common.CleanRelativePath(strings.TrimPrefix(rule.Path, "/"))
-		if ruleDisplayPath == "" {
-			continue
-		}
-		ruleDisplayPath = common.SliceDisplayPath(slice, ruleDisplayPath)
-		if ruleDisplayPath == "" {
-			ruleDisplayPath = common.CleanRelativePath(strings.TrimPrefix(rule.Path, "/"))
-		}
-
-		exists, _, err := s.sliceDisplayPathExists(ctx, sliceID, slice, ruleDisplayPath)
-		if err != nil {
-			return false, "", err
-		}
-		if exists {
-			return true, rule.Path, nil
-		}
-	}
-	return false, "", nil
 }
 
 // resolveVersion extracts the effective slice and commit from oneof version specifiers.
@@ -710,14 +688,23 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 	if err != nil {
 		return nil, err
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
-		if username == "" {
-			return nil, status.Error(codes.Unauthenticated, "login required")
-		}
-		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	publicRead, err := s.authorizeSliceRead(ctx, slice, username, req.GetPath())
+	if err != nil {
+		return nil, err
 	}
 
-	return s.listEntriesResolved(ctx, sliceID, resolvedCommit, slice, req.GetPath(), req.GetLimit(), preferSnapshots)
+	resp, err := s.listEntriesResolved(ctx, sliceID, resolvedCommit, slice, req.GetPath(), req.GetLimit(), preferSnapshots)
+	if err != nil {
+		return nil, err
+	}
+	if publicRead {
+		filtered, filterErr := s.filterPublicEntries(ctx, slice, resp.GetEntries())
+		if filterErr != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to filter visibility: %v", filterErr))
+		}
+		resp.Entries = filtered
+	}
+	return resp, nil
 }
 
 func (s *fileServiceServer) ListPublicEntries(ctx context.Context, req *filev1.ListPublicEntriesRequest) (*filev1.ListEntriesResponse, error) {
@@ -1266,11 +1253,8 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 	if err != nil {
 		return nil, err
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
-		if username == "" {
-			return nil, status.Error(codes.Unauthenticated, "login required")
-		}
-		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	if _, err := s.authorizeSliceRead(ctx, slice, username, req.GetPath()); err != nil {
+		return nil, err
 	}
 
 	return s.getFileResolved(ctx, sliceID, resolvedCommit, slice, req.GetPath(), preferSnapshots)
@@ -1677,7 +1661,7 @@ func (s *fileServiceServer) GetFileHistory(ctx context.Context, req *filev1.GetF
 	if err != nil {
 		return nil, err
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
+	if !s.hasSliceViewAccess(ctx, slice, username) {
 		if username == "" {
 			return nil, status.Error(codes.Unauthenticated, "login required")
 		}
@@ -1747,7 +1731,7 @@ func (s *fileServiceServer) GetDirectoryHistory(ctx context.Context, req *filev1
 	if err != nil {
 		return nil, err
 	}
-	if !authz.HasSliceViewAccess(slice, username) {
+	if !s.hasSliceViewAccess(ctx, slice, username) {
 		if username == "" {
 			return nil, status.Error(codes.Unauthenticated, "login required")
 		}
@@ -1938,11 +1922,8 @@ func (s *fileServiceServer) authorizeCommitChanges(ctx context.Context, changes 
 		if err != nil {
 			return status.Error(codes.Internal, fmt.Sprintf("failed to load slice %s for authorization: %v", sliceID, err))
 		}
-		if !authz.HasSliceViewAccess(slice, username) {
-			if username == "" {
-				return status.Error(codes.Unauthenticated, "login required")
-			}
-			return status.Error(codes.PermissionDenied, "not authorized for slice")
+		if _, err := s.authorizeSliceRead(ctx, slice, username, change.Path); err != nil {
+			return err
 		}
 	}
 	return nil

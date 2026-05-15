@@ -6,6 +6,9 @@ import {
   buildBrowserFileHistoryUrl,
   buildBrowserFileUrl,
   buildBrowserRawFileUrl,
+  buildPublicBrowserEntriesUrl,
+  buildPublicBrowserFileUrl,
+  buildPublicBrowserRawFileUrl,
   normalizeWorkspaceResultPath,
   readBrowserErrorMessage,
 } from './browserApi.js';
@@ -53,6 +56,34 @@ test('browser API URL helpers encode path segments and preserve slice hash query
       filePath: 'dir/a b.txt',
     }),
     '/api/v1/slices/slice_123/files/history/dir/a%20b.txt',
+  );
+});
+
+test('public browser API URL helpers encode paths and pass slice identity as query params', () => {
+  assert.equal(
+    buildPublicBrowserEntriesUrl({
+      apiBaseUrl: '',
+      sliceId: 'slice 123',
+      path: 'dir/a b',
+    }),
+    '/v1/public/entries/dir/a%20b?slice_id=slice+123',
+  );
+
+  assert.equal(
+    buildPublicBrowserFileUrl({
+      apiBaseUrl: 'https://api.example.test',
+      sliceId: 'slice_123',
+      filePath: 'dir/#file.txt',
+    }),
+    'https://api.example.test/v1/public/files/dir/%23file.txt?slice_id=slice_123',
+  );
+
+  assert.equal(
+    buildPublicBrowserRawFileUrl({
+      sliceId: 'slice_123',
+      filePath: 'dir/a b.txt',
+    }),
+    '/raw/public/dir/a%20b.txt?slice_id=slice_123',
   );
 });
 

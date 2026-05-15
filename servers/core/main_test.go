@@ -14,6 +14,7 @@ import (
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/config"
 	"github.com/niczy/gitslice/internal/gateway"
+	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	accountservice "github.com/niczy/gitslice/services/account"
@@ -33,6 +34,14 @@ func TestBuildCombinedCoreHandlerServesHTTPAndGRPCOnSamePort(t *testing.T) {
 	st := storage.NewInMemoryStorage()
 	if err := st.InitializeRootSlice(ctx); err != nil {
 		t.Fatalf("InitializeRootSlice failed: %v", err)
+	}
+	t.Setenv("ADMIN_USER_EMAILS", "test@example.com")
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     "test",
+		PrimaryEmail: "test@example.com",
+		RootPath:     "test",
+	}); err != nil && err != storage.ErrEntryExists {
+		t.Fatalf("CreateUser(test) failed: %v", err)
 	}
 
 	grpcServer := grpc.NewServer()

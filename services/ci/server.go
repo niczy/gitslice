@@ -85,6 +85,14 @@ type MergeGateResult struct {
 	Message            string
 }
 
+func (s *server) hasSliceViewAccess(ctx context.Context, slice *models.Slice, username string) bool {
+	ok, err := authz.CanViewSlice(ctx, s.st, slice, username)
+	if err != nil {
+		return false
+	}
+	return ok
+}
+
 func EnforceChangesetMergeGate(ctx context.Context, st storage.Storage, req MergeGateRequest) (*MergeGateResult, error) {
 	service := &server{st: st}
 	return service.enforceChangesetMergeGate(ctx, req)
@@ -137,7 +145,7 @@ func (s *server) startRun(ctx context.Context, req startRunRequest) (*civ1.Start
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(req.AuthorizeUsername) != "" && !authz.HasSliceViewAccess(sourceSlice, req.AuthorizeUsername) {
+	if strings.TrimSpace(req.AuthorizeUsername) != "" && !s.hasSliceViewAccess(ctx, sourceSlice, req.AuthorizeUsername) {
 		return nil, status.Error(codes.PermissionDenied, "not allowed to start CI for this changeset")
 	}
 	plan, _, err := s.planChangesetVersion(ctx, cs, sourceSlice, snapshot)
@@ -1632,7 +1640,7 @@ func (s *server) authorizeChangeset(ctx context.Context, username string, change
 	if err != nil {
 		return ciStorageError(err, "source slice not found")
 	}
-	if !authz.HasSliceViewAccess(sourceSlice, username) {
+	if !s.hasSliceViewAccess(ctx, sourceSlice, username) {
 		return status.Error(codes.PermissionDenied, "not allowed to view CI for this changeset")
 	}
 	return nil

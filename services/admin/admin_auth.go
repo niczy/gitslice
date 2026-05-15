@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/niczy/gitslice/internal/adminauth"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	"google.golang.org/grpc/codes"
@@ -35,49 +36,8 @@ type clerkAdminClaims struct {
 	ExpiresAtMs       int64  `json:"expiresAtMs"`
 }
 
-func configuredAdminEmails() map[string]struct{} {
-	out := make(map[string]struct{})
-	for _, email := range parseAdminEmailValue(os.Getenv("ADMIN_USER_EMAILS")) {
-		out[email] = struct{}{}
-	}
-	return out
-}
-
-func parseAdminEmailValue(raw string) []string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
-	var parsed []string
-	if strings.HasPrefix(raw, "[") && json.Unmarshal([]byte(raw), &parsed) == nil {
-		return normalizeAdminEmails(parsed)
-	}
-	parts := strings.FieldsFunc(raw, func(r rune) bool {
-		return r == ',' || r == ';' || r == '\n' || r == '\t'
-	})
-	return normalizeAdminEmails(parts)
-}
-
-func normalizeAdminEmails(values []string) []string {
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		email := strings.ToLower(strings.Trim(strings.TrimSpace(value), `"'`))
-		if email == "" || !strings.Contains(email, "@") {
-			continue
-		}
-		out = append(out, email)
-	}
-	return out
-}
-
 func adminStatusForEmail(email string) (configured bool, isAdmin bool, primaryEmail string) {
-	admins := configuredAdminEmails()
-	primaryEmail = strings.ToLower(strings.TrimSpace(email))
-	if primaryEmail == "" {
-		return len(admins) > 0, false, ""
-	}
-	_, isAdmin = admins[primaryEmail]
-	return len(admins) > 0, isAdmin, primaryEmail
+	return adminauth.AdminStatusForEmail(email)
 }
 
 func signedClerkAdminClaimsFromContext(ctx context.Context) string {

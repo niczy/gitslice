@@ -4,7 +4,7 @@ import { Card, CardContent } from './ui/card.jsx';
 
 export default function ProjectsPage({ slices, slicesLoading, slicesError, onOpenRepos, onRefresh }) {
   const rootSlices = slices.filter((slice) => slice.is_root);
-  const workspaceSlices = slices.filter((slice) => !slice.is_root);
+  const projectSlices = slices.filter((slice) => !slice.is_root);
   return (
     <section className="section space-y-4" data-testid="projects-page">
       <div className="section-header">
@@ -28,8 +28,8 @@ export default function ProjectsPage({ slices, slicesLoading, slicesError, onOpe
         </Card>
         <Card className="border-border/70">
           <CardContent className="pt-6">
-            <div className="status">Active workspaces</div>
-            <div className="text-3xl font-semibold">{workspaceSlices.length}</div>
+            <div className="status">Active slices</div>
+            <div className="text-3xl font-semibold">{projectSlices.length}</div>
           </CardContent>
         </Card>
       </div>

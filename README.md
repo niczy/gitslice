@@ -453,8 +453,8 @@ before binding health endpoints.
 
 This repo uses Clerk-backed human web sign-in, browser-approved CLI device login for humans, and enrolled `ed25519` keys for non-interactive agent auth. Requests include the signed-in user in metadata.
 
-- The root slice (`root`) is publicly viewable.
-- Non-root slices are only visible/accessible to their owners.
+- The root slice (`root`) is only visible to configured admin users.
+- Non-root slices are only visible/accessible to their owners unless the slice is explicitly public.
 - Organizations are user-created groups shown on the profile page (no invites yet).
 
 Web auth environment variables (see `web/.env.example`):

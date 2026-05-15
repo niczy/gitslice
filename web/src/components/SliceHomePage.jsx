@@ -5,7 +5,9 @@ import { SliceCreateDialog } from './slices/SliceCreateDialog.jsx';
 import { SliceHomeHeader } from './slices/SliceHomeHeader.jsx';
 import { SliceHomeList } from './slices/SliceHomeList.jsx';
 import {
+  cleanFolderPath,
   getHomeRootPath,
+  pathRelativeToHomeRoot,
   pathUnderHomeRoot,
   sortSlices,
   validateFolderPath,
@@ -35,7 +37,7 @@ export default function SliceHomePage({
   const [createError, setCreateError] = useState('');
   const [createLoading, setCreateLoading] = useState(false);
   const homeRootPath = getHomeRootPath(username, homeSliceId);
-  const createParentSliceId = 'root';
+  const createParentSliceId = homeSliceId || (homeRootPath ? `home_${homeRootPath}` : '');
 
   const filteredSlices = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -72,6 +74,10 @@ export default function SliceHomePage({
   };
 
   const loadFolderEntries = async (path = '') => {
+    if (!createParentSliceId || !homeRootPath) {
+      setFolderSelectionError('Your home folder is still loading.');
+      return;
+    }
     if (Object.prototype.hasOwnProperty.call(folderBrowserEntries, path)) {
       return;
     }
@@ -95,9 +101,15 @@ export default function SliceHomePage({
   }, [isCreateOpen]);
 
   const addFolderSelection = (rawPath) => {
-    const { path, error } = validateFolderPath(rawPath);
+    const { path: validatedPath, error } = validateFolderPath(rawPath);
     if (error) {
       setFolderSelectionError(error);
+      return;
+    }
+    const relativeHomePath = pathRelativeToHomeRoot(homeRootPath, validatedPath);
+    const path = relativeHomePath || validatedPath;
+    if (cleanFolderPath(path) === cleanFolderPath(homeRootPath)) {
+      setFolderSelectionError('Choose a folder inside your home directory.');
       return;
     }
 

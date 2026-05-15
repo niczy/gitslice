@@ -451,6 +451,22 @@ async function publicRawResponse(request, rawTarget, requestURL, responseCookies
   });
 }
 
+async function anonymousSliceRawResponse(request, rawTarget, requestURL, responseCookies = []) {
+  const sliceURL = buildAuthenticatedFileURL(rawTarget, requestURL);
+  const result = await fetchJSONFile(request, sliceURL, false);
+  const allCookies = [...responseCookies, ...(result.responseCookies || [])];
+  if (result.error) {
+    return textResponse(result.error, result.status || 502, allCookies);
+  }
+  return rawResponseFromUpstream({
+    request,
+    response: result.response,
+    source: 'public',
+    rawTarget,
+    responseCookies: allCookies,
+  });
+}
+
 async function rootRawResponse(request, rawTarget, requestURL) {
   const rootURL = buildRootFileURL(rawTarget, requestURL);
   const result = await fetchJSONFile(request, rootURL, false);
@@ -490,7 +506,7 @@ export async function handleRawContentRequest(request, suffix = '', options = {}
     if (authenticatedResult.finalResponse) {
       return authenticatedResult.finalResponse;
     }
-    return publicRawResponse(request, rawTarget, requestURL, authenticatedResult.responseCookies);
+    return anonymousSliceRawResponse(request, rawTarget, requestURL, authenticatedResult.responseCookies);
   }
   if (rawTarget.mode === 'root') {
     return rootRawResponse(request, rawTarget, requestURL);

@@ -9,9 +9,7 @@ import { SliceVisibilityCard } from './settings/SliceVisibilityCard.jsx';
 import { SliceEnvKVCard } from './settings/SliceEnvKVCard.jsx';
 import { TrackedFoldersCard } from './settings/TrackedFoldersCard.jsx';
 import {
-  normalizePathPropagationMode,
   normalizeVisibility,
-  pathPropagationRequestValue,
   visibilityRequestValue,
 } from './settings/SliceSettingsHelpers.js';
 
@@ -48,11 +46,6 @@ export default function SliceSettings({
   const [sliceVisibility, setSliceVisibility] = useState(() => (
     normalizeVisibility(readSettingField(initialVisibilityPayload, 'visibility', 'visibility', 'private'))
   ));
-  const [slicePropagationMode, setSlicePropagationMode] = useState(() => (
-    normalizePathPropagationMode(
-      readSettingField(initialVisibilityPayload, 'pathPropagationMode', 'path_propagation_mode', 'unchanged'),
-    )
-  ));
   const [loadedVisibilitySliceId, setLoadedVisibilitySliceId] = useState(() => (
     initialVisibilityPayload || initialVisibilityError ? sliceId : ''
   ));
@@ -81,9 +74,6 @@ export default function SliceSettings({
     }
     if (nextVisibilityPayload) {
       setSliceVisibility(normalizeVisibility(readSettingField(nextVisibilityPayload, 'visibility', 'visibility', 'private')));
-      setSlicePropagationMode(normalizePathPropagationMode(
-        readSettingField(nextVisibilityPayload, 'pathPropagationMode', 'path_propagation_mode', 'unchanged'),
-      ));
     }
     setSliceVisibilityError(nextVisibilityError || '');
     setSliceVisibilitySuccess('');
@@ -143,7 +133,6 @@ export default function SliceSettings({
   useEffect(() => {
     if (!sliceId) {
       setSliceVisibility('private');
-      setSlicePropagationMode('unchanged');
       setSliceVisibilityLoading(false);
       setSliceVisibilityError('');
       setSliceVisibilitySuccess('');
@@ -166,7 +155,6 @@ export default function SliceSettings({
           return;
         }
         setSliceVisibility(normalizeVisibility(response?.visibility));
-        setSlicePropagationMode(normalizePathPropagationMode(response?.path_propagation_mode ?? response?.pathPropagationMode));
       } catch (err) {
         if (!active) {
           return;
@@ -191,17 +179,14 @@ export default function SliceSettings({
       return;
     }
 
-    const nextPropagationMode = nextVisibility === 'public' ? slicePropagationMode : 'unchanged';
     setSliceVisibilitySaving(true);
     setSliceVisibilityError('');
     setSliceVisibilitySuccess('');
     try {
       const response = await updateSliceVisibility(sliceId, {
         visibility: visibilityRequestValue(nextVisibility),
-        pathPropagationMode: pathPropagationRequestValue(nextPropagationMode),
       });
       setSliceVisibility(normalizeVisibility(response?.visibility));
-      setSlicePropagationMode(normalizePathPropagationMode(response?.path_propagation_mode ?? response?.pathPropagationMode));
       setSliceVisibilitySuccess(`Slice visibility is now ${nextVisibility}.`);
     } catch (err) {
       setSliceVisibilityError(err?.message || 'Unable to update slice visibility.');
@@ -223,9 +208,7 @@ export default function SliceSettings({
 
       <div className="slice-settings-grid">
         <SliceVisibilityCard
-          onPropagationModeChange={setSlicePropagationMode}
           onSaveVisibility={saveSliceVisibility}
-          slicePropagationMode={slicePropagationMode}
           sliceVisibility={sliceVisibility}
           sliceVisibilityError={sliceVisibilityError}
           sliceVisibilityLoading={sliceVisibilityLoading}

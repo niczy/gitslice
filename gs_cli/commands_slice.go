@@ -14,8 +14,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
+	accountv1 "github.com/niczy/gitslice/proto/account"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
@@ -127,13 +129,13 @@ func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
 		return
 	}
 
-	rootResp, err := cli.sliceClient.GetRootSlice(ctx, &slicev1.GetRootSliceRequest{})
+	parentSliceID, err := currentUserHomeSliceID(ctx, cli)
 	if err != nil {
-		commandFatalf("SLICE_CREATE_FAILED", true, "", "Failed to resolve published root slice: %v", err)
+		commandFatalf("SLICE_CREATE_FAILED", true, "", "Failed to resolve home slice: %v", err)
 	}
 
 	req := &slicev1.CreateSliceFromFolderRequest{
-		ParentSliceId: rootResp.GetSliceId(),
+		ParentSliceId: parentSliceID,
 		FolderPaths:   folderPaths,
 		Name:          sliceName,
 		Description:   *description,
@@ -160,6 +162,18 @@ func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
 		fmt.Printf("Slug: %s\n", resp.GetSlug())
 	}
 	fmt.Printf("Status: %s\n", resp.Status)
+}
+
+func currentUserHomeSliceID(ctx context.Context, cli *CLI) (string, error) {
+	meResp, err := cli.accountClient.GetMe(ctx, &accountv1.GetMeRequest{})
+	if err != nil {
+		return "", err
+	}
+	username := strings.TrimSpace(meResp.GetUsername())
+	if username == "" {
+		return "", errors.New("current user has no username")
+	}
+	return homeslice.IDForUsername(username), nil
 }
 
 func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {

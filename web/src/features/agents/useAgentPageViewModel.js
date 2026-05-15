@@ -21,6 +21,7 @@ export function useAgentPageViewModel({
   liveStreamState,
   localChangesPanelOpen,
   runnerSessions,
+  isAuthenticated = false,
   selectedRunner,
   selectedRunnerSessions,
   selectedSession,
@@ -32,7 +33,9 @@ export function useAgentPageViewModel({
   const currentSlice = useMemo(() => (
     (slices || []).find((slice) => slice.slice_id === sliceId) || null
   ), [sliceId, slices]);
-  const sliceLabel = getSliceDisplayName(currentSlice?.name || sliceId || 'Slice');
+  const sliceLabel = getSliceDisplayName(
+    (!isAuthenticated && currentSlice?.slug) || currentSlice?.name || sliceId || 'Slice',
+  );
   const canCreateSession = Boolean(sliceId && selectedRunner?.runnerId);
   const runnerState = useMemo(() => latestRunnerState(events), [events]);
   const runningAgentInfoRows = useMemo(

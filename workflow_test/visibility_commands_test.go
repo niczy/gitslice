@@ -9,11 +9,10 @@ import (
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
-	"github.com/niczy/gitslice/internal/storage"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 )
 
-func TestSliceVisibilityCLIGetAndSetWithPropagation(t *testing.T) {
+func TestSliceVisibilityCLIGetAndSet(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	ctx = withWorkflowUser(t, ctx)
@@ -58,32 +57,20 @@ func TestSliceVisibilityCLIGetAndSetWithPropagation(t *testing.T) {
 		t.Fatalf("initial visibility = %q, want %q", initial.Visibility, "private")
 	}
 
-	updated := runCLIJSONOrFail[sliceVisibilityJSON](t, "", "slice", "visibility", "set", sliceIDArg(sliceID), "public", "--propagate", "public")
+	updated := runCLIJSONOrFail[sliceVisibilityJSON](t, "", "slice", "visibility", "set", sliceIDArg(sliceID), "public")
 	if updated.Visibility != "public" {
 		t.Fatalf("updated visibility = %q, want %q", updated.Visibility, "public")
 	}
-	if updated.PathPropagationMode != "public" {
-		t.Fatalf("path_propagation_mode = %q, want %q", updated.PathPropagationMode, "public")
-	}
-
-	dirRule, err := testStorage.GetPathVisibilityRule(ctx, "/docs")
+	stored, err := testStorage.GetSlice(ctx, sliceID)
 	if err != nil {
-		t.Fatalf("GetPathVisibilityRule(dir) failed: %v", err)
+		t.Fatalf("GetSlice failed: %v", err)
 	}
-	if dirRule.Visibility != models.VisibilityPublic {
-		t.Fatalf("dir visibility = %q, want %q", dirRule.Visibility, models.VisibilityPublic)
-	}
-
-	fileRule, err := testStorage.GetPathVisibilityRule(ctx, "/docs/guide.md")
-	if err != nil {
-		t.Fatalf("GetPathVisibilityRule(file) failed: %v", err)
-	}
-	if fileRule.Visibility != models.VisibilityPublic {
-		t.Fatalf("file visibility = %q, want %q", fileRule.Visibility, models.VisibilityPublic)
+	if stored.Visibility != models.VisibilityPublic {
+		t.Fatalf("stored visibility = %q, want %q", stored.Visibility, models.VisibilityPublic)
 	}
 }
 
-func TestFilesystemVisibilityCLIGetAndSetRecursive(t *testing.T) {
+func TestFilesystemVisibilityCLIGetUsesContainingSlice(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	ctx = withWorkflowUser(t, ctx)
@@ -112,57 +99,26 @@ func TestFilesystemVisibilityCLIGetAndSetRecursive(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	initial := runCLIJSONOrFail[pathVisibilityJSON](t, "", "fs", "visibility", "get", filePath)
-	if initial.WorkspaceID != workspaceID {
-		t.Fatalf("workspace_id = %q, want %q", initial.WorkspaceID, workspaceID)
+	initial := runCLIJSONOrFail[pathSliceVisibilityJSON](t, "", "fs", "visibility", "get", filePath)
+	if initial.SliceID != workspaceID {
+		t.Fatalf("slice_id = %q, want %q", initial.SliceID, workspaceID)
 	}
 	if initial.Visibility != "private" {
 		t.Fatalf("initial visibility = %q, want %q", initial.Visibility, "private")
 	}
-	if initial.ExplicitRule {
-		t.Fatalf("initial explicit_rule = true, want false")
-	}
-	if initial.EffectiveVisibility != "private" {
-		t.Fatalf("initial effective_visibility = %q, want %q", initial.EffectiveVisibility, "private")
-	}
 
-	updated := runCLIJSONOrFail[pathVisibilityJSON](t, "", "fs", "visibility", "set", dirPath, "public", "--recursive")
-	if updated.Path != dirPath {
-		t.Fatalf("updated path = %q, want %q", updated.Path, dirPath)
-	}
+	updated := runCLIJSONOrFail[sliceVisibilityJSON](t, "", "slice", "visibility", "set", workspaceID, "public")
 	if updated.Visibility != "public" {
 		t.Fatalf("updated visibility = %q, want %q", updated.Visibility, "public")
 	}
-	if updated.EffectiveVisibility != "public" {
-		t.Fatalf("updated effective_visibility = %q, want %q", updated.EffectiveVisibility, "public")
+
+	child := runCLIJSONOrFail[pathSliceVisibilityJSON](t, "", "fs", "visibility", "get", filePath)
+	if child.Visibility != "public" {
+		t.Fatalf("child visibility = %q, want %q", child.Visibility, "public")
 	}
-	if !updated.ExplicitRule {
-		t.Fatalf("updated explicit_rule = false, want true")
-	}
-	if !updated.Recursive {
-		t.Fatalf("updated recursive = false, want true")
+	if child.SliceID != workspaceID {
+		t.Fatalf("child slice_id = %q, want %q", child.SliceID, workspaceID)
 	}
 
-	child := runCLIJSONOrFail[pathVisibilityJSON](t, "", "fs", "visibility", "get", filePath)
-	if child.EffectiveVisibility != "public" {
-		t.Fatalf("child effective_visibility = %q, want %q", child.EffectiveVisibility, "public")
-	}
-	if child.ResolvedFromPath != dirPath {
-		t.Fatalf("child resolved_from_path = %q, want %q", child.ResolvedFromPath, dirPath)
-	}
-
-	rule, err := testStorage.GetPathVisibilityRule(ctx, dirPath)
-	if err != nil {
-		t.Fatalf("GetPathVisibilityRule(dir) failed: %v", err)
-	}
-	if rule.Visibility != models.VisibilityPublic {
-		t.Fatalf("stored dir visibility = %q, want %q", rule.Visibility, models.VisibilityPublic)
-	}
-	if rule.EntryType != models.PathVisibilityEntryTypeDirectory {
-		t.Fatalf("stored dir entry_type = %q, want %q", rule.EntryType, models.PathVisibilityEntryTypeDirectory)
-	}
-
-	if _, err := testStorage.GetPathVisibilityRule(ctx, filePath); err != storage.ErrEntryNotFound {
-		t.Fatalf("GetPathVisibilityRule(file) = %v, want %v", err, storage.ErrEntryNotFound)
-	}
+	runCLIJSONErrorOrFail[map[string]any](t, "", "fs", "visibility", "set", dirPath, "private", "--recursive")
 }

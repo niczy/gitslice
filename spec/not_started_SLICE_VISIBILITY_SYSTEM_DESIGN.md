@@ -329,23 +329,11 @@ Same as move:
 
 ### Repo import / pull / sync-like materialization
 
-Imported or synchronized files must inherit:
-
-- slice-level public state
-- existing exact-path global rule if present
-- otherwise nearest destination-folder global rule if present
-- otherwise private default
+Imported or synchronized files inherit the containing slice visibility. New slices default private.
 
 ### Slice public toggle
 
 Changing slice visibility always updates the slice record.
-
-It may also rewrite global path visibility records if the caller chooses:
-
-- `path_propagation_mode=public`
-- `path_propagation_mode=private`
-
-Otherwise, `path_propagation_mode=unchanged` leaves global path visibility alone.
 
 ---
 
@@ -379,32 +367,6 @@ type Slice struct {
     Visibility string // "private" | "public"
 }
 ```
-
-## Path visibility
-
-Path visibility should live in a global logical-path table.
-
-Recommended storage shape:
-
-- `path_visibility`
-  - `path`
-  - `entry_type` (`file` | `directory`)
-  - `visibility`
-  - `updated_by`
-  - `updated_at`
-
-Optional additions:
-
-- `is_explicit`
-- `source` (`manual`, `migration`)
-
-But the key is that the table is keyed by `path`, not `slice_id`.
-
-Recommended semantics:
-
-- exact explicit path rule wins over inherited ancestor rule
-- nearest explicit ancestor folder rule applies when the path has no explicit rule
-- slice public overrides path-private for reads inside that slice
 
 ## Important constraint
 
@@ -590,18 +552,11 @@ Must cover:
 ### Storage / service
 
 - new slices default private
-- new files/folders default private
+- new files/folders inherit the containing slice visibility
 - making a slice public makes all descendants effectively public
-- making a folder public exposes that folder subtree in every slice
-- making a folder private hides that folder subtree in every non-public slice unless a deeper path is explicitly public
-- making a file public exposes that file path in every slice
-- making a file private hides that file path in every non-public slice
-- making a file public makes required ancestor dirs traversable
 - making a slice private removes only slice-level public visibility
-- making a slice public with `path_propagation_mode=public` marks current slice paths globally public
-- making a slice public with `path_propagation_mode=private` marks current slice paths globally private
-- move/copy into public/private destinations recalculates visibility correctly
-- the same public path is visible in two different slices
+- move/copy preserves the containing slice visibility
+- the same path can have different visibility in different slices
 
 ### Auth / read enforcement
 
@@ -679,40 +634,37 @@ Acceptance:
 
 Goal:
 
-- make slice-level public/private transitions work, with optional bulk path propagation
+- make slice-level public/private transitions work
 
 Changes:
 
 1. add `SetSliceVisibility` / `GetSliceVisibility`
 2. ensure effective reads treat the whole slice as public when enabled
-3. add `path_propagation_mode = unchanged | public | private`
-4. ensure future writes inherit slice visibility correctly
-5. add regression tests
+3. ensure future writes inherit slice visibility correctly
+4. add regression tests
 
 Acceptance:
 
 1. making a slice public makes every file/folder in that slice effectively public
-2. `path_propagation_mode=public` marks current slice paths globally public
-3. `path_propagation_mode=private` marks current slice paths globally private
-4. making the slice private leaves those path rules intact
+2. making the slice private makes every file/folder in that slice effectively private
+3. visibility decisions do not depend on repository paths
 
-### PR5 - Folder/file visibility toggles and ancestor handling
+### PR5 - Slice visibility UI and ancestor handling
 
 Goal:
 
-- support global per-folder and per-file path visibility
+- support visibility controls through slice visibility only
 
 Changes:
 
-1. add `SetPathVisibility` / `GetPathVisibility`
-2. effective recursive folder behavior across slices
-3. file public -> ancestor traversal handling
-4. file/folder private -> effective visibility cleanup when needed
-5. write-path propagation for create/move/copy/import
+1. remove remaining path visibility controls
+2. show effective slice visibility for files and folders
+3. make public read endpoints authorize through slice visibility
+4. keep write operations owner/admin scoped
 
 Acceptance:
 
-1. file and folder visibility behave predictably across slices
+1. file and folder visibility follows the containing slice
 2. ancestors remain traversable where required
 
 ### PR6 - CLI surface

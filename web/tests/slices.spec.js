@@ -36,19 +36,19 @@ test.describe('Slice creation', () => {
       });
     });
 
-    await page.route('**/v1/slices/root/entries**', async (route) => {
+    await page.route(`**/v1/slices/home_${username}/entries**`, async (route) => {
       const url = new URL(route.request().url());
-      const path = decodeURIComponent(url.pathname.replace('/v1/slices/root/entries', '').replace(/^\/+/, ''));
+      const path = decodeURIComponent(url.pathname.replace(`/v1/slices/home_${username}/entries`, '').replace(/^\/+/, ''));
       const entries = path === username
         ? [
             {
-              id: `root:${username}/web`,
+              id: `home_${username}:${username}/web`,
               name: 'web',
               path: `${username}/web`,
               type: 'ENTRY_TYPE_DIRECTORY',
             },
             {
-              id: `root:${username}/services`,
+              id: `home_${username}:${username}/services`,
               name: 'services',
               path: `${username}/services`,
               type: 'ENTRY_TYPE_DIRECTORY',
@@ -89,14 +89,14 @@ test.describe('Slice creation', () => {
     await page.getByTestId('slice-create-name').fill('Web work');
     await page.getByTestId('slice-create-folder-option').filter({ hasText: /^web/ }).first().click();
     await expect(page.getByTestId('slice-create-selected-folders')).toContainText('web');
-    await page.getByTestId('slice-create-folder-input').fill('services/slice');
+    await page.getByTestId('slice-create-folder-input').fill(`/${username}/services/slice`);
     await page.getByRole('button', { name: /^add$/i }).click();
 
     await page.getByTestId('slice-create-submit').click();
 
     await expect.poll(() => createPayload).not.toBeNull();
     expect(createPayload).toMatchObject({
-      parentSliceId: 'root',
+      parentSliceId: `home_${username}`,
       folderPaths: ['web', 'services/slice'],
       name: 'Web work',
     });

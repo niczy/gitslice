@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { useQueryClient } from '@tanstack/react-query';
 
 import { buildBrowserPath, buildLegacyRedirectPath, buildPath, resolveHomeRouteForUsername } from './utils/routing.js';
-import { apiBaseUrl, currentUsername, searchWorkspaceFiles } from './utils/api.js';
+import { apiBaseUrl, currentUsername, searchSliceFiles } from './utils/api.js';
 import { completeClerkUsername, signInWithAccount, signOutAccount, startOAuthSignIn, startOAuthSignOut } from './auth.js';
 import { useWebSession } from './hooks/useWebSession.js';
 import { useSlicesQuery } from './hooks/useSlices.js';
@@ -393,7 +393,7 @@ function App({
     setBrowserSearchLoading(true);
     setBrowserSearchError('');
     try {
-      const payload = await searchWorkspaceFiles(currentSliceId, {
+      const payload = await searchSliceFiles(currentSliceId, {
         query,
         glob: browserSearchGlob,
         regex: browserSearchRegex,
@@ -733,6 +733,7 @@ function App({
           <SliceCommitListPage
             sliceId={browserRouteSliceId || currentSliceId}
             slices={slices}
+            isAuthenticated={isAuthenticated}
             publicApiBaseUrl={initialAuthConfig.publicApiBaseUrl || ''}
             onOpenCode={() => openSliceDetail(browserRouteSliceId || currentSliceId)}
             onOpenChangesets={() => openSliceChangesets(browserRouteSliceId || currentSliceId)}
@@ -750,6 +751,7 @@ function App({
           <SliceChangesetListPage
             sliceId={browserRouteSliceId || currentSliceId}
             slices={slices}
+            isAuthenticated={isAuthenticated}
             publicApiBaseUrl={initialAuthConfig.publicApiBaseUrl || ''}
             onOpenCode={() => openSliceDetail(browserRouteSliceId || currentSliceId)}
             onOpenCommits={() => openSliceCommits(browserRouteSliceId || currentSliceId)}
@@ -768,6 +770,7 @@ function App({
             sliceId={browserRouteSliceId || currentSliceId}
             routeSessionId={agentRouteSessionId}
             slices={slices}
+            isAuthenticated={isAuthenticated}
             publicApiBaseUrl={initialAuthConfig.publicApiBaseUrl || ''}
             onOpenCode={() => openSliceDetail(browserRouteSliceId || currentSliceId)}
             onOpenCommits={() => openSliceCommits(browserRouteSliceId || currentSliceId)}

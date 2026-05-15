@@ -33,7 +33,7 @@ func (s *PostgresNativeStorage) NotifyAgentRunnerUpdate(ctx context.Context, use
 		return ErrInvalidInput
 	}
 	_, err := s.pool.Exec(ctx, `
-		SELECT pg_notify($1, json_build_object('user_id', $2, 'runner_id', $3)::text)
+		SELECT pg_notify($1, json_build_object('user_id', $2::text, 'runner_id', $3::text)::text)
 	`, AgentRunnerNotifyChannel, userID, runnerID)
 	return err
 }

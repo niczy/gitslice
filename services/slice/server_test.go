@@ -27,6 +27,20 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+func adminAuthContextForUser(t testing.TB, st storage.Storage, username string) context.Context {
+	t.Helper()
+	email := strings.ToLower(strings.TrimSpace(username)) + "@example.com"
+	t.Setenv("ADMIN_USER_EMAILS", email)
+	if err := st.CreateUser(context.Background(), &models.User{
+		Username:     username,
+		PrimaryEmail: email,
+		RootPath:     username,
+	}); err != nil && err != storage.ErrEntryExists {
+		t.Fatalf("CreateUser(%s) failed: %v", username, err)
+	}
+	return metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User "+username))
+}
+
 func parseSliceMetricMap(t *testing.T, raw string) map[string]int64 {
 	t.Helper()
 	if raw == "" {
@@ -465,110 +479,40 @@ func TestSetSliceVisibilityUpdatesSlice(t *testing.T) {
 	}
 }
 
-func TestSetSliceVisibilityPropagatesPublicPaths(t *testing.T) {
+func TestGetSliceCommitsAllowsAnonymousPublicSlice(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
 	slice := &models.Slice{
-		ID:        "slice-visibility",
-		Name:      "slice-visibility",
-		Owners:    []string{"tester"},
-		CreatedBy: "tester",
-		Files:     []string{"docs/guide.md"},
+		ID:         "slice-public-commits",
+		Name:       "slice-public-commits",
+		Owners:     []string{"tester"},
+		CreatedBy:  "tester",
+		Visibility: models.VisibilityPublic,
 	}
 	if err := st.CreateSlice(ctx, slice); err != nil {
 		t.Fatalf("CreateSlice failed: %v", err)
 	}
-	if err := st.AddEntry(ctx, &models.DirectoryEntry{ID: "dir-docs", Path: "docs", Type: "directory", ParentID: slice.ID}); err != nil {
-		t.Fatalf("AddEntry(dir) failed: %v", err)
-	}
-	if err := st.AddEntry(ctx, &models.DirectoryEntry{ID: "file-guide", Path: "docs/guide.md", Type: "file", ParentID: slice.ID}); err != nil {
-		t.Fatalf("AddEntry(file) failed: %v", err)
-	}
-
-	svc := newSliceServiceServer(st)
-	resp, err := svc.SetSliceVisibility(ctx, &slicev1.SetSliceVisibilityRequest{
-		SliceId:             slice.ID,
-		Visibility:          commonv1.Visibility_VISIBILITY_PUBLIC,
-		PathPropagationMode: commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_PUBLIC,
-	})
-	if err != nil {
-		t.Fatalf("SetSliceVisibility failed: %v", err)
-	}
-	if got, want := resp.GetPathPropagationMode(), commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_PUBLIC; got != want {
-		t.Fatalf("path_propagation_mode = %v, want %v", got, want)
-	}
-
-	dirRule, err := st.GetPathVisibilityRule(ctx, "/docs")
-	if err != nil {
-		t.Fatalf("GetPathVisibilityRule(dir) failed: %v", err)
-	}
-	if got, want := dirRule.Visibility, models.VisibilityPublic; got != want {
-		t.Fatalf("dir visibility = %q, want %q", got, want)
-	}
-
-	fileRule, err := st.GetPathVisibilityRule(ctx, "/docs/guide.md")
-	if err != nil {
-		t.Fatalf("GetPathVisibilityRule(file) failed: %v", err)
-	}
-	if got, want := fileRule.Visibility, models.VisibilityPublic; got != want {
-		t.Fatalf("file visibility = %q, want %q", got, want)
-	}
-}
-
-func TestSetSliceVisibilityPropagatesPrivatePaths(t *testing.T) {
-	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
-	st := storage.NewInMemoryStorage()
-	slice := &models.Slice{
-		ID:        "slice-visibility-private",
-		Name:      "slice-visibility-private",
-		Owners:    []string{"tester"},
-		CreatedBy: "tester",
-		Files:     []string{"docs/guide.md"},
-	}
-	if err := st.CreateSlice(ctx, slice); err != nil {
-		t.Fatalf("CreateSlice failed: %v", err)
-	}
-	if err := st.AddEntry(ctx, &models.DirectoryEntry{ID: "dir-docs", Path: "docs", Type: "directory", ParentID: slice.ID}); err != nil {
-		t.Fatalf("AddEntry(dir) failed: %v", err)
-	}
-	if err := st.AddEntry(ctx, &models.DirectoryEntry{ID: "file-guide", Path: "docs/guide.md", Type: "file", ParentID: slice.ID}); err != nil {
-		t.Fatalf("AddEntry(file) failed: %v", err)
-	}
-
-	svc := newSliceServiceServer(st)
-	if _, err := svc.SetSliceVisibility(ctx, &slicev1.SetSliceVisibilityRequest{
-		SliceId:             slice.ID,
-		Visibility:          commonv1.Visibility_VISIBILITY_PUBLIC,
-		PathPropagationMode: commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_PRIVATE,
+	if err := st.AddSliceCommit(ctx, slice.ID, &models.Commit{
+		CommitHash: "commit-public",
+		Message:    "public commit",
+		Timestamp:  time.Now().UTC(),
 	}); err != nil {
-		t.Fatalf("SetSliceVisibility failed: %v", err)
-	}
-
-	fileRule, err := st.GetPathVisibilityRule(ctx, "/docs/guide.md")
-	if err != nil {
-		t.Fatalf("GetPathVisibilityRule(file) failed: %v", err)
-	}
-	if got, want := fileRule.Visibility, models.VisibilityPrivate; got != want {
-		t.Fatalf("file visibility = %q, want %q", got, want)
-	}
-}
-
-func TestSetSliceVisibilityRejectsPropagationOnPrivateSlice(t *testing.T) {
-	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
-	st := storage.NewInMemoryStorage()
-	slice := &models.Slice{ID: "slice-private-reject", Name: "slice-private-reject", Owners: []string{"tester"}, CreatedBy: "tester"}
-	if err := st.CreateSlice(ctx, slice); err != nil {
-		t.Fatalf("CreateSlice failed: %v", err)
+		t.Fatalf("AddSliceCommit failed: %v", err)
 	}
 
 	svc := newSliceServiceServer(st)
-	_, err := svc.SetSliceVisibility(ctx, &slicev1.SetSliceVisibilityRequest{
-		SliceId:             slice.ID,
-		Visibility:          commonv1.Visibility_VISIBILITY_PRIVATE,
-		PathPropagationMode: commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_PUBLIC,
+	resp, err := svc.GetSliceCommits(context.Background(), &slicev1.CommitHistoryRequest{
+		SliceId: slice.ID,
+		Limit:   10,
 	})
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("SetSliceVisibility error = %v, want %v", status.Code(err), codes.InvalidArgument)
+	if err != nil {
+		t.Fatalf("GetSliceCommits failed: %v", err)
+	}
+	if got, want := len(resp.GetCommits()), 1; got != want {
+		t.Fatalf("len(commits) = %d, want %d", got, want)
+	}
+	if got, want := resp.GetCommits()[0].GetCommitHash(), "commit-public"; got != want {
+		t.Fatalf("commit hash = %q, want %q", got, want)
 	}
 }
 
@@ -1461,6 +1405,65 @@ func TestListChangesetsFiltersByStatus(t *testing.T) {
 	})
 }
 
+func TestListChangesetsAllowsAnonymousPublicSlice(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{
+		ID:         "slice-public-changesets",
+		Name:       "slice-public-changesets",
+		Owners:     []string{"tester"},
+		CreatedBy:  "tester",
+		Visibility: models.VisibilityPublic,
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	if err := st.CreateChangeset(ctx, &models.Changeset{
+		ID:            "chg_public",
+		SliceID:       slice.ID,
+		Status:        models.ChangesetStatusPending,
+		ModifiedFiles: []string{"README.md"},
+		CreatedAt:     time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("CreateChangeset failed: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	resp, err := srv.ListChangesets(context.Background(), &slicev1.ListChangesetsRequest{
+		SliceId:      slice.ID,
+		StatusFilter: statusFilterAll,
+	})
+	if err != nil {
+		t.Fatalf("ListChangesets failed: %v", err)
+	}
+	if got, want := len(resp.GetChangesets()), 1; got != want {
+		t.Fatalf("len(changesets) = %d, want %d", got, want)
+	}
+	if got, want := resp.GetChangesets()[0].GetChangesetId(), "chg_public"; got != want {
+		t.Fatalf("changeset id = %q, want %q", got, want)
+	}
+}
+
+func TestListChangesetsRequiresLoginForAnonymousPrivateSlice(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-private-changesets", Name: "slice-private-changesets", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	_, err := srv.ListChangesets(context.Background(), &slicev1.ListChangesetsRequest{
+		SliceId:      slice.ID,
+		StatusFilter: statusFilterAll,
+	})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("ListChangesets error = %v, want %v", status.Code(err), codes.Unauthenticated)
+	}
+}
+
 func TestListChangesetsIncludesProactiveReviewStatus(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
@@ -1547,8 +1550,8 @@ func TestListChangesetsIncludesProactiveReviewStatus(t *testing.T) {
 }
 
 func TestCreateSliceAutoGeneratesID(t *testing.T) {
-	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
+	ctx := adminAuthContextForUser(t, st, "tester")
 	if err := st.InitializeRootSlice(ctx); err != nil {
 		t.Fatalf("failed to initialize root slice: %v", err)
 	}
@@ -1613,8 +1616,8 @@ func TestHomeSliceExternalSlugUsesUsername(t *testing.T) {
 }
 
 func TestCreateSliceUsesFolderPathsAsDefaultName(t *testing.T) {
-	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
+	ctx := adminAuthContextForUser(t, st, "tester")
 	if err := st.InitializeRootSlice(ctx); err != nil {
 		t.Fatalf("failed to initialize root slice: %v", err)
 	}
@@ -1647,8 +1650,8 @@ func TestCreateSliceUsesFolderPathsAsDefaultName(t *testing.T) {
 }
 
 func TestCreateSliceFromRootScopesRelativeFolderPathsToUserHome(t *testing.T) {
-	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
+	ctx := adminAuthContextForUser(t, st, "tester")
 	if _, err := homeslice.EnsureUserHomeSlice(ctx, st, "tester"); err != nil {
 		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
 	}
@@ -1697,8 +1700,8 @@ func TestCreateSliceFromRootScopesRelativeFolderPathsToUserHome(t *testing.T) {
 }
 
 func TestCreateSliceFromFolderRejectsMissingFolder(t *testing.T) {
-	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
+	ctx := adminAuthContextForUser(t, st, "tester")
 	if err := st.InitializeRootSlice(ctx); err != nil {
 		t.Fatalf("failed to initialize root slice: %v", err)
 	}
@@ -1727,8 +1730,8 @@ func TestCreateSliceFromFolderRejectsMissingFolder(t *testing.T) {
 }
 
 func TestCreateSliceFromFolderUsesParentEntriesWhenSliceFilesEmpty(t *testing.T) {
-	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
+	ctx := adminAuthContextForUser(t, st, "tester")
 	if err := st.InitializeRootSlice(ctx); err != nil {
 		t.Fatalf("failed to initialize root slice: %v", err)
 	}
@@ -1806,8 +1809,8 @@ func TestCreateSliceFromFolderUsesParentEntriesWhenSliceFilesEmpty(t *testing.T)
 	if err != nil {
 		t.Fatalf("GetCommitSnapshot child failed: %v", err)
 	}
-	if got := strings.TrimSpace(childSnapshot.Files[filePath]); got == "" {
-		t.Fatalf("expected child snapshot to include parent manifest hash for %s", filePath)
+	if got := strings.TrimSpace(childSnapshot.Files[displayPath]); got == "" {
+		t.Fatalf("expected child snapshot to include parent manifest hash for %s", displayPath)
 	}
 	if _, err := storage.BuildSliceSearchArtifact(ctx, st, createResp.GetSliceId(), childMeta.HeadCommitHash); err != nil {
 		t.Fatalf("BuildSliceSearchArtifact child failed: %v", err)
@@ -1823,8 +1826,8 @@ func TestCreateSliceFromFolderUsesParentEntriesWhenSliceFilesEmpty(t *testing.T)
 }
 
 func TestCheckoutMountedSliceUsesLiveBackingFolder(t *testing.T) {
-	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
+	ctx := adminAuthContextForUser(t, st, "tester")
 	if err := st.InitializeRootSlice(ctx); err != nil {
 		t.Fatalf("failed to initialize root slice: %v", err)
 	}
@@ -2020,8 +2023,8 @@ func TestCheckoutRootMountedSliceUsesLiveHomeBackingSliceFilesFallback(t *testin
 }
 
 func TestCheckoutMountedSliceFallsBackToBackingSliceFiles(t *testing.T) {
-	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
+	ctx := adminAuthContextForUser(t, st, "tester")
 	if err := st.InitializeRootSlice(ctx); err != nil {
 		t.Fatalf("failed to initialize root slice: %v", err)
 	}
@@ -2376,8 +2379,8 @@ func TestGetSliceBySlugUsesAuthenticatedOwnerNamespaceForLocalSlug(t *testing.T)
 }
 
 func TestCreateSliceFromMultipleFoldersRemapsCheckoutPaths(t *testing.T) {
-	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
+	ctx := adminAuthContextForUser(t, st, "tester")
 	if err := st.InitializeRootSlice(ctx); err != nil {
 		t.Fatalf("failed to initialize root slice: %v", err)
 	}
@@ -3065,7 +3068,8 @@ func TestMergeChangesetPromotionMaterializesRootFileTree(t *testing.T) {
 	}
 
 	fileSvc := fileservice.NewService(base)
-	listResp, err := fileSvc.ListEntries(ctx, &filev1.ListEntriesRequest{
+	adminCtx := adminAuthContextForUser(t, base, "admin")
+	listResp, err := fileSvc.ListEntries(adminCtx, &filev1.ListEntriesRequest{
 		Version: &filev1.ListEntriesRequest_SliceVersion{
 			SliceVersion: &filev1.SliceVersion{SliceId: "root"},
 		},

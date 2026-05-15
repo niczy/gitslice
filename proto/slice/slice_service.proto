@@ -190,6 +190,13 @@ service SliceService {
     };
   }
 
+  // Resolve slice info by canonical slice ID, qualified slug, or caller-local slug.
+  rpc ResolveSlice(ResolveSliceRequest) returns (ResolveSliceResponse) {
+    option (google.api.http) = {
+      get: "/v1/slices:resolve"
+    };
+  }
+
   // Inspect the configured visibility of a slice.
   rpc GetSliceVisibility(GetSliceVisibilityRequest) returns (GetSliceVisibilityResponse) {
     option (google.api.http) = {
@@ -736,6 +743,7 @@ message SliceInfo {
   string environment = 9;
   string slug = 10;
   repeated FolderMount folder_mounts = 11;
+  common.v1.Visibility visibility = 12;
 }
 
 message GlobalStateRequest {
@@ -897,6 +905,21 @@ message GetSliceBySlugResponse {
   common.v1.Visibility visibility = 8;
 }
 
+message ResolveSliceRequest {
+  string ref = 1;
+}
+
+message ResolveSliceResponse {
+  string slice_id = 1;
+  string name = 2;
+  string description = 3;
+  string parent_slice_id = 4;
+  repeated string files = 5;
+  string environment = 6;
+  string slug = 7;
+  common.v1.Visibility visibility = 8;
+}
+
 message GetSliceVisibilityRequest {
   string slice_id = 1;
 }
@@ -909,13 +932,11 @@ message GetSliceVisibilityResponse {
 message SetSliceVisibilityRequest {
   string slice_id = 1;
   common.v1.Visibility visibility = 2;
-  common.v1.PathVisibilityPropagationMode path_propagation_mode = 3;
 }
 
 message SetSliceVisibilityResponse {
   string slice_id = 1;
   common.v1.Visibility visibility = 2;
-  common.v1.PathVisibilityPropagationMode path_propagation_mode = 3;
 }
 
 // Request to add a tracked folder to a custom slice.
