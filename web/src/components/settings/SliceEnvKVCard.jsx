@@ -76,14 +76,62 @@ function keyBadgeClass(configured) {
   return configured ? 'env-kv-key env-kv-key--configured' : 'env-kv-key env-kv-key--missing';
 }
 
-export function SliceEnvKVCard({ sliceId }) {
-  const [profile, setProfile] = useState('local');
-  const [requirements, setRequirements] = useState(null);
-  const [requirementsLoading, setRequirementsLoading] = useState(false);
-  const [requirementsError, setRequirementsError] = useState('');
-  const [entries, setEntries] = useState([]);
-  const [entriesLoading, setEntriesLoading] = useState(false);
-  const [entriesError, setEntriesError] = useState('');
+function envDataMatchesSlice(initialEnvData, sliceId) {
+  return Boolean(sliceId) && readField(initialEnvData, 'sliceId', 'slice_id', '') === sliceId;
+}
+
+function sortKVEntries(entries, profile) {
+  return entries.sort((a, b) => {
+    if (a.profile !== b.profile) {
+      if (a.profile === profile) {
+        return -1;
+      }
+      if (b.profile === profile) {
+        return 1;
+      }
+      return a.profile.localeCompare(b.profile);
+    }
+    if (a.className !== b.className) {
+      return a.className.localeCompare(b.className);
+    }
+    return a.key.localeCompare(b.key);
+  });
+}
+
+function normalizeInitialEntries(initialEnvData, sliceId, profile = 'local') {
+  if (!envDataMatchesSlice(initialEnvData, sliceId) || !Array.isArray(initialEnvData?.entries)) {
+    return [];
+  }
+  const merged = new Map();
+  initialEnvData.entries.forEach((rawEntry) => {
+    const entry = normalizeKVEntry(rawEntry);
+    merged.set(entryIdentity(entry), entry);
+  });
+  return sortKVEntries(Array.from(merged.values()), profile);
+}
+
+function entriesLoadKey(sliceId, profile, refreshToken) {
+  return `${sliceId || ''}:${profile || 'local'}:${refreshToken}`;
+}
+
+export function SliceEnvKVCard({ sliceId, initialEnvData = null }) {
+  const initialMatchesSlice = envDataMatchesSlice(initialEnvData, sliceId);
+  const initialProfile = initialMatchesSlice ? readField(initialEnvData, 'profile', 'profile', 'local') || 'local' : 'local';
+  const [profile, setProfile] = useState(initialProfile);
+  const [requirements, setRequirements] = useState(() => (initialMatchesSlice ? initialEnvData?.requirements || null : null));
+  const [requirementsLoadedSliceId, setRequirementsLoadedSliceId] = useState(() => (initialMatchesSlice ? sliceId : ''));
+  const [requirementsLoading, setRequirementsLoading] = useState(() => Boolean(sliceId) && !initialMatchesSlice);
+  const [requirementsError, setRequirementsError] = useState(() => (
+    initialMatchesSlice ? readField(initialEnvData, 'requirementsError', 'requirements_error', '') : ''
+  ));
+  const [entries, setEntries] = useState(() => normalizeInitialEntries(initialEnvData, sliceId, initialProfile));
+  const [entriesLoadedKey, setEntriesLoadedKey] = useState(() => (
+    initialMatchesSlice ? entriesLoadKey(sliceId, initialProfile, 0) : ''
+  ));
+  const [entriesLoading, setEntriesLoading] = useState(() => Boolean(sliceId) && !initialMatchesSlice);
+  const [entriesError, setEntriesError] = useState(() => (
+    initialMatchesSlice ? readField(initialEnvData, 'entriesError', 'entries_error', '') : ''
+  ));
   const [refreshToken, setRefreshToken] = useState(0);
   const [className, setClassName] = useState('value');
   const [key, setKey] = useState('');
@@ -94,10 +142,31 @@ export function SliceEnvKVCard({ sliceId }) {
   const [formSuccess, setFormSuccess] = useState('');
 
   useEffect(() => {
+    if (!envDataMatchesSlice(initialEnvData, sliceId)) {
+      return;
+    }
+    const nextProfile = readField(initialEnvData, 'profile', 'profile', 'local') || 'local';
+    setProfile(nextProfile);
+    setRequirements(initialEnvData?.requirements || null);
+    setRequirementsError(readField(initialEnvData, 'requirementsError', 'requirements_error', ''));
+    setRequirementsLoading(false);
+    setRequirementsLoadedSliceId(sliceId);
+    setEntries(normalizeInitialEntries(initialEnvData, sliceId, nextProfile));
+    setEntriesError(readField(initialEnvData, 'entriesError', 'entries_error', ''));
+    setEntriesLoading(false);
+    setEntriesLoadedKey(entriesLoadKey(sliceId, nextProfile, 0));
+    setRefreshToken(0);
+  }, [initialEnvData, sliceId]);
+
+  useEffect(() => {
     if (!sliceId) {
       setRequirements(null);
       setRequirementsLoading(false);
       setRequirementsError('');
+      setRequirementsLoadedSliceId('');
+      return;
+    }
+    if (requirementsLoadedSliceId === sliceId) {
       return;
     }
 
@@ -111,9 +180,11 @@ export function SliceEnvKVCard({ sliceId }) {
           return;
         }
         setRequirements(response);
+        setRequirementsLoadedSliceId(sliceId);
       } catch (error) {
         if (active) {
           setRequirementsError(error?.message || 'Unable to load environment requirements.');
+          setRequirementsLoadedSliceId(sliceId);
         }
       } finally {
         if (active) {
@@ -126,11 +197,14 @@ export function SliceEnvKVCard({ sliceId }) {
     return () => {
       active = false;
     };
-  }, [sliceId]);
+  }, [requirementsLoadedSliceId, sliceId]);
+
+  const currentEntriesKey = entriesLoadKey(sliceId, profile, refreshToken);
 
   const loadEntries = useCallback(async () => {
     if (!sliceId) {
       setEntries([]);
+      setEntriesLoadedKey('');
       return;
     }
 
@@ -150,32 +224,30 @@ export function SliceEnvKVCard({ sliceId }) {
           merged.set(entryIdentity(entry), entry);
         });
       });
-      const sortedEntries = Array.from(merged.values()).sort((a, b) => {
-        if (a.profile !== b.profile) {
-          if (a.profile === profile) {
-            return -1;
-          }
-          if (b.profile === profile) {
-            return 1;
-          }
-          return a.profile.localeCompare(b.profile);
-        }
-        if (a.className !== b.className) {
-          return a.className.localeCompare(b.className);
-        }
-        return a.key.localeCompare(b.key);
-      });
+      const sortedEntries = sortKVEntries(Array.from(merged.values()), profile);
       setEntries(sortedEntries);
+      setEntriesLoadedKey(currentEntriesKey);
     } catch (error) {
       setEntriesError(error?.message || 'Unable to load environment KV entries.');
+      setEntriesLoadedKey(currentEntriesKey);
     } finally {
       setEntriesLoading(false);
     }
-  }, [profile, sliceId]);
+  }, [currentEntriesKey, profile, sliceId]);
 
   useEffect(() => {
+    if (!sliceId) {
+      setEntries([]);
+      setEntriesLoading(false);
+      setEntriesError('');
+      setEntriesLoadedKey('');
+      return;
+    }
+    if (entriesLoadedKey === currentEntriesKey) {
+      return;
+    }
     loadEntries();
-  }, [loadEntries, refreshToken]);
+  }, [currentEntriesKey, entriesLoadedKey, loadEntries, sliceId]);
 
   const requirementPayload = requirements?.requirements || {};
   const requirementProfiles = useMemo(() => {

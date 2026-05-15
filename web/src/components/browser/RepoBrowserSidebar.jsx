@@ -205,7 +205,6 @@ export default function RepoBrowserSidebar({
   onCloseSidebar,
   onEntryClick,
   onTreeAction,
-  onOpenFilesView,
   onOpenSettingsView,
   sidebarOpen,
   sidebarVisible,
@@ -213,7 +212,6 @@ export default function RepoBrowserSidebar({
   startSidebarResize,
   treeActionState,
   treeEntries,
-  viewingSettings,
   visibleEntryError,
 }) {
   const [actionMenuOpenKey, setActionMenuOpenKey] = useState('');
@@ -271,10 +269,10 @@ export default function RepoBrowserSidebar({
                     type="button"
                     variant="ghost"
                     size="icon"
-                    className={`slice-settings-toggle ${viewingSettings ? 'active' : ''}`}
-                    onClick={viewingSettings ? onOpenFilesView : onOpenSettingsView}
-                    aria-label={viewingSettings ? 'Close slice settings' : 'Open slice settings'}
-                    title={viewingSettings ? 'Close slice settings' : 'Slice settings'}
+                    className="slice-settings-toggle"
+                    onClick={onOpenSettingsView}
+                    aria-label="Open slice settings"
+                    title="Slice settings"
                     data-testid="repo-view-settings"
                   >
                     <Settings size={16} aria-hidden="true" />

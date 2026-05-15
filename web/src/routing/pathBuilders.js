@@ -1,4 +1,4 @@
-import { buildBrowserPath, buildSliceAgentsPath } from './browserRoutes.js';
+import { buildBrowserPath, buildSliceAgentsPath, buildSliceSettingsPath } from './browserRoutes.js';
 
 export function buildPath(page, commitHash, changesetId = '', browserState) {
   if (page === 'diff' && commitHash) {
@@ -15,6 +15,9 @@ export function buildPath(page, commitHash, changesetId = '', browserState) {
   }
   if (page === 'slice-agents' && browserState?.slice) {
     return buildSliceAgentsPath(browserState);
+  }
+  if (page === 'slice-settings' && browserState?.slice) {
+    return buildSliceSettingsPath(browserState);
   }
   if (page === 'login') {
     return '/login';

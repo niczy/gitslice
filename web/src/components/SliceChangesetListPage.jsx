@@ -73,6 +73,7 @@ export default function SliceChangesetListPage({
   onOpenCode,
   onOpenCommits,
   onOpenAgents,
+  onOpenSettings,
   onOpenChangesetDiff,
   initialChangesets,
   initialChangesetsError = '',
@@ -172,6 +173,7 @@ export default function SliceChangesetListPage({
         onOpenCommits={onOpenCommits}
         onOpenChangesets={() => {}}
         onOpenAgents={onOpenAgents}
+        onOpenSettings={onOpenSettings}
       />
 
       <div className="slice-activity-content">

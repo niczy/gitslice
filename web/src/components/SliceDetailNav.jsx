@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, Check, Code2, Copy, GitCommitHorizontal, GitPullRequest, Layers3 } from 'lucide-react';
+import { Bot, Check, Code2, Copy, GitCommitHorizontal, GitPullRequest, Layers3, Settings } from 'lucide-react';
 
 import { copyToClipboard } from '../utils/clipboard.js';
 import { buildGitCloneCommand, buildGitEndpoint, buildSliceCheckoutCommand } from '../utils/git.js';
@@ -10,6 +10,7 @@ const TABS = [
   { id: 'commits', label: 'Commits', icon: GitCommitHorizontal },
   { id: 'changesets', label: 'Changesets', icon: GitPullRequest },
   { id: 'agents', label: 'Agents', icon: Bot },
+  { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
 export default function SliceDetailNav({
@@ -22,6 +23,7 @@ export default function SliceDetailNav({
   onOpenCommits,
   onOpenChangesets,
   onOpenAgents,
+  onOpenSettings,
 }) {
   const [isGetCodeOpen, setIsGetCodeOpen] = useState(false);
   const [copyState, setCopyState] = useState('');
@@ -35,6 +37,9 @@ export default function SliceDetailNav({
     () => buildSliceCheckoutCommand({ slice, sliceId }),
     [slice, sliceId],
   );
+  const visibleTabs = useMemo(() => (
+    TABS.filter((tab) => tab.id !== 'settings' || (!slice?.is_root && onOpenSettings))
+  ), [onOpenSettings, slice?.is_root]);
 
   const handleClick = (tabId) => {
     if (tabId === 'code') {
@@ -45,6 +50,8 @@ export default function SliceDetailNav({
       onOpenChangesets?.();
     } else if (tabId === 'agents') {
       onOpenAgents?.();
+    } else if (tabId === 'settings') {
+      onOpenSettings?.();
     }
   };
 
@@ -176,7 +183,7 @@ export default function SliceDetailNav({
         </div>
       </div>
       <div className="slice-detail-tabs" role="tablist" aria-label="Slice views">
-        {TABS.map((tab) => {
+        {visibleTabs.map((tab) => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.id;
           return (
