@@ -16,9 +16,12 @@ import {
   getEntryName,
 } from './browserModel.js';
 import {
+  assertCanCreateUnderTreePath,
+  assertTreeMutationPathsAllowed,
   encodeTreeTextContent,
   entryLabelForPrompt,
   getDefaultTreeActionTarget,
+  getTreeCreateBlockedReason,
   getDirectoryMarkerPath,
   getTreeEntryBaseName,
   getTreeEntryParentPath,
@@ -70,6 +73,7 @@ export function useRepoBrowserTreeActions({
   buildFileUrl,
   canLoad,
   clearFilePreview,
+  currentSlice,
   focusedEntry,
   openFilesView,
   setError,
@@ -85,6 +89,21 @@ export function useRepoBrowserTreeActions({
   writeBrowserState,
 }) {
   const [treeActionState, setTreeActionState] = useState(EMPTY_ACTION_STATE);
+
+  const getCreateParentPath = useCallback((entry) => {
+    const target = entry
+      ? { path: normalizeWorkspaceResultPath(entry.path), type: normalizeEntryType(entry.type) }
+      : getDefaultTreeActionTarget(focusedEntry);
+    return target.type === 'directory' ? target.path : getTreeEntryParentPath(target.path);
+  }, [focusedEntry]);
+
+  const getCreateTreeEntryBlockedReason = useCallback((entry = null) => {
+    return getTreeCreateBlockedReason({
+      sliceId,
+      currentSlice,
+      parentPath: getCreateParentPath(entry),
+    });
+  }, [currentSlice, getCreateParentPath, sliceId]);
 
   const fetchEntriesForAction = useCallback(async (path, options = {}) => {
     const normalizedPath = normalizeWorkspaceResultPath(path);
@@ -176,6 +195,11 @@ export function useRepoBrowserTreeActions({
   ]);
 
   const createAndMergeChangeset = useCallback(async ({ fileContents, message, modifiedFiles }) => {
+    assertTreeMutationPathsAllowed({
+      sliceId,
+      currentSlice,
+      paths: modifiedFiles,
+    });
     const createResponse = await createChangeset({
       sliceId,
       baseCommitHash: sliceHash,
@@ -195,11 +219,11 @@ export function useRepoBrowserTreeActions({
       throw new Error(mergeResponseErrorMessage(mergeResponse));
     }
     return mergeResponse;
-  }, [sliceHash, sliceId]);
+  }, [currentSlice, sliceHash, sliceId]);
 
   const createFile = useCallback(async (entry) => {
-    const target = entry ? { path: normalizeWorkspaceResultPath(entry.path), type: normalizeEntryType(entry.type) } : getDefaultTreeActionTarget(focusedEntry);
-    const parentPath = target.type === 'directory' ? target.path : getTreeEntryParentPath(target.path);
+    const parentPath = getCreateParentPath(entry);
+    assertCanCreateUnderTreePath({ sliceId, currentSlice, parentPath });
     const name = promptForTreeName('New file name');
     if (name === null) {
       return null;
@@ -216,11 +240,11 @@ export function useRepoBrowserTreeActions({
     });
     await refreshTreeAfterMerge({ directoryPath: parentPath });
     return `Created ${actionMessageName(filePath)}.`;
-  }, [createAndMergeChangeset, fetchEntriesForAction, focusedEntry, refreshTreeAfterMerge]);
+  }, [createAndMergeChangeset, currentSlice, fetchEntriesForAction, getCreateParentPath, refreshTreeAfterMerge, sliceId]);
 
   const createFolder = useCallback(async (entry) => {
-    const target = entry ? { path: normalizeWorkspaceResultPath(entry.path), type: normalizeEntryType(entry.type) } : getDefaultTreeActionTarget(focusedEntry);
-    const parentPath = target.type === 'directory' ? target.path : getTreeEntryParentPath(target.path);
+    const parentPath = getCreateParentPath(entry);
+    assertCanCreateUnderTreePath({ sliceId, currentSlice, parentPath });
     const name = promptForTreeName('New folder name');
     if (name === null) {
       return null;
@@ -241,7 +265,7 @@ export function useRepoBrowserTreeActions({
     });
     await refreshTreeAfterMerge({ directoryPath: folderPath, clearSelection: true });
     return `Created ${actionMessageName(folderPath)}.`;
-  }, [createAndMergeChangeset, fetchEntriesForAction, focusedEntry, refreshTreeAfterMerge]);
+  }, [createAndMergeChangeset, currentSlice, fetchEntriesForAction, getCreateParentPath, refreshTreeAfterMerge, sliceId]);
 
   const deleteEntry = useCallback(async (entry) => {
     const entryKind = normalizeEntryType(entry?.type);
@@ -287,6 +311,11 @@ export function useRepoBrowserTreeActions({
     }
     const parentPath = getTreeEntryParentPath(entryPath);
     const newPath = joinTreePath(parentPath, newName);
+    assertTreeMutationPathsAllowed({
+      sliceId,
+      currentSlice,
+      paths: [newPath],
+    });
     const existingEntries = await fetchEntriesForAction(parentPath);
     if (pathExistsInEntries(existingEntries, newPath)) {
       throw new Error(`"${newName}" already exists in this folder.`);
@@ -340,9 +369,11 @@ export function useRepoBrowserTreeActions({
   }, [
     collectDirectoryFiles,
     createAndMergeChangeset,
+    currentSlice,
     fetchEntriesForAction,
     fetchFileForAction,
     refreshTreeAfterMerge,
+    sliceId,
   ]);
 
   const handleTreeAction = useCallback(async (action, entry = null) => {
@@ -403,6 +434,7 @@ export function useRepoBrowserTreeActions({
   ]);
 
   return {
+    getCreateTreeEntryBlockedReason,
     handleTreeAction,
     treeActionState,
   };

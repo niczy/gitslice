@@ -5,6 +5,8 @@ import {
   encodeTreeTextContent,
   filterVisibleTreeEntries,
   getDirectoryMarkerPath,
+  getSliceWriteRoots,
+  getTreeCreateBlockedReason,
   isSuccessfulMergeResponse,
   joinTreePath,
   normalizeChangesetId,
@@ -59,4 +61,47 @@ test('changeset and merge helpers normalize gateway payloads', () => {
 
 test('encodeTreeTextContent encodes UTF-8 content as base64', () => {
   assert.equal(encodeTreeTextContent('I\u2019m here'), 'SeKAmW0gaGVyZQ==');
+});
+
+test('tree create scope blocks home slice root creates', () => {
+  assert.equal(
+    getTreeCreateBlockedReason({
+      sliceId: 'home_nicholas',
+      currentSlice: { slice_id: 'home_nicholas' },
+      parentPath: '',
+    }),
+    'Open a folder in the home slice before creating files or folders.',
+  );
+  assert.equal(
+    getTreeCreateBlockedReason({
+      sliceId: 'home_nicholas',
+      currentSlice: { slice_id: 'home_nicholas' },
+      parentPath: 'nicholas/workspace',
+    }),
+    '',
+  );
+});
+
+test('tree create scope restricts custom slices to tracked folders', () => {
+  const currentSlice = {
+    slice_id: 'slice_docs',
+    folder_mounts: [{ source_path: 'nicholas/docs', alias: 'docs' }],
+  };
+  assert.deepEqual(getSliceWriteRoots({ sliceId: 'slice_docs', currentSlice }), ['docs', 'nicholas/docs']);
+  assert.equal(
+    getTreeCreateBlockedReason({ sliceId: 'slice_docs', currentSlice, parentPath: '' }),
+    'Open a tracked folder before creating files or folders in this slice.',
+  );
+  assert.equal(
+    getTreeCreateBlockedReason({ sliceId: 'slice_docs', currentSlice, parentPath: 'nicholas' }),
+    'Create files and folders inside one of this slice\'s tracked folders.',
+  );
+  assert.equal(
+    getTreeCreateBlockedReason({ sliceId: 'slice_docs', currentSlice, parentPath: 'nicholas/docs' }),
+    '',
+  );
+  assert.equal(
+    getTreeCreateBlockedReason({ sliceId: 'slice_docs', currentSlice, parentPath: 'docs' }),
+    '',
+  );
 });

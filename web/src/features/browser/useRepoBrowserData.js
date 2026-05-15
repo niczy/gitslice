@@ -28,6 +28,7 @@ export function useRepoBrowserData({
   buildRoutePath,
   canLoad,
   closeSidebar,
+  currentSlice,
   currentSliceDisplayName,
   currentSliceLabel,
   hasInitialSelectedFilePayload,
@@ -321,12 +322,13 @@ export function useRepoBrowserData({
     writeBrowserState,
   });
 
-  const { handleTreeAction, treeActionState } = useRepoBrowserTreeActions({
+  const { getCreateTreeEntryBlockedReason, handleTreeAction, treeActionState } = useRepoBrowserTreeActions({
     apiBaseUrl,
     buildEntriesUrl,
     buildFileUrl,
     canLoad,
     clearFilePreview,
+    currentSlice,
     focusedEntry,
     openFilesView,
     setError,
@@ -400,6 +402,7 @@ export function useRepoBrowserData({
     handleBreadcrumbClick,
     handleContentEntryClick,
     handleEntryClick,
+    getCreateTreeEntryBlockedReason,
     handleTreeAction,
     hasLoadedRootEntries,
     hasPreviewContent,

@@ -30,6 +30,7 @@ import { Button } from '../ui/button.jsx';
 
 function TreeActionMenu({
   busy,
+  createDisabledReason = '',
   entry,
   isOpen,
   onAction,
@@ -39,6 +40,7 @@ function TreeActionMenu({
   const entryKind = normalizeEntryType(entry?.type);
   const canCreate = showCreateActions || entryKind === 'directory';
   const menuLabel = entry?.path ? `Actions for ${getEntryDisplayPath(entry)}` : 'File tree actions';
+  const createDisabled = Boolean(createDisabledReason);
 
   const handleActionClick = (event, action) => {
     event.stopPropagation();
@@ -69,11 +71,25 @@ function TreeActionMenu({
         <div className="tree-action-menu" role="menu" onClick={(event) => event.stopPropagation()}>
           {canCreate && (
             <>
-              <button type="button" role="menuitem" className="tree-action-item" onClick={(event) => handleActionClick(event, 'create-file')}>
+              <button
+                type="button"
+                role="menuitem"
+                className="tree-action-item"
+                disabled={createDisabled}
+                title={createDisabledReason || 'New file'}
+                onClick={(event) => handleActionClick(event, 'create-file')}
+              >
                 <FilePlus size={14} aria-hidden="true" />
                 <span>New file</span>
               </button>
-              <button type="button" role="menuitem" className="tree-action-item" onClick={(event) => handleActionClick(event, 'create-folder')}>
+              <button
+                type="button"
+                role="menuitem"
+                className="tree-action-item"
+                disabled={createDisabled}
+                title={createDisabledReason || 'New folder'}
+                onClick={(event) => handleActionClick(event, 'create-folder')}
+              >
                 <FolderPlus size={14} aria-hidden="true" />
                 <span>New folder</span>
               </button>
@@ -103,6 +119,7 @@ function RepoBrowserTree({
   depth = 0,
   expandedPaths,
   focusedEntry,
+  getCreateTreeEntryBlockedReason = () => '',
   onEntryClick,
   onTreeAction,
   onToggleActionMenu,
@@ -143,6 +160,7 @@ function RepoBrowserTree({
               </Button>
               <TreeActionMenu
                 busy={busy}
+                createDisabledReason={getCreateTreeEntryBlockedReason(entry)}
                 entry={entry}
                 isOpen={actionMenuOpenKey === menuKey}
                 onAction={onTreeAction}
@@ -157,6 +175,7 @@ function RepoBrowserTree({
                 depth={depth + 1}
                 expandedPaths={expandedPaths}
                 focusedEntry={focusedEntry}
+                getCreateTreeEntryBlockedReason={getCreateTreeEntryBlockedReason}
                 onEntryClick={onEntryClick}
                 onTreeAction={onTreeAction}
                 onToggleActionMenu={onToggleActionMenu}
@@ -178,6 +197,7 @@ export default function RepoBrowserSidebar({
   currentSliceLabel,
   expandedPaths,
   focusedEntry,
+  getCreateTreeEntryBlockedReason = () => '',
   handleSidebarResizeKeyDown,
   hasLoadedRootEntries,
   isLoading,
@@ -239,6 +259,7 @@ export default function RepoBrowserSidebar({
                 </span>
                 <TreeActionMenu
                   busy={actionBusy}
+                  createDisabledReason={getCreateTreeEntryBlockedReason(null)}
                   entry={null}
                   isOpen={actionMenuOpenKey === 'tree-root'}
                   onAction={onTreeAction}
@@ -285,6 +306,7 @@ export default function RepoBrowserSidebar({
                 busy={actionBusy}
                 expandedPaths={expandedPaths}
                 focusedEntry={focusedEntry}
+                getCreateTreeEntryBlockedReason={getCreateTreeEntryBlockedReason}
                 onEntryClick={onEntryClick}
                 onTreeAction={onTreeAction}
                 onToggleActionMenu={setActionMenuOpenKey}

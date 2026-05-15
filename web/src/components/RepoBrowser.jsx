@@ -128,6 +128,7 @@ export default function RepoBrowser({
     fileError,
     fileHistory,
     focusedEntry,
+    getCreateTreeEntryBlockedReason,
     handleBreadcrumbClick,
     handleContentEntryClick,
     handleEntryClick,
@@ -164,6 +165,7 @@ export default function RepoBrowser({
     buildRoutePath,
     canLoad,
     closeSidebar,
+    currentSlice,
     currentSliceDisplayName,
     currentSliceLabel,
     hasInitialSelectedFilePayload,
@@ -262,6 +264,7 @@ export default function RepoBrowser({
             isLoading={isLoading}
             isSidebarDismissing={isSidebarDismissing}
             onCloseSidebar={closeSidebar}
+            getCreateTreeEntryBlockedReason={getCreateTreeEntryBlockedReason}
             onEntryClick={handleEntryClick}
             onTreeAction={handleTreeAction}
             onOpenFilesView={openFilesView}
