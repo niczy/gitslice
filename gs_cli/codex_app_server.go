@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -128,17 +129,10 @@ func newCodexAppServerRunner(ctx context.Context, cli *CLI, cfg localAgentRunCon
 		return nil, r.withStderr("notify codex app-server initialized", err)
 	}
 
-	threadParams := map[string]any{
-		"experimentalRawEvents":  false,
-		"persistExtendedHistory": false,
-	}
-	if cwd := strings.TrimSpace(cfg.CWD); cwd != "" {
-		abs, err := filepath.Abs(cwd)
-		if err != nil {
-			_ = r.Close()
-			return nil, err
-		}
-		threadParams["cwd"] = abs
+	threadParams, err := codexThreadStartParams(cfg.CWD)
+	if err != nil {
+		_ = r.Close()
+		return nil, err
 	}
 	result, err := r.call(initCtx, "thread/start", threadParams)
 	if err != nil {
@@ -183,16 +177,11 @@ func (r *codexAppServerRunner) RunTurn(ctx context.Context, prompt string) error
 	if threadID == "" {
 		return errors.New("codex thread is not initialized")
 	}
-	result, err := r.call(ctx, "turn/start", map[string]any{
-		"threadId": threadID,
-		"input": []map[string]any{
-			{
-				"type":          "text",
-				"text":          prompt,
-				"text_elements": []any{},
-			},
-		},
-	})
+	turnParams, err := codexTurnStartParams(threadID, prompt, r.cfg.CWD)
+	if err != nil {
+		return err
+	}
+	result, err := r.call(ctx, "turn/start", turnParams)
 	if err != nil {
 		return err
 	}
@@ -306,16 +295,31 @@ func (r *codexAppServerRunner) handleNotification(ctx context.Context, turnID, f
 		}
 	case "item/started":
 		r.appendToolLifecycleEvent(ctx, turnID, "start", msg.Params)
+	case "command/exec/outputDelta":
+		r.appendProcessOutputDelta(ctx, "command_exec_output", msg.Params)
+	case "process/outputDelta":
+		r.appendProcessOutputDelta(ctx, "process_output", msg.Params)
+	case "process/exited":
+		_ = appendAgentJSONEvent(ctx, r.cli, r.cfg.SessionID, "tool", "end", json.RawMessage(msg.Params))
+	case "item/commandExecution/terminalInteraction":
+		_ = appendAgentJSONEvent(ctx, r.cli, r.cfg.SessionID, "tool", "output", map[string]any{
+			"eventType": "terminal_interaction",
+			"payload":   json.RawMessage(msg.Params),
+		})
 	case "item/fileChange/requestApproval":
 		if err := r.respondToServerRequest(ctx, msg, map[string]any{"decision": "accept"}); err != nil {
 			return false, finalText, 0, err
 		}
 	case "item/commandExecution/requestApproval":
-		if err := r.respondToServerRequest(ctx, msg, map[string]any{"decision": "accept"}); err != nil {
+		if err := r.respondToServerRequest(ctx, msg, map[string]any{"decision": "acceptForSession"}); err != nil {
+			return false, finalText, 0, err
+		}
+	case "item/permissions/requestApproval":
+		if err := r.respondToServerRequest(ctx, msg, codexPermissionApprovalResult(r.cfg.CWD)); err != nil {
 			return false, finalText, 0, err
 		}
 	case "applyPatchApproval", "execCommandApproval":
-		if err := r.respondToServerRequest(ctx, msg, map[string]any{"decision": "approved"}); err != nil {
+		if err := r.respondToServerRequest(ctx, msg, map[string]any{"decision": "approved_for_session"}); err != nil {
 			return false, finalText, 0, err
 		}
 	case "item/completed":
@@ -366,6 +370,78 @@ func (r *codexAppServerRunner) handleNotification(ctx context.Context, turnID, f
 	return false, finalText, 0, nil
 }
 
+func codexThreadStartParams(cwd string) (map[string]any, error) {
+	params := map[string]any{
+		"experimentalRawEvents":  false,
+		"persistExtendedHistory": false,
+		"approvalPolicy":         "never",
+		"sandbox":                "danger-full-access",
+	}
+	if cwd := strings.TrimSpace(cwd); cwd != "" {
+		abs, err := filepath.Abs(cwd)
+		if err != nil {
+			return nil, err
+		}
+		params["cwd"] = abs
+	}
+	return params, nil
+}
+
+func codexTurnStartParams(threadID, prompt, cwd string) (map[string]any, error) {
+	params := map[string]any{
+		"threadId":       threadID,
+		"approvalPolicy": "never",
+		"sandboxPolicy":  codexDangerFullAccessSandboxPolicy(),
+		"input": []map[string]any{
+			{
+				"type":          "text",
+				"text":          prompt,
+				"text_elements": []any{},
+			},
+		},
+	}
+	if cwd := strings.TrimSpace(cwd); cwd != "" {
+		abs, err := filepath.Abs(cwd)
+		if err != nil {
+			return nil, err
+		}
+		params["cwd"] = abs
+	}
+	return params, nil
+}
+
+func codexDangerFullAccessSandboxPolicy() map[string]any {
+	return map[string]any{"type": "dangerFullAccess"}
+}
+
+func codexPermissionApprovalResult(cwd string) map[string]any {
+	permissions := map[string]any{
+		"network": map[string]any{"enabled": true},
+	}
+	if cwd = strings.TrimSpace(cwd); cwd != "" {
+		if abs, err := filepath.Abs(cwd); err == nil && strings.TrimSpace(abs) != "" {
+			permissions["fileSystem"] = map[string]any{
+				"read":  []string{abs},
+				"write": []string{abs},
+				"entries": []map[string]any{
+					{
+						"path": map[string]any{
+							"type": "path",
+							"path": abs,
+						},
+						"access": "write",
+					},
+				},
+			}
+		}
+	}
+	return map[string]any{
+		"permissions":      permissions,
+		"scope":            "session",
+		"strictAutoReview": false,
+	}
+}
+
 func (r *codexAppServerRunner) respondToServerRequest(ctx context.Context, msg codexRPCMessage, result any) error {
 	if codexMessageID(msg.ID) == "" {
 		return nil
@@ -404,6 +480,35 @@ func codexReasoningDelta(payload json.RawMessage, expectedTurnID string) (string
 		return "", "", ""
 	}
 	return params.Delta, params.TurnID, params.ItemID
+}
+
+func (r *codexAppServerRunner) appendProcessOutputDelta(ctx context.Context, eventType string, payload json.RawMessage) {
+	var params struct {
+		ProcessID     string `json:"processId"`
+		ProcessHandle string `json:"processHandle"`
+		Stream        string `json:"stream"`
+		DeltaBase64   string `json:"deltaBase64"`
+		CapReached    bool   `json:"capReached"`
+	}
+	if json.Unmarshal(payload, &params) != nil || params.DeltaBase64 == "" {
+		return
+	}
+	text := ""
+	encoding := "base64"
+	if decoded, err := base64.StdEncoding.DecodeString(params.DeltaBase64); err == nil {
+		text = string(decoded)
+		encoding = "utf-8"
+	}
+	_ = appendAgentJSONEvent(ctx, r.cli, r.cfg.SessionID, "tool", "output", map[string]any{
+		"eventType":     eventType,
+		"processId":     params.ProcessID,
+		"processHandle": params.ProcessHandle,
+		"stream":        params.Stream,
+		"text":          text,
+		"encoding":      encoding,
+		"deltaBase64":   params.DeltaBase64,
+		"capReached":    params.CapReached,
+	})
 }
 
 func (r *codexAppServerRunner) appendToolLifecycleEvent(ctx context.Context, turnID, eventType string, payload json.RawMessage) {
