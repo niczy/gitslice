@@ -1408,6 +1408,36 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 	}, nil
 }
 
+func (s *sliceServiceServer) CreateAndMergeChangeset(ctx context.Context, req *slicev1.CreateChangesetRequest) (*slicev1.MergeChangesetResponse, error) {
+	log.Printf("CreateAndMergeChangeset called: slice_id=%s", req.GetSliceId())
+
+	username, err := s.requireUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(req.GetChangesetId()) != "" {
+		return nil, status.Error(codes.InvalidArgument, "changeset_id is not supported for direct file-tree commits")
+	}
+	hasFileContentChange := false
+	for _, change := range req.GetFileContents() {
+		if change != nil {
+			hasFileContentChange = true
+			break
+		}
+	}
+	if !hasFileContentChange {
+		return nil, status.Error(codes.InvalidArgument, "file_contents is required for direct file-tree commits")
+	}
+
+	createResp, err := s.CreateChangeset(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return s.mergeChangeset(ctx, createResp.GetChangesetId(), username, false, mergeChangesetOptions{
+		skipGate: true,
+	})
+}
+
 func (s *sliceServiceServer) ReviewChangeset(ctx context.Context, req *slicev1.ReviewChangesetRequest) (*slicev1.ReviewChangesetResponse, error) {
 	log.Printf("ReviewChangeset called: changeset_id=%s", req.ChangesetId)
 
@@ -1649,6 +1679,7 @@ type mergeChangesetOptions struct {
 	force       bool
 	forceReason string
 	gate        *ciservice.MergeGateResult
+	skipGate    bool
 }
 
 func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, username string, useCurrentHead bool, opts mergeChangesetOptions) (_ *slicev1.MergeChangesetResponse, retErr error) {
@@ -1672,7 +1703,7 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		profile.logResult(retErr)
 	}()
 
-	if !useCurrentHead {
+	if !useCurrentHead && !opts.skipGate {
 		gate, err := ciservice.EnforceChangesetMergeGate(ctx, s.storage, ciservice.MergeGateRequest{
 			ChangesetID:       cs.ID,
 			TriggeredByUserID: username,

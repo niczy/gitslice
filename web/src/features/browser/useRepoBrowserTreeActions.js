@@ -1,9 +1,8 @@
 import { useCallback, useState } from 'react';
 
 import {
-  createChangeset,
+  createAndMergeChangeset as commitFileTreeChangeset,
   fetchWithAuth,
-  mergeChangeset,
 } from '../../utils/api.js';
 import { normalizeEntryType } from '../../utils/normalize.js';
 import {
@@ -28,7 +27,6 @@ import {
   isSuccessfulMergeResponse,
   joinTreePath,
   mergeResponseErrorMessage,
-  normalizeChangesetId,
   normalizeTreeOperationName,
   pathExistsInEntries,
   remapChildPathForRename,
@@ -200,18 +198,13 @@ export function useRepoBrowserTreeActions({
       currentSlice,
       paths: modifiedFiles,
     });
-    const createResponse = await createChangeset({
+    const mergeResponse = await commitFileTreeChangeset({
       sliceId,
       baseCommitHash: sliceHash,
       modifiedFiles: uniquePaths(modifiedFiles),
       message,
       fileContents,
     });
-    const changesetId = normalizeChangesetId(createResponse);
-    if (!changesetId) {
-      throw new Error('Changeset was created without an id.');
-    }
-    const mergeResponse = await mergeChangeset(changesetId);
     if (!isSuccessfulMergeResponse(mergeResponse)) {
       throw new Error(mergeResponseErrorMessage(mergeResponse));
     }

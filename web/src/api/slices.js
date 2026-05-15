@@ -173,6 +173,30 @@ export async function createChangeset({
   return response.json();
 }
 
+export async function createAndMergeChangeset({
+  sliceId,
+  baseCommitHash = '',
+  modifiedFiles = [],
+  message = '',
+  fileContents = [],
+} = {}) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/changesets:createAndMerge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sliceId,
+      baseCommitHash,
+      modifiedFiles,
+      message,
+      fileContents,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to commit file tree change'));
+  }
+  return response.json();
+}
+
 export async function listSliceCommits(sliceId, { limit = 100, fromCommitHash = '' } = {}) {
   const query = new URLSearchParams();
   if (typeof limit === 'number' && limit > 0) {

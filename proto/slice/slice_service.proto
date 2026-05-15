@@ -20,6 +20,14 @@ service SliceService {
     };
   }
 
+  // Create and immediately commit a direct file-tree edit.
+  rpc CreateAndMergeChangeset(CreateChangesetRequest) returns (MergeChangesetResponse) {
+    option (google.api.http) = {
+      post: "/v1/changesets:createAndMerge"
+      body: "*"
+    };
+  }
+
   // Review a change list (check against slice head)
   rpc ReviewChangeset(ReviewChangesetRequest) returns (ReviewChangesetResponse) {
     option (google.api.http) = {
