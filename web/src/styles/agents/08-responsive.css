@@ -112,6 +112,7 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    overflow: hidden;
   }
 
   .slice-agents-conversation-shell.has-local-changes {
@@ -142,6 +143,19 @@
     width: min(340px, calc(100% - 12px));
     height: auto;
     max-height: none;
+  }
+
+  .slice-agents-conversation-shell.has-local-changes .slice-agents-local-changes-panel {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 8;
+    grid-column: auto;
+    grid-row: auto;
+    width: min(340px, calc(100% - 12px));
+    height: auto;
+    transform: translate3d(0, 0, 0);
   }
 
   .slice-agents-local-changes {
