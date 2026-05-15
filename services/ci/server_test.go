@@ -129,6 +129,114 @@ jobs:
 	}
 }
 
+func TestChangesetExportUsesCustomSliceOwnerForCIHome(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	if _, err := st.EnsureUser(context.Background(), "alice"); err != nil {
+		t.Fatalf("EnsureUser failed: %v", err)
+	}
+	homeSliceID := homeslice.IDForUsername("alice")
+	homeSlice := &models.Slice{
+		ID:        homeSliceID,
+		Name:      "alice",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := st.CreateSlice(context.Background(), homeSlice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	customSlice := &models.Slice{
+		ID:          "sl_custom_ci",
+		Name:        "api",
+		Owners:      []string{"alice"},
+		CreatedBy:   "alice",
+		ParentSlice: homeSliceID,
+		Files:       []string{"alice/api/.gs-ci.yaml", "alice/api/main.go"},
+		FolderMounts: []models.SliceFolderMount{{
+			SourcePath: "alice/api",
+			Alias:      "api",
+		}},
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := st.CreateSlice(context.Background(), customSlice); err != nil {
+		t.Fatalf("CreateSlice custom failed: %v", err)
+	}
+	platformYAML := []byte(`
+version: 1
+triggers:
+  changeset_export: true
+defaults:
+  runner_pool: default
+  shell: bash
+runner_pools:
+  default:
+    executor: shell
+`)
+	folderYAML := []byte(`
+version: 1
+name: api
+watch:
+  - "**/*.go"
+jobs:
+  unit:
+    required: true
+    commands:
+      - go test ./...
+`)
+	mainContent := []byte("package main\n")
+	writeCIFile(t, st, homeSliceID, "alice/.gitslice/ci.yaml", platformYAML)
+	writeCIFile(t, st, homeSliceID, "alice/api/.gs-ci.yaml", folderYAML)
+	mainManifest := writeCIFile(t, st, homeSliceID, "alice/api/main.go", mainContent)
+	writeCIFile(t, st, customSlice.ID, "alice/api/.gs-ci.yaml", folderYAML)
+	writeCIFile(t, st, customSlice.ID, "alice/api/main.go", mainContent)
+
+	cs := &models.Changeset{
+		ID:             "chg_custom_ci",
+		Hash:           common.GenerateChangesetVersionHash(),
+		SliceID:        customSlice.ID,
+		BaseCommitHash: "base-custom",
+		ModifiedFiles:  []string{"api/main.go"},
+		Status:         models.ChangesetStatusPending,
+		Author:         "alice",
+		CreatedAt:      time.Now(),
+	}
+	if err := st.CreateChangeset(context.Background(), cs); err != nil {
+		t.Fatalf("CreateChangeset failed: %v", err)
+	}
+	snapshot := &models.ChangesetSnapshot{
+		ID:             common.GenerateChangesetSnapshotID(cs.ID, 1),
+		ChangesetID:    cs.ID,
+		Version:        1,
+		Hash:           cs.Hash,
+		BaseCommitHash: cs.BaseCommitHash,
+		ModifiedFiles:  []string{"api/main.go"},
+		FileHashes:     map[string]string{"alice/api/main.go": mainManifest.Hash},
+		Author:         "alice",
+		CreatedAt:      time.Now(),
+	}
+	if err := st.CreateChangesetSnapshot(context.Background(), snapshot); err != nil {
+		t.Fatalf("CreateChangesetSnapshot failed: %v", err)
+	}
+
+	resp, enabled, err := EnqueueChangesetExportRun(ctx, st, cs.ID, "alice")
+	if err != nil {
+		t.Fatalf("EnqueueChangesetExportRun failed: %v", err)
+	}
+	if !enabled || resp.GetRunId() == "" || resp.GetStatus() != "queued" {
+		t.Fatalf("CI enqueue = enabled %t resp %#v, want queued run", enabled, resp)
+	}
+	checks, err := (&server{st: st}).ListChecks(ctx, &civ1.ListChecksRequest{ChangesetId: cs.ID, ChangesetVersionId: snapshot.ID})
+	if err != nil {
+		t.Fatalf("ListChecks failed: %v", err)
+	}
+	if len(checks.GetChecks()) != 1 || checks.GetChecks()[0].GetCheckName() != "api/unit" {
+		t.Fatalf("checks = %#v, want api/unit", checks.GetChecks())
+	}
+}
+
 func TestListChecksRequiresChangeset(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
 	st := storage.NewInMemoryStorage()

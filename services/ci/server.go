@@ -1695,6 +1695,16 @@ func resolveCIHomeID(sourceSlice *models.Slice, cs *models.Changeset, modifiedFi
 		if username := homeslice.UsernameFromSliceID(sourceSlice.ID); username != "" {
 			return username
 		}
+		if !sourceSlice.IsRoot {
+			if createdBy := strings.TrimSpace(sourceSlice.CreatedBy); createdBy != "" {
+				return createdBy
+			}
+			for _, owner := range sourceSlice.Owners {
+				if owner = strings.TrimSpace(owner); owner != "" {
+					return owner
+				}
+			}
+		}
 	}
 	if homeRoot := commonHomeRootFromFiles(modifiedFiles); homeRoot != "" {
 		return homeRoot
