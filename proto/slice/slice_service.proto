@@ -228,6 +228,51 @@ service SliceService {
     };
   }
 
+  // Read the tracked environment materialization requirements for a slice.
+  rpc GetSliceEnvRequirements(GetSliceEnvRequirementsRequest) returns (GetSliceEnvRequirementsResponse) {
+    option (google.api.http) = {
+      get: "/v1/slices/{slice_id}/env/requirements"
+    };
+  }
+
+  // List server-side environment key/value metadata for a slice profile.
+  rpc ListSliceEnvKV(ListSliceEnvKVRequest) returns (ListSliceEnvKVResponse) {
+    option (google.api.http) = {
+      get: "/v1/slices/{slice_id}/env/kv"
+    };
+  }
+
+  // Set a readable non-secret environment value.
+  rpc SetSliceEnvValue(SetSliceEnvValueRequest) returns (SetSliceEnvValueResponse) {
+    option (google.api.http) = {
+      post: "/v1/slices/{slice_id}/env/kv/values/{key}"
+      body: "*"
+    };
+  }
+
+  // Set a write-only secret environment value.
+  rpc SetSliceEnvSecret(SetSliceEnvSecretRequest) returns (SetSliceEnvSecretResponse) {
+    option (google.api.http) = {
+      post: "/v1/slices/{slice_id}/env/kv/secrets/{key}"
+      body: "*"
+    };
+  }
+
+  // Delete one environment KV entry.
+  rpc DeleteSliceEnvKV(DeleteSliceEnvKVRequest) returns (DeleteSliceEnvKVResponse) {
+    option (google.api.http) = {
+      delete: "/v1/slices/{slice_id}/env/kv/{class}/{key}"
+    };
+  }
+
+  // Render declared materialized files using server-side KV values.
+  rpc RenderSliceEnvMaterialization(RenderSliceEnvMaterializationRequest) returns (RenderSliceEnvMaterializationResponse) {
+    option (google.api.http) = {
+      post: "/v1/slices/{slice_id}/env:materialize"
+      body: "*"
+    };
+  }
+
   // Stream checkout for large slices (server streaming)
   rpc StreamCheckoutSlice(CheckoutRequest) returns (stream CheckoutChunk);
 
@@ -903,4 +948,148 @@ message RemoveSliceFolderResponse {
 message FolderMount {
   string source_path = 1;
   string alias = 2;
+}
+
+message GetSliceEnvRequirementsRequest {
+  string slice_id = 1;
+}
+
+message GetSliceEnvRequirementsResponse {
+  string slice_id = 1;
+  string home_id = 2;
+  string slice_slug = 3;
+  string requirements_path = 4;
+  string requirements_hash = 5;
+  bool found = 6;
+  SliceEnvRequirements requirements = 7;
+  repeated SliceEnvIssue issues = 8;
+}
+
+message SliceEnvRequirements {
+  int32 version = 1;
+  repeated string profiles = 2;
+  repeated string ignored_paths = 3;
+  repeated SliceEnvMaterializedFile files = 4;
+}
+
+message SliceEnvMaterializedFile {
+  string path = 1;
+  string mode = 2;
+  bool sensitive = 3;
+  repeated string required_secrets = 4;
+  repeated string optional_secrets = 5;
+  repeated string required_values = 6;
+  repeated string optional_values = 7;
+  string profile = 8;
+}
+
+message SliceEnvIssue {
+  string code = 1;
+  string path = 2;
+  string message = 3;
+}
+
+message ListSliceEnvKVRequest {
+  string slice_id = 1;
+  string profile = 2;
+}
+
+message ListSliceEnvKVResponse {
+  repeated SliceEnvKVEntry entries = 1;
+}
+
+message SliceEnvKVEntry {
+  string id = 1;
+  string home_id = 2;
+  string slice_id = 3;
+  string slice_slug = 4;
+  string profile = 5;
+  string key = 6;
+  string class = 7;
+  string value = 8;
+  string value_hash = 9;
+  int64 version = 10;
+  string created_by = 11;
+  string updated_by = 12;
+  int64 created_at = 13;
+  int64 updated_at = 14;
+  bool has_value = 15;
+}
+
+message SetSliceEnvValueRequest {
+  string slice_id = 1;
+  string profile = 2;
+  string key = 3;
+  string value = 4;
+}
+
+message SetSliceEnvValueResponse {
+  SliceEnvKVEntry entry = 1;
+}
+
+message SetSliceEnvSecretRequest {
+  string slice_id = 1;
+  string profile = 2;
+  string key = 3;
+  string value = 4;
+}
+
+message SetSliceEnvSecretResponse {
+  SliceEnvKVEntry entry = 1;
+}
+
+message DeleteSliceEnvKVRequest {
+  string slice_id = 1;
+  string profile = 2;
+  string class = 3;
+  string key = 4;
+}
+
+message DeleteSliceEnvKVResponse {
+  bool deleted = 1;
+}
+
+message RenderSliceEnvMaterializationRequest {
+  string slice_id = 1;
+  string profile = 2;
+  bool strict = 3;
+  string commit_hash = 4;
+}
+
+message RenderSliceEnvMaterializationResponse {
+  string slice_id = 1;
+  string home_id = 2;
+  string slice_slug = 3;
+  string profile = 4;
+  string requirements_path = 5;
+  string requirements_hash = 6;
+  bool found = 7;
+  repeated RenderedSliceEnvFile files = 8;
+  repeated SliceEnvMissingKV missing_entries = 9;
+  repeated SliceEnvKVReference resolved_refs = 10;
+  repeated string ignored_paths = 11;
+  repeated SliceEnvIssue issues = 12;
+}
+
+message RenderedSliceEnvFile {
+  string path = 1;
+  string mode = 2;
+  bool sensitive = 3;
+  bytes content = 4;
+  repeated string secret_keys = 5;
+  repeated string value_keys = 6;
+}
+
+message SliceEnvMissingKV {
+  string class = 1;
+  string key = 2;
+  string profile = 3;
+}
+
+message SliceEnvKVReference {
+  string class = 1;
+  string key = 2;
+  string profile = 3;
+  int64 version = 5;
+  string value_hash = 6;
 }

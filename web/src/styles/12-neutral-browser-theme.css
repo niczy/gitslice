@@ -1146,7 +1146,7 @@
 
 .app-shell--browser .slice-settings-modal {
   position: relative;
-  width: min(560px, 100%);
+  width: min(760px, 100%);
   max-height: calc(100dvh - 48px);
   display: grid;
   overflow: hidden;

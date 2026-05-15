@@ -348,6 +348,10 @@ type Storage interface {
 	ListEnvironments(ctx context.Context, limit, offset int) ([]*models.Environment, error)
 	UpdateEnvironment(ctx context.Context, env *models.Environment) error
 	DeleteEnvironment(ctx context.Context, name string) error
+	UpsertEnvironmentKV(ctx context.Context, entry *models.EnvironmentKVEntry) (*models.EnvironmentKVEntry, error)
+	ListEnvironmentKV(ctx context.Context, filter models.EnvironmentKVFilter) ([]*models.EnvironmentKVEntry, error)
+	DeleteEnvironmentKV(ctx context.Context, filter models.EnvironmentKVFilter) error
+	ResolveEnvironmentKV(ctx context.Context, homeID, sliceID, profile string, class models.EnvironmentKVClass, key string) (*models.EnvironmentKVEntry, error)
 
 	// Agent runners
 	UpsertAgentRunner(ctx context.Context, runner *models.AgentRunner) error

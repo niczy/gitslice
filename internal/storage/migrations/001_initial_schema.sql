@@ -364,6 +364,25 @@ CREATE TABLE environments (
     provider_config_json jsonb DEFAULT '{}'::jsonb NOT NULL
 );
 
+CREATE TABLE environment_kv_entries (
+    id text NOT NULL,
+    home_id text NOT NULL,
+    slice_id text DEFAULT ''::text NOT NULL,
+    slice_slug text DEFAULT ''::text NOT NULL,
+    profile text DEFAULT 'default'::text NOT NULL,
+    key text NOT NULL,
+    class text NOT NULL,
+    encrypted_value bytea NOT NULL,
+    value_hash text DEFAULT ''::text NOT NULL,
+    version bigint DEFAULT 1 NOT NULL,
+    created_by text DEFAULT ''::text NOT NULL,
+    updated_by text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    deleted_at timestamp with time zone,
+    CONSTRAINT environment_kv_entries_class_check CHECK ((class = ANY (ARRAY['secret'::text, 'value'::text])))
+);
+
 CREATE TABLE file_changes (
     id text NOT NULL,
     slice_id text NOT NULL,
@@ -696,6 +715,9 @@ ALTER TABLE ONLY directory_entries
 ALTER TABLE ONLY environments
     ADD CONSTRAINT environments_pkey PRIMARY KEY (name);
 
+ALTER TABLE ONLY environment_kv_entries
+    ADD CONSTRAINT environment_kv_entries_pkey PRIMARY KEY (id);
+
 ALTER TABLE ONLY file_changes
     ADD CONSTRAINT file_changes_pkey PRIMARY KEY (id);
 
@@ -868,6 +890,10 @@ CREATE UNIQUE INDEX idx_directory_entries_slice_path ON directory_entries USING 
 CREATE INDEX idx_directory_entries_slice_path_pattern ON directory_entries USING btree (slice_id, path text_pattern_ops);
 
 CREATE INDEX idx_environments_provider ON environments USING btree (provider);
+
+CREATE UNIQUE INDEX idx_environment_kv_entries_active_key ON environment_kv_entries USING btree (home_id, slice_id, profile, key, class) WHERE (deleted_at IS NULL);
+
+CREATE INDEX idx_environment_kv_entries_scope ON environment_kv_entries USING btree (home_id, slice_id, profile) WHERE (deleted_at IS NULL);
 
 CREATE INDEX idx_file_changes_commit ON file_changes USING btree (commit_hash);
 

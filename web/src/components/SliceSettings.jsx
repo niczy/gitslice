@@ -6,6 +6,7 @@ import {
   removeSliceFolder,
 } from '../utils/api.js';
 import { SliceVisibilityCard } from './settings/SliceVisibilityCard.jsx';
+import { SliceEnvKVCard } from './settings/SliceEnvKVCard.jsx';
 import { TrackedFoldersCard } from './settings/TrackedFoldersCard.jsx';
 import {
   normalizePathPropagationMode,
@@ -177,6 +178,8 @@ export default function SliceSettings({ sliceId, sliceName, folderMounts, onFold
           onNewFolderPathChange={setNewFolderPath}
           onRemoveFolder={removeFolder}
         />
+
+        <SliceEnvKVCard sliceId={sliceId} />
       </div>
     </div>
   );

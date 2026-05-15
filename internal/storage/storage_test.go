@@ -88,6 +88,93 @@ func TestCIManifestIndexStoreCompliance(t *testing.T) {
 	}
 }
 
+func TestEnvironmentKVStoreCompliance(t *testing.T) {
+	ctx := context.Background()
+
+	for _, tc := range storageTestCases(ctx) {
+		t.Run(tc.name, func(t *testing.T) {
+			st := tc.factory(t)
+			valueEntry, err := st.UpsertEnvironmentKV(ctx, &models.EnvironmentKVEntry{
+				HomeID:    "alice",
+				SliceID:   "slice-env",
+				SliceSlug: "env",
+				Profile:   "local",
+				Key:       "NODE_ENV",
+				Class:     models.EnvironmentKVClassValue,
+				Value:     "development",
+				CreatedBy: "alice",
+				UpdatedBy: "alice",
+			})
+			if err != nil {
+				t.Fatalf("UpsertEnvironmentKV value failed: %v", err)
+			}
+			if valueEntry.Version != 1 || valueEntry.ValueHash == "" {
+				t.Fatalf("unexpected inserted value entry: %#v", valueEntry)
+			}
+			secretEntry, err := st.UpsertEnvironmentKV(ctx, &models.EnvironmentKVEntry{
+				HomeID:    "alice",
+				SliceID:   "slice-env",
+				SliceSlug: "env",
+				Profile:   "default",
+				Key:       "DATABASE_URL",
+				Class:     models.EnvironmentKVClassSecret,
+				Value:     "postgres://secret",
+				CreatedBy: "alice",
+				UpdatedBy: "alice",
+			})
+			if err != nil {
+				t.Fatalf("UpsertEnvironmentKV secret failed: %v", err)
+			}
+			resolved, err := st.ResolveEnvironmentKV(ctx, "alice", "slice-env", "local", models.EnvironmentKVClassSecret, "DATABASE_URL")
+			if err != nil {
+				t.Fatalf("ResolveEnvironmentKV default profile fallback failed: %v", err)
+			}
+			if resolved.ID != secretEntry.ID || resolved.Value != "postgres://secret" || resolved.SliceID != "slice-env" || resolved.Profile != "default" {
+				t.Fatalf("unexpected default profile fallback resolution: %#v", resolved)
+			}
+			updatedValue, err := st.UpsertEnvironmentKV(ctx, &models.EnvironmentKVEntry{
+				HomeID:    "alice",
+				SliceID:   "slice-env",
+				SliceSlug: "env",
+				Profile:   "local",
+				Key:       "NODE_ENV",
+				Class:     models.EnvironmentKVClassValue,
+				Value:     "test",
+				UpdatedBy: "alice",
+			})
+			if err != nil {
+				t.Fatalf("UpdateEnvironmentKV value failed: %v", err)
+			}
+			if updatedValue.ID != valueEntry.ID || updatedValue.Version != 2 || updatedValue.Value != "test" {
+				t.Fatalf("unexpected updated value entry: %#v", updatedValue)
+			}
+			listed, err := st.ListEnvironmentKV(ctx, models.EnvironmentKVFilter{
+				HomeID:  "alice",
+				SliceID: "slice-env",
+				Profile: "local",
+			})
+			if err != nil {
+				t.Fatalf("ListEnvironmentKV failed: %v", err)
+			}
+			if len(listed) != 1 || listed[0].Key != "NODE_ENV" || listed[0].Value != "test" {
+				t.Fatalf("unexpected listed entries: %#v", listed)
+			}
+			if err := st.DeleteEnvironmentKV(ctx, models.EnvironmentKVFilter{
+				HomeID:  "alice",
+				SliceID: "slice-env",
+				Profile: "local",
+				Key:     "NODE_ENV",
+				Class:   models.EnvironmentKVClassValue,
+			}); err != nil {
+				t.Fatalf("DeleteEnvironmentKV failed: %v", err)
+			}
+			if _, err := st.ResolveEnvironmentKV(ctx, "alice", "slice-env", "local", models.EnvironmentKVClassValue, "NODE_ENV"); !errors.Is(err, ErrEntryNotFound) {
+				t.Fatalf("expected deleted value to be missing, got %v", err)
+			}
+		})
+	}
+}
+
 func TestCIJobRequeueStoreCompliance(t *testing.T) {
 	ctx := context.Background()
 

@@ -28,7 +28,7 @@ tracked folder during checkout, and keeps requirements reviewable as normal
 home-slice file changes.
 
 The requirements file stores only declarations and templates. Concrete runtime
-values are resolved from a scoped key/value store. Secret keys are protected
+values are resolved from a slice-scoped key/value store. Secret keys are protected
 with no read-back semantics; non-secret environment values are readable by
 authorized users and can be displayed in the UI. Materialized files are written
 into checkouts or CI workspaces and are explicitly ignored by gitslice status,
@@ -96,7 +96,7 @@ slug and fetches that file directly from the selected home commit.
 
 Runtime values are deliberately not placed under `/{home}/.gitslice`, because
 that directory is tracked by the home slice. The requirements file references
-keys by name; the value for each key comes from the server-side scoped KV
+keys by name; the value for each key comes from the server-side slice-scoped KV
 store.
 
 There are two value classes:
@@ -116,12 +116,12 @@ authorized users and by runners that are allowed to materialize the profile.
 
 ### KV Scope
 
-KV entries should be scoped so one home can define shared defaults while each
-slice and profile can override them:
+KV entries are slice scoped. Profiles separate local, agent, CI, staging, and
+production values without introducing a separate home-default lookup path:
 
 ```text
 home_id
-slice_id, optional for home-level defaults
+slice_id
 profile
 key
 class = secret | value
@@ -131,12 +131,12 @@ Recommended resolution order:
 
 1. slice + requested profile
 2. slice + `default`
-3. home + requested profile
-4. home + `default`
 
 All clients resolve values from the server-side KV store. The server should use
 `slice_id` as the stable scope and treat `slice_slug` only as display metadata,
-because slug renames must not orphan stored values.
+because slug renames must not orphan stored values. Home-level defaults are not
+part of v1; they add a second source of truth and make the UI harder to reason
+about.
 
 ### Materialized Files
 
@@ -359,14 +359,12 @@ Extend `.gs/index` with materialization metadata:
       {
         "key": "OPENAI_API_KEY",
         "class": "secret",
-        "version": 3,
-        "scope": "slice"
+        "version": 3
       },
       {
         "key": "NODE_ENV",
         "class": "value",
-        "version": 1,
-        "scope": "home"
+        "version": 1
       }
     ],
     "materialized_paths": [
@@ -443,15 +441,15 @@ gs kv unset-secret OPENAI_API_KEY --slice payments-api --profile local
 CI profile:
 
 ```bash
-gs kv set PUBLIC_API_BASE_URL https://api.agenttools.dev --home {home} --profile ci
-gs kv set-secret CI_DATABASE_URL --home {home} --profile ci
-gs kv list --home {home} --profile ci
-gs kv unset PUBLIC_API_BASE_URL --home {home} --profile ci
-gs kv unset-secret CI_DATABASE_URL --home {home} --profile ci
+gs kv set PUBLIC_API_BASE_URL https://api.agenttools.dev --slice payments-api --profile ci
+gs kv set-secret CI_DATABASE_URL --slice payments-api --profile ci
+gs kv list --slice payments-api --profile ci
+gs kv unset PUBLIC_API_BASE_URL --slice payments-api --profile ci
+gs kv unset-secret CI_DATABASE_URL --slice payments-api --profile ci
 ```
 
 `list` commands may show non-secret values. Secret entries show only name,
-scope, profile, version, updated timestamp, and configured/missing status.
+profile, version, updated timestamp, and configured/missing status.
 
 ### Materialization
 
@@ -530,7 +528,8 @@ Unique active key:
 ```
 
 Use `slice_id` as the stable scope. Store `slice_slug` as denormalized display
-metadata only, because slugs can change.
+metadata only, because slugs can change. Do not expose a home-default scope in
+v1.
 
 ### Suggested gRPC APIs
 
@@ -626,10 +625,10 @@ The docs update should cover:
 - where env requirements live:
   `/{home}/.gitslice/slices/{slice_slug}/env.yaml`
 - what profiles mean (`local`, `agent`, `ci`, `staging`, `prod`)
-- the server-side KV lookup scope:
+- the server-side KV lookup path:
   `home_id / slice_id / profile / class / key`
 - the resolution order:
-  slice profile, slice default, home profile, home default
+  slice profile, slice default
 - how to set non-secret values with `gs kv set`
 - how to set no-readback secrets with `gs kv set-secret`
 - how `gs slice checkout` and `gs env materialize` use server-side
@@ -890,7 +889,7 @@ in the pending export set.
 
 1. Add checkout ignored-local-path support independent of env materialization.
 2. Add parser and validator for `env.yaml`.
-3. Add server-side scoped KV storage with encrypted values, no-readback secret
+3. Add server-side slice-scoped KV storage with encrypted values, no-readback secret
    APIs, readable non-secret value APIs, and audit metadata.
 4. Add `gs kv` commands backed by the server-side KV APIs.
 5. Add `RenderSliceEnvMaterialization` and wire it into
@@ -917,5 +916,3 @@ in the pending export set.
 4. Should editing requirements from the web create a home-slice changeset
    automatically, or should it only modify the file in a local checkout?
 5. Should non-secret values be encrypted at rest too, or only secrets?
-6. Should server-side KV support home-level defaults immediately, or should v1
-   only support slice-scoped values?

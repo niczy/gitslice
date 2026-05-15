@@ -143,6 +143,39 @@ gs changeset show --patches
 gs changeset merge
 ```
 
+## Environment materialization
+
+Some checkouts need local files that should never be tracked, such as `.env.local`, `.npmrc`, or CI-only credentials. Declare those generated files in the home-slice file `/$USER/.gitslice/slices/<slice-slug>/env.yaml`, then store the actual values in the server-side KV store. Requirements are tracked; secret and environment values are not.
+
+```yaml
+version: 1
+profiles:
+  local:
+    files:
+      - path: .env.local
+        mode: "0600"
+        template: |
+          DATABASE_URL={{ secret "DATABASE_URL" }}
+          NODE_ENV={{ value "NODE_ENV" }}
+        required_secrets: [DATABASE_URL]
+        required_values: [NODE_ENV]
+ignored_paths:
+  - .env.local
+```
+
+KV entries are slice scoped and resolve by `slice / profile / class / key`: selected profile, then the slice's `default` profile. Secrets are write-only outside materialization; normal list/read APIs return only metadata. Non-secret values can be listed by authorized users.
+
+The server API exposes this flow as gRPC methods with HTTP bindings:
+`GET /v1/slices/{slice_id}/env/requirements`,
+`POST /v1/slices/{slice_id}/env/kv/values/{key}`,
+`POST /v1/slices/{slice_id}/env/kv/secrets/{key}`, and
+`POST /v1/slices/{slice_id}/env:materialize`. The CLI can wrap these as
+`gs kv` and `gs env materialize` commands without changing the server contract.
+The web app exposes the same KV operations from a slice's Code tab settings
+dialog under Environment KV.
+
+Profiles separate local, agent, CI, staging, and production needs. Local agents prefer the `agent` profile and fall back to `local`; CI uses the trusted home-head `ci` profile. Materialized paths are ignored by status, diff, export, local agent change collection, caches, and artifacts.
+
 ## Changesets
 
 Publish local work through a tracked changeset. Changesets are the publish unit for checked-out slices. `gs slice export` creates or updates the checkout's tracked changeset without merging; `gs slice publish` does the same export and then merges by default. `gs changeset create` starts a fresh changeset and refuses to replace an already tracked one unless you pass `--replace-tracked`. `gs changeset merge` and `gs changeset close` use the checkout's tracked changeset when no ID is passed.

@@ -132,7 +132,7 @@ jobs:
         TEST_POSTGRES_DSN: "postgres://postgres:postgres@127.0.0.1:5432/gitslice_test?sslmode=disable"
       run: >
         go test -count=1 ./workflow_test
-        -run 'Test(RootSliceAndSliceCreateWorkflow|CheckoutReusesCachedBlocks|SliceSyncNoGitUpdatesCurrentCheckout|RootSliceEndToEndWorkflow|FilesystemCLIWorkflowEndToEnd|FilesystemCLIBatchWorkflowEndToEnd|SliceWorkflowCommands|SlicePublishAndChangesetShowWorkflow|ChangesetCreateWorksWithoutGitCheckout|SlicePublishWorksWithoutGitCheckout|SliceDiffAndRestoreWorkWithoutGitCheckout|NoGitCheckoutStartsDirtyTracker|NoGitStatusAndChangesetCreateWorkWithDirtyTracker|NoGitStatusFallsBackWhenDirtyTrackerStops|CheckoutRegistryAndCacheCommands|AgentSessionHTTPFakeCodexChangesetFlow)$'
+        -run 'Test(RootSliceAndSliceCreateWorkflow|CheckoutReusesCachedBlocks|SliceSyncNoGitUpdatesCurrentCheckout|RootSliceEndToEndWorkflow|FilesystemCLIWorkflowEndToEnd|FilesystemCLIBatchWorkflowEndToEnd|SliceWorkflowCommands|SlicePublishAndChangesetShowWorkflow|ChangesetCreateWorksWithoutGitCheckout|SlicePublishWorksWithoutGitCheckout|SliceDiffAndRestoreWorkWithoutGitCheckout|NoGitCheckoutStartsDirtyTracker|NoGitStatusAndChangesetCreateWorkWithDirtyTracker|NoGitStatusFallsBackWhenDirtyTrackerStops|CheckoutRegistryAndCacheCommands|AgentSessionHTTPFakeCodexChangesetFlow|GatewayHTTPSliceEnvMaterializationIntegration)$'
 
   worker-preview:
     runs-on: ubuntu-latest
