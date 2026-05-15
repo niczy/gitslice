@@ -252,6 +252,57 @@ func TestBuildLocalAgentChangesPayloadIgnoresHomeRootAddsOutsideUserRoot(t *test
 	}
 }
 
+func TestBuildLocalAgentChangesPayloadIncludesDiffs(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, ".gs"), 0o755); err != nil {
+		t.Fatalf("mkdir .gs: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(workdir, "alice"), 0o755); err != nil {
+		t.Fatalf("mkdir alice: %v", err)
+	}
+	if err := writeSliceIDConfigAt(workdir, "home_alice"); err != nil {
+		t.Fatalf("write slice config: %v", err)
+	}
+	index := &localCheckoutIndex{
+		Version:    checkoutIndexVersion,
+		SliceID:    "home_alice",
+		CommitHash: "cmt_base",
+	}
+	addTestDirectoryRecords(t, workdir, index, "")
+	addTestDirectoryRecords(t, workdir, index, "alice")
+	if err := writeCheckoutIndex(workdir, index); err != nil {
+		t.Fatalf("write checkout index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "alice", "new.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("write new file: %v", err)
+	}
+
+	payload, err := buildLocalAgentChangesPayloadForRunner(context.Background(), nil, localAgentRunConfig{
+		CWD:       workdir,
+		SessionID: "sess_abcdef1234567890",
+	}, 42, localAgentChangesRequest{RequestID: "req-1", IncludeDiffs: true})
+	if err != nil {
+		t.Fatalf("buildLocalAgentChangesPayloadForRunner failed: %v", err)
+	}
+	if payload["diffs_included"] != true {
+		t.Fatalf("expected diffs_included=true, got %#v", payload["diffs_included"])
+	}
+	paths, ok := payload["paths"].([]map[string]any)
+	if !ok || len(paths) != 1 {
+		t.Fatalf("expected one path, got %#v", payload["paths"])
+	}
+	if paths[0]["path"] != filepath.Join("alice", "new.txt") || paths[0]["status"] != "A" {
+		t.Fatalf("unexpected path entry: %#v", paths[0])
+	}
+	patch, _ := paths[0]["patch"].(string)
+	if !strings.Contains(patch, "+++ b/alice/new.txt") || !strings.Contains(patch, "+new") {
+		t.Fatalf("expected added file patch, got %q", patch)
+	}
+	if paths[0]["lines_added"] != 2 || paths[0]["lines_deleted"] != 0 || paths[0]["binary"] != false {
+		t.Fatalf("unexpected diff stats: %#v", paths[0])
+	}
+}
+
 func TestLocalAgentChangesetExportRefreshesSliceAuth(t *testing.T) {
 	workdir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(workdir, ".gs"), 0o755); err != nil {

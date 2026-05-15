@@ -142,6 +142,7 @@ export default function SliceAgentsPage({
     canSendInput,
     events,
     loadSelectedEvents,
+    localChangesPanelOpen,
     selectedSession,
     selectedSessionId,
     setEventPollingBusy,

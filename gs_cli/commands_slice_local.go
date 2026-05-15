@@ -181,10 +181,21 @@ func buildLocalSliceDiffs(
 	cache *CacheManager,
 	entries []workingTreeStatusEntry,
 ) ([]localSliceDiff, error) {
+	return buildLocalSliceDiffsAt(ctx, cli, index, cache, entries, ".")
+}
+
+func buildLocalSliceDiffsAt(
+	ctx context.Context,
+	cli *CLI,
+	index *localCheckoutIndex,
+	cache *CacheManager,
+	entries []workingTreeStatusEntry,
+	rootDir string,
+) ([]localSliceDiff, error) {
 	lookup := newCheckoutIndexLookup(index)
 	diffs := make([]localSliceDiff, 0, len(entries))
 	for _, entry := range entries {
-		diff, err := buildLocalSliceDiff(ctx, cli, index, cache, lookup, entry)
+		diff, err := buildLocalSliceDiffAt(ctx, cli, index, cache, lookup, entry, rootDir)
 		if err != nil {
 			return nil, err
 		}
@@ -207,6 +218,18 @@ func buildLocalSliceDiff(
 	lookup *checkoutIndexLookup,
 	entry workingTreeStatusEntry,
 ) (localSliceDiff, error) {
+	return buildLocalSliceDiffAt(ctx, cli, index, cache, lookup, entry, ".")
+}
+
+func buildLocalSliceDiffAt(
+	ctx context.Context,
+	cli *CLI,
+	index *localCheckoutIndex,
+	cache *CacheManager,
+	lookup *checkoutIndexLookup,
+	entry workingTreeStatusEntry,
+	rootDir string,
+) (localSliceDiff, error) {
 	diff := localSliceDiff{
 		Path:   entry.Path,
 		Status: entry.Status,
@@ -221,7 +244,7 @@ func buildLocalSliceDiff(
 			return diff, err
 		}
 	}
-	after, err = readCurrentCheckoutFileState(".", entry.Path)
+	after, err = readCurrentCheckoutFileState(rootDir, entry.Path)
 	if err != nil {
 		return diff, err
 	}
@@ -261,6 +284,9 @@ func loadTrackedCheckoutFileState(
 		if !errors.Is(err, os.ErrNotExist) {
 			log.Printf("Warning: failed to read cached base object for %s: %v", tracked.Path, err)
 		}
+	}
+	if cli == nil || cli.fileClient == nil {
+		return checkoutFileState{}, fmt.Errorf("file client unavailable while loading base content for %s", tracked.Path)
 	}
 
 	req := &filev1.GetFileRequest{Path: tracked.Path}

@@ -21,6 +21,7 @@ export function useAgentLocalChanges({
   canSendInput,
   events,
   loadSelectedEvents,
+  localChangesPanelOpen,
   selectedSession,
   selectedSessionId,
   setEventPollingBusy,
@@ -68,7 +69,7 @@ export function useAgentLocalChanges({
     || latestExportFailureMessage
     || '';
 
-  const requestLocalChanges = useCallback(async ({ silent = false } = {}) => {
+  const requestLocalChanges = useCallback(async ({ silent = false, includeDiffs = localChangesPanelOpen } = {}) => {
     if (!selectedSessionId || !selectedSession || !isConversationLocal(selectedSession)) {
       return;
     }
@@ -77,7 +78,7 @@ export function useAgentLocalChanges({
       setLocalChangesError('');
     }
     try {
-      const result = await requestAgentSessionLocalChanges(selectedSessionId, { limit: 100 });
+      const result = await requestAgentSessionLocalChanges(selectedSessionId, { limit: 100, includeDiffs });
       setPendingLocalChangesRequestId(result.requestId || '');
       setPendingLocalChangesRequestedAt(Date.now());
       await loadSelectedEvents({ incremental: true });
@@ -88,7 +89,7 @@ export function useAgentLocalChanges({
     } finally {
       setLocalChangesRequesting(false);
     }
-  }, [loadSelectedEvents, selectedSession, selectedSessionId]);
+  }, [loadSelectedEvents, localChangesPanelOpen, selectedSession, selectedSessionId]);
 
   const handleExportChangeset = useCallback(async () => {
     if (!canExportChangeset || !selectedSessionId) {
@@ -186,8 +187,18 @@ export function useAgentLocalChanges({
       return;
     }
     autoLocalChangesSessionRef.current = selectedSessionId;
-    requestLocalChanges({ silent: true });
-  }, [requestLocalChanges, selectedSession, selectedSessionId]);
+    requestLocalChanges({ silent: true, includeDiffs: localChangesPanelOpen });
+  }, [localChangesPanelOpen, requestLocalChanges, selectedSession, selectedSessionId]);
+
+  useEffect(() => {
+    if (!localChangesPanelOpen || !selectedSessionId || !selectedSession || !isConversationLocal(selectedSession)) {
+      return;
+    }
+    if (localChangesBusy || localChanges?.diffsIncluded) {
+      return;
+    }
+    requestLocalChanges({ silent: true, includeDiffs: true });
+  }, [localChanges, localChangesBusy, localChangesPanelOpen, requestLocalChanges, selectedSession, selectedSessionId]);
 
   useEffect(() => {
     if (!selectedSessionId || !selectedSession || !isConversationLocal(selectedSession) || assistantStreaming) {
@@ -197,8 +208,8 @@ export function useAgentLocalChanges({
       return;
     }
     autoLocalChangesOutputSeqRef.current = latestAgentOutputFinalSeq;
-    requestLocalChanges({ silent: true });
-  }, [assistantStreaming, latestAgentOutputFinalSeq, requestLocalChanges, selectedSession, selectedSessionId]);
+    requestLocalChanges({ silent: true, includeDiffs: localChangesPanelOpen });
+  }, [assistantStreaming, latestAgentOutputFinalSeq, localChangesPanelOpen, requestLocalChanges, selectedSession, selectedSessionId]);
 
   return {
     canExportChangeset,

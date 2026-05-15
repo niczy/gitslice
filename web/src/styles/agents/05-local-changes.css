@@ -100,10 +100,43 @@
   flex: 0 0 auto;
 }
 
+.slice-agents-local-change-state {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.slice-agents-local-change-state span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  font-family: IBM Plex Mono, ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.72rem;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slice-agents-local-change-state strong {
+  color: var(--text-muted);
+  font-family: IBM Plex Sans, system-ui, sans-serif;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
 .slice-agents-local-file-list {
   display: grid;
   flex: 1 1 auto;
-  gap: 5px;
+  align-content: start;
+  gap: 7px;
   min-height: 96px;
   max-height: none;
   overflow: auto;
@@ -112,12 +145,42 @@
 }
 
 .slice-agents-local-file {
-  display: grid;
-  grid-template-columns: 26px minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-  min-height: 26px;
+  display: block;
+  min-width: 0;
   list-style: none;
+}
+
+.slice-agents-local-file-toggle {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  grid-template-columns: 16px 26px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 4px 6px 4px 3px;
+  text-align: left;
+}
+
+.slice-agents-local-file-toggle:hover,
+.slice-agents-local-file-toggle:focus-visible,
+.slice-agents-local-file.expanded .slice-agents-local-file-toggle {
+  border-color: var(--border);
+  background: var(--surface-hover);
+  outline: none;
+}
+
+.slice-agents-local-file-chevron {
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  color: var(--text-muted);
 }
 
 .slice-agents-local-file-status {
@@ -163,8 +226,57 @@
   white-space: nowrap;
 }
 
+.slice-agents-local-file-state {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-family: IBM Plex Mono, ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.slice-agents-local-file-diff {
+  margin: 5px 0 4px 49px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.slice-agents-local-file-notes {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+}
+
+.slice-agents-local-file-notes li {
+  margin-left: 14px;
+}
+
+.slice-agents-local-diff-patch {
+  max-height: 320px;
+  margin: 0;
+  overflow: auto;
+  border: 0;
+  border-radius: 0;
+  background: #f6f8fa;
+  color: var(--text-primary);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.slice-agents-local-diff-empty {
+  padding: 10px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
 .slice-agents-local-file--more {
-  grid-template-columns: minmax(0, 1fr);
   color: var(--text-muted);
   font-size: 0.76rem;
 }

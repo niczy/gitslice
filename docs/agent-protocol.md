@@ -84,6 +84,13 @@ understand every payload.
 | `tool` | `end` | runner to clients | Provider-specific tool completion |
 | `control` | `error` | any component to clients | `AgentErrorPayload` |
 | `control` | `runtime_session` | runtime to service/clients | JSON runtime metadata |
+| `control` | `local_changes_requested` | client to runner | JSON request metadata |
+| `status` | `local_changes` | runner to clients | JSON working-tree status and optional inline patches |
+| `control` | `local_changes_failed` | runner to clients | JSON failure metadata |
+| `control` | `changeset_export_requested` | client to runner | JSON export request metadata |
+| `control` | `changeset_export_started` | runner to clients | JSON export lifecycle metadata |
+| `control` | `changeset_export_completed` | runner to clients | JSON changeset export result metadata |
+| `control` | `changeset_export_failed` | runner to clients | JSON failure metadata |
 | `pty` | `stdin` | user to runtime | `AgentPtyInputPayload` |
 | `pty` | `resize` | user to runtime | `AgentPtyResizePayload` |
 
@@ -121,6 +128,15 @@ and tool lifecycle events through `AppendEvent`.
 Cloud sandbox providers are intentionally not part of the active agent runtime
 surface. Agent sessions are local-runner-first until a new remote runtime design
 is introduced.
+
+The web UI can ask a local runner for checkout state with
+`control/local_changes_requested`. The request supports `limit` and
+`includeDiffs`. The runner responds with `status/local_changes`, including the
+working tree state, checkout base, tracked changeset ID, changed path summary,
+and, when requested, per-path unified patch text, line counts, binary markers,
+and metadata notes. The UI uses this payload to render the local changes drawer
+and to submit `control/changeset_export_requested` when the user exports the
+current local checkout into a changeset.
 
 Default commands:
 
