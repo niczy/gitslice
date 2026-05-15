@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -2365,6 +2366,155 @@ func TestGatewayHTTPListEntriesIntegration(t *testing.T) {
 
 	gatewayEntries := fetchGatewayEntries(t, gatewayServiceURL+"/v1/files/entries/gateway", "User "+workflowUsername(t))
 	assertGatewayEntryNames(t, gatewayEntries.Entries, "readme.md", "docs")
+}
+
+func TestGatewayHTTPSliceEnvMaterializationIntegration(t *testing.T) {
+	if gatewayServiceURL == "" {
+		t.Skip("gateway service not available")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	username := workflowUsername(t)
+	auth := "User " + username
+
+	homeSlice, err := homeslice.EnsureUserHomeSlice(ctx, testStorage, username)
+	if err != nil {
+		t.Fatalf("ensure home slice: %v", err)
+	}
+	slug := fmt.Sprintf("envmat-%d", time.Now().UnixNano())
+	sliceID := "sl_" + slug
+	if err := testStorage.CreateSlice(ctx, &models.Slice{
+		ID:          sliceID,
+		Name:        "Env Materialization",
+		Slug:        slug,
+		Description: "HTTP env materialization test",
+		Owners:      []string{username},
+		CreatedBy:   username,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+		ParentSlice: "root",
+		Files:       []string{username + "/envmat/app.go"},
+	}); err != nil {
+		t.Fatalf("create slice: %v", err)
+	}
+	requirementsPath := path.Join(username, ".gitslice", "slices", slug, "env.yaml")
+	requirementsYAML := `
+version: 1
+profiles:
+  local:
+    files:
+      - path: .env.local
+        mode: "0600"
+        template: |
+          DATABASE_URL={{ secret "DATABASE_URL" }}
+          NODE_ENV={{ value "NODE_ENV" }}
+          OPTIONAL={{ optionalValue "OPTIONAL_FLAG" }}
+        required_secrets:
+          - DATABASE_URL
+        required_values:
+          - NODE_ENV
+        optional_values:
+          - OPTIONAL_FLAG
+ignored_paths:
+  - .env.local
+`
+	mustWriteSliceManifest(t, ctx, testStorage, homeSlice.ID, requirementsPath, []byte(requirementsYAML))
+
+	var requirementsOut struct {
+		Found            bool   `json:"found"`
+		RequirementsPath string `json:"requirementsPath"`
+		Requirements     struct {
+			Profiles []string `json:"profiles"`
+			Files    []struct {
+				Path    string `json:"path"`
+				Profile string `json:"profile"`
+			} `json:"files"`
+		} `json:"requirements"`
+	}
+	doGatewayJSON(t, http.MethodGet, gatewayServiceURL+"/v1/slices/"+url.PathEscape(sliceID)+"/env/requirements", auth, nil, &requirementsOut, http.StatusOK)
+	if !requirementsOut.Found || requirementsOut.RequirementsPath != requirementsPath {
+		t.Fatalf("unexpected requirements response: %+v", requirementsOut)
+	}
+	if len(requirementsOut.Requirements.Files) != 1 || requirementsOut.Requirements.Files[0].Path != ".env.local" || requirementsOut.Requirements.Files[0].Profile != "local" {
+		t.Fatalf("unexpected requirements files: %+v", requirementsOut.Requirements.Files)
+	}
+
+	doGatewayJSON(t, http.MethodPost, gatewayServiceURL+"/v1/slices/"+url.PathEscape(sliceID)+"/env/kv/values/NODE_ENV", auth, map[string]any{
+		"profile": "local",
+		"value":   "development",
+	}, nil, http.StatusOK)
+	doGatewayJSON(t, http.MethodPost, gatewayServiceURL+"/v1/slices/"+url.PathEscape(sliceID)+"/env/kv/secrets/DATABASE_URL", auth, map[string]any{
+		"profile": "local",
+		"value":   "postgres://secret@example.test/db",
+	}, nil, http.StatusOK)
+
+	var kvOut struct {
+		Entries []struct {
+			Key      string `json:"key"`
+			Class    string `json:"class"`
+			Value    string `json:"value"`
+			HasValue bool   `json:"hasValue"`
+		} `json:"entries"`
+	}
+	doGatewayJSON(t, http.MethodGet, gatewayServiceURL+"/v1/slices/"+url.PathEscape(sliceID)+"/env/kv?profile=local&include_home_scope=true", auth, nil, &kvOut, http.StatusOK)
+	seenKV := map[string]struct {
+		Class string
+		Value string
+		Has   bool
+	}{}
+	for _, entry := range kvOut.Entries {
+		seenKV[entry.Key] = struct {
+			Class string
+			Value string
+			Has   bool
+		}{Class: entry.Class, Value: entry.Value, Has: entry.HasValue}
+	}
+	if got := seenKV["NODE_ENV"]; got.Class != "value" || got.Value != "development" || !got.Has {
+		t.Fatalf("expected readable value metadata, got %+v from %+v", got, kvOut.Entries)
+	}
+	if got := seenKV["DATABASE_URL"]; got.Class != "secret" || got.Value != "" || !got.Has {
+		t.Fatalf("expected secret metadata without readback, got %+v from %+v", got, kvOut.Entries)
+	}
+
+	var renderOut struct {
+		Profile        string `json:"profile"`
+		MissingEntries []any  `json:"missingEntries"`
+		Files          []struct {
+			Path      string `json:"path"`
+			Mode      string `json:"mode"`
+			Sensitive bool   `json:"sensitive"`
+			Content   string `json:"content"`
+		} `json:"files"`
+		ResolvedRefs []struct {
+			Key   string `json:"key"`
+			Class string `json:"class"`
+			Scope string `json:"scope"`
+		} `json:"resolvedRefs"`
+	}
+	doGatewayJSON(t, http.MethodPost, gatewayServiceURL+"/v1/slices/"+url.PathEscape(sliceID)+"/env:materialize", auth, map[string]any{
+		"profile": "local",
+		"strict":  true,
+	}, &renderOut, http.StatusOK)
+	if renderOut.Profile != "local" || len(renderOut.MissingEntries) != 0 || len(renderOut.Files) != 1 {
+		t.Fatalf("unexpected render response: %+v", renderOut)
+	}
+	rendered, err := base64.StdEncoding.DecodeString(renderOut.Files[0].Content)
+	if err != nil {
+		t.Fatalf("decode rendered content: %v", err)
+	}
+	renderedText := string(rendered)
+	if !strings.Contains(renderedText, "DATABASE_URL=postgres://secret@example.test/db") ||
+		!strings.Contains(renderedText, "NODE_ENV=development") ||
+		!strings.Contains(renderedText, "OPTIONAL=") {
+		t.Fatalf("unexpected rendered content:\n%s", renderedText)
+	}
+	if got := renderOut.Files[0]; got.Path != ".env.local" || got.Mode != "0600" || !got.Sensitive {
+		t.Fatalf("unexpected rendered file metadata: %+v", got)
+	}
+	if len(renderOut.ResolvedRefs) != 2 {
+		t.Fatalf("expected two resolved refs, got %+v", renderOut.ResolvedRefs)
+	}
 }
 
 type gatewayEntriesResponse struct {

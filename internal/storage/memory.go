@@ -116,6 +116,7 @@ type InMemoryStorage struct {
 	teamsByOrg                       map[string]map[string]bool                       // orgSlug -> teamID -> true
 	teamMembers                      map[string]map[string]*models.TeamMember         // teamID -> username -> membership
 	environments                     map[string]*models.Environment                   // env name -> environment
+	environmentKV                    map[string]*models.EnvironmentKVEntry            // homeID:sliceID:profile:class:key -> entry
 
 	// Agent runners
 	agentRunners map[string]*models.AgentRunner // runnerID -> runner
@@ -204,6 +205,7 @@ func NewInMemoryStorage() *InMemoryStorage {
 		teamsByOrg:                       make(map[string]map[string]bool),
 		teamMembers:                      make(map[string]map[string]*models.TeamMember),
 		environments:                     make(map[string]*models.Environment),
+		environmentKV:                    make(map[string]*models.EnvironmentKVEntry),
 		agentRunners:                     make(map[string]*models.AgentRunner),
 		agentSessions:                    make(map[string]*models.AgentSession),
 		agentSessionEvents:               make(map[string][]*models.AgentSessionEvent),
@@ -302,6 +304,7 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.teamsByOrg = fresh.teamsByOrg
 	s.teamMembers = fresh.teamMembers
 	s.environments = fresh.environments
+	s.environmentKV = fresh.environmentKV
 	s.agentSessions = fresh.agentSessions
 	s.agentSessionEvents = fresh.agentSessionEvents
 	s.agentSessionAudit = fresh.agentSessionAudit
