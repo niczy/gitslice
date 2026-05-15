@@ -141,6 +141,13 @@ is still running, so the web UI can stop an active Codex turn without waiting fo
 the process to exit. If app-server startup fails in auto mode, the runner
 appends a control error and falls back to `codex exec`.
 
+Codex app-server sessions run with explicit full-access sandbox settings for the
+session checkout. The runner also responds to Codex permission requests with a
+session-scoped grant for checkout filesystem access and local network access, so
+Codex can manage long-lived commands such as web servers and dev servers through
+its own process model. Process output and exit notifications are forwarded as
+tool events for server-side persistence and web streaming.
+
 When the Codex thread is created, the local runner appends
 `control/runtime_session` with the Codex thread ID. The service stores that
 runtime metadata on the server-side `agent_sessions` row, so reconnects and
