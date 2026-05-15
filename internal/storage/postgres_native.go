@@ -931,6 +931,10 @@ func (s *postgresNativeTxView) ListAgentSessionEvents(ctx context.Context, sessi
 	return s.PostgresNativeStorage.ListAgentSessionEvents(ctx, sessionID, sinceSeq, limit)
 }
 
+func (s *postgresNativeTxView) ListLatestAgentSessionEvents(ctx context.Context, sessionID string, limit int) ([]*models.AgentSessionEvent, error) {
+	return s.PostgresNativeStorage.ListLatestAgentSessionEvents(ctx, sessionID, limit)
+}
+
 func (s *postgresNativeTxView) AddAgentSessionAudit(ctx context.Context, audit *models.AgentSessionAudit) error {
 	return s.PostgresNativeStorage.AddAgentSessionAudit(ctx, audit)
 }
@@ -6788,6 +6792,51 @@ func (s *PostgresNativeStorage) ListAgentSessionEvents(ctx context.Context, sess
 		events = append(events, &event)
 	}
 	return events, rows.Err()
+}
+
+func (s *PostgresNativeStorage) ListLatestAgentSessionEvents(ctx context.Context, sessionID string, limit int) ([]*models.AgentSessionEvent, error) {
+	ctx = ensureCtx(ctx)
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT session_id, seq, ts, stream, type, COALESCE(kind, 'event'), payload_json
+		FROM agent_session_events
+		WHERE session_id = $1
+		ORDER BY seq DESC
+		LIMIT $2
+	`, sessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := make([]*models.AgentSessionEvent, 0, limit)
+	for rows.Next() {
+		var event models.AgentSessionEvent
+		var seq int64
+		var payload []byte
+		if err := rows.Scan(&event.SessionID, &seq, &event.TS, &event.Stream, &event.Type, &event.Kind, &payload); err != nil {
+			return nil, err
+		}
+		if seq < 0 {
+			return nil, ErrInvalidInput
+		}
+		event.Seq = uint64(seq)
+		if payload == nil {
+			payload = []byte("{}")
+		}
+		event.Payload = payload
+		event.Kind = models.NormalizeAgentSessionEventKind(event.Stream, event.Type, event.Kind)
+		events = append(events, &event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+		events[i], events[j] = events[j], events[i]
+	}
+	return events, nil
 }
 
 func (s *PostgresNativeStorage) AddAgentSessionAudit(ctx context.Context, audit *models.AgentSessionAudit) error {

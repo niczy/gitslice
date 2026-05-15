@@ -224,6 +224,10 @@ message ListEventsRequest {
   string session_id = 1;
   uint64 since_seq = 2;
   int32 limit = 3;
+  // When set, return the latest tail events in ascending sequence order.
+  // This is used for fast initial conversation loads without replaying the
+  // whole event log from seq 0.
+  int32 tail = 4;
 }
 
 message ListEventsResponse {

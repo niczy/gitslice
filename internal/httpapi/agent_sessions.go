@@ -494,6 +494,7 @@ func (a *AgentSessionsAPI) listEvents(w http.ResponseWriter, r *http.Request, se
 	}
 	sinceSeq := uint64(0)
 	limit := 200
+	tail := 0
 	if raw := strings.TrimSpace(r.URL.Query().Get("sinceSeq")); raw != "" {
 		parsed, err := strconv.ParseUint(raw, 10, 64)
 		if err != nil {
@@ -510,8 +511,26 @@ func (a *AgentSessionsAPI) listEvents(w http.ResponseWriter, r *http.Request, se
 		}
 		limit = parsed
 	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("tail")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid tail")
+			return
+		}
+		tail = parsed
+		if tail > 1000 {
+			tail = 1000
+		}
+	}
 
-	events, nextSeq, err := a.svc.ListEventsForUser(r.Context(), userID, sessionID, sinceSeq, limit)
+	var events []*models.AgentSessionEvent
+	var nextSeq uint64
+	var err error
+	if tail > 0 {
+		events, nextSeq, err = a.svc.ListLatestEventsForUser(r.Context(), userID, sessionID, tail)
+	} else {
+		events, nextSeq, err = a.svc.ListEventsForUser(r.Context(), userID, sessionID, sinceSeq, limit)
+	}
 	if err != nil {
 		writeError(w, http.StatusNotFound, "session not found")
 		return

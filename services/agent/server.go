@@ -25,6 +25,8 @@ const timeRFC3339Micro = "2006-01-02T15:04:05.000000Z07:00"
 const (
 	runnerHeartbeatIntervalSec = 10
 	runnerOnlineTTL            = 30 * time.Second
+	agentEventsDefaultLimit    = 200
+	agentEventsMaxLimit        = 1000
 )
 
 type agentServiceServer struct {
@@ -658,11 +660,15 @@ func (s *agentServiceServer) ListEvents(ctx context.Context, req *agentv1.ListEv
 	if err != nil {
 		return nil, err
 	}
-	limit := int(req.GetLimit())
-	if limit <= 0 {
-		limit = 200
+	limit := boundedAgentEventLimit(int(req.GetLimit()))
+	tail := boundedAgentEventTail(int(req.GetTail()))
+	var events []*models.AgentSessionEvent
+	var nextSeq uint64
+	if tail > 0 {
+		events, nextSeq, err = s.svc.ListLatestEventsForUser(ctx, userID, req.GetSessionId(), tail)
+	} else {
+		events, nextSeq, err = s.svc.ListEventsForUser(ctx, userID, req.GetSessionId(), req.GetSinceSeq(), limit)
 	}
-	events, nextSeq, err := s.svc.ListEventsForUser(ctx, userID, req.GetSessionId(), req.GetSinceSeq(), limit)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, "session not found")
 	}
@@ -678,6 +684,23 @@ func (s *agentServiceServer) ListEvents(ctx context.Context, req *agentv1.ListEv
 		})
 	}
 	return &agentv1.ListEventsResponse{Events: out, NextSeq: nextSeq}, nil
+}
+
+func boundedAgentEventLimit(limit int) int {
+	if limit <= 0 {
+		return agentEventsDefaultLimit
+	}
+	if limit > agentEventsMaxLimit {
+		return agentEventsMaxLimit
+	}
+	return limit
+}
+
+func boundedAgentEventTail(tail int) int {
+	if tail <= 0 {
+		return 0
+	}
+	return boundedAgentEventLimit(tail)
 }
 
 func (s *agentServiceServer) AppendEvent(ctx context.Context, req *agentv1.AppendEventRequest) (*agentv1.AppendEventResponse, error) {
