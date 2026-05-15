@@ -27,11 +27,12 @@ It avoids adding reserved custom-slice metadata files, avoids scanning every
 tracked folder during checkout, and keeps requirements reviewable as normal
 home-slice file changes.
 
-The requirements file stores only declarations and templates. Secret values are
-never stored in this file. Local checkout secrets live in a local secret store,
-and CI secrets live in the CI secret store. Materialized files are written into
-checkouts or CI workspaces and are explicitly ignored by gitslice status, diff,
-export, agent local-change collection, cache upload, and artifact upload.
+The requirements file stores only declarations and templates. Concrete runtime
+values are resolved from a scoped key/value store. Secret keys are protected
+with no read-back semantics; non-secret environment values are readable by
+authorized users and can be displayed in the UI. Materialized files are written
+into checkouts or CI workspaces and are explicitly ignored by gitslice status,
+diff, export, agent local-change collection, cache upload, and artifact upload.
 
 ---
 
@@ -43,21 +44,28 @@ export, agent local-change collection, cache upload, and artifact upload.
    slice.
 3. Make checkout fast by loading one known path for a slice instead of scanning
    all tracked folders.
-4. Keep secret values out of tracked files, changesets, snapshots, logs, agent
+4. Provide a server-side key/value storage layer for both secret values and
+   non-secret environment values.
+5. Keep secret values out of tracked files, changesets, snapshots, logs, agent
    events, CI artifacts, and caches.
-5. Use the same materialization model for local checkout, local agent session
+6. Use the same materialization model for local checkout, local agent session
    checkout, and CI workspace materialization.
-6. Preserve CI's existing trust boundary: policy and secret exposure are based
+7. Preserve CI's existing trust boundary: policy and secret exposure are based
    on trusted home head, not unmerged candidate content.
 
 ## Non-Goals
 
 - Adding first-class custom-slice control files independent of the global file
   tree.
-- Storing secret values in `/{home}/.gitslice`.
+- Storing secret values or machine-specific runtime values in
+  `/{home}/.gitslice`.
+- Maintaining a separate local KV store. The server is the authoritative KV
+  source for local checkout, local agents, and CI.
+- Supporting offline materialization when the server is unreachable.
 - Making `.gitignore` the source of truth for generated-file exclusion.
 - Scanning each tracked folder for env manifests.
-- Letting unmerged changes request new CI secrets and immediately receive them.
+- Letting unmerged changes request new CI secret or value keys and immediately
+  receive them.
 
 ---
 
@@ -84,26 +92,51 @@ The checkout implementation must not discover this file by scanning the custom
 slice checkout. It resolves the one canonical home-slice path from the slice
 slug and fetches that file directly from the selected home commit.
 
-### Secret Values
+### Server Key/Value Store
 
-Secret values are deliberately not placed under `/{home}/.gitslice`, because
-that directory is tracked by the home slice.
+Runtime values are deliberately not placed under `/{home}/.gitslice`, because
+that directory is tracked by the home slice. The requirements file references
+keys by name; the value for each key comes from the server-side scoped KV
+store.
 
-Recommended local storage:
+There are two value classes:
+
+- `secret`: Sensitive values such as API keys, tokens, private DSNs, and
+  credentials. These have no read-back API. Commands and UI can show only
+  existence, version, timestamps, and missing/configured state.
+- `value`: Non-secret environment values such as `NODE_ENV`, feature flags,
+  public base URLs, or local ports. These are readable by authorized users and
+  can be displayed in the UI.
+
+The CLI does not keep a local KV database. `gs kv` commands mutate server-side
+entries, and checkout or agent materialization asks the server to resolve the
+active profile. Server-side KV storage should encrypt values at rest. Secret
+entries must be write-only/no-readback; non-secret value entries can be read by
+authorized users and by runners that are allowed to materialize the profile.
+
+### KV Scope
+
+KV entries should be scoped so one home can define shared defaults while each
+slice and profile can override them:
 
 ```text
-$XDG_STATE_HOME/gitslice/secrets/{home_id}/{slice_slug}/{profile}.yaml
+home_id
+slice_id, optional for home-level defaults
+profile
+key
+class = secret | value
 ```
 
-Fallback when `XDG_STATE_HOME` is unset:
+Recommended resolution order:
 
-```text
-~/.local/state/gitslice/secrets/{home_id}/{slice_slug}/{profile}.yaml
-```
+1. slice + requested profile
+2. slice + `default`
+3. home + requested profile
+4. home + `default`
 
-The CLI must create local secret files with `0600` permissions and should later
-support OS keychain backends. Server-side CI secrets belong in a separate
-encrypted secret store with no read-back API.
+All clients resolve values from the server-side KV store. The server should use
+`slice_id` as the stable scope and treat `slice_slug` only as display metadata,
+because slug renames must not orphan stored values.
 
 ### Materialized Files
 
@@ -136,9 +169,12 @@ profiles:
         template: |
           OPENAI_API_KEY={{ secret "OPENAI_API_KEY" }}
           DATABASE_URL={{ secret "DATABASE_URL" }}
+          NODE_ENV={{ value "NODE_ENV" }}
         required_secrets:
           - OPENAI_API_KEY
           - DATABASE_URL
+        required_values:
+          - NODE_ENV
 
       - path: .npmrc
         mode: "0600"
@@ -155,8 +191,11 @@ profiles:
         sensitive: true
         template: |
           DATABASE_URL={{ secret "CI_DATABASE_URL" }}
+          PUBLIC_API_BASE_URL={{ value "PUBLIC_API_BASE_URL" }}
         required_secrets:
           - CI_DATABASE_URL
+        required_values:
+          - PUBLIC_API_BASE_URL
 
 ignored_paths:
   - .env.local
@@ -178,24 +217,32 @@ ignored_paths:
 - `mode`: File mode. Default `0600` for sensitive files, otherwise `0644`.
 - `sensitive`: Defaults to `true` when the template uses secrets. Sensitive
   files are excluded from status/export/cache/artifact surfaces.
-- `template`: Text template rendered with secret references and safe variables.
+- `template`: Text template rendered with KV references and safe metadata.
 - `required_secrets`: Secret names that must exist before rendering.
 - `optional_secrets`: Secret names that may be absent and render as empty.
+- `required_values`: Non-secret value names that must exist before rendering.
+- `optional_values`: Non-secret value names that may be absent and render as
+  empty.
 
 ### Template Inputs
 
 Allowed template functions:
 
 ```text
-{{ secret "NAME" }}       required secret value
-{{ env "NAME" }}          non-secret runtime environment variable
-{{ slice "field" }}       slice metadata such as slug or id
-{{ checkout "field" }}    checkout metadata such as commit hash
+{{ secret "NAME" }}        required secret value from scoped KV
+{{ value "NAME" }}         required non-secret value from scoped KV
+{{ optionalSecret "NAME" }} optional secret value, empty when missing
+{{ optionalValue "NAME" }}  optional non-secret value, empty when missing
+{{ runtimeEnv "NAME" }}    allowlisted process environment variable
+{{ slice "field" }}        slice metadata such as slug or id
+{{ checkout "field" }}     checkout metadata such as commit hash
 ```
 
-The renderer must reject unknown functions and unresolved required secrets.
-Secret values must not be logged, stored in events, or included in error
-messages.
+The renderer must reject unknown functions and unresolved required KV entries.
+`runtimeEnv` should be disabled by default or restricted to an explicit
+allowlist, because host process env can contain secrets outside gitslice's KV
+audit model. Secret values must not be logged, stored in events, or included in
+error messages.
 
 ### Path Validation
 
@@ -231,21 +278,26 @@ the path is not the source requirements file and is explicitly marked
 4. If the file is missing, continue without materialization.
 5. Parse and validate the file.
 6. Select the materialization profile. Default: `local`.
-7. Resolve secret values from local secret storage.
-8. Render files into the checkout.
+7. Request server-side materialization for the selected profile.
+8. Write the returned rendered files into the checkout.
 9. Record materialized and ignored paths in `.gs/index`.
 10. Print a concise summary:
 
    ```text
    Materialized environment files: 2
-   Missing secrets: 1
+   Missing KV entries: 1
      DATABASE_URL
    ```
 
-Missing required secrets should not fail checkout by default, because users may
-want to inspect code before configuring secrets. Commands that need the files,
-such as `gs env materialize --strict`, `gs agent run`, or CI, can require strict
-resolution.
+Missing required KV entries should not fail checkout by default, because users
+may want to inspect code before configuring the runtime. Commands that need the
+files, such as `gs env materialize --strict`, `gs agent run`, or CI, can require
+strict resolution.
+
+Checkout materialization requires a valid login and network access to the
+configured gitslice server. If the server is unavailable, checkout should still
+be able to materialize tracked slice content, but it must skip generated env
+files and report that server KV materialization was not performed.
 
 ### Agent Session Checkout
 
@@ -266,10 +318,12 @@ The session metadata should record:
 - requirements content hash
 - selected profile
 - materialized path list
-- missing secret names, without values
+- referenced secret and value key names
+- missing key names, without values
 
-The agent conversation can show missing secret names so the user understands why
-a command may fail, but it must never show secret values.
+The agent conversation can show missing key names so the user understands why a
+command may fail, but it must never show secret values. Non-secret value values
+may be shown only when the UI already has permission to read that profile.
 
 ### Sync And Restore
 
@@ -301,6 +355,20 @@ Extend `.gs/index` with materialization metadata:
     "requirements_home_commit": "cmt_...",
     "requirements_hash": "sha256:...",
     "profile": "local",
+    "kv_versions": [
+      {
+        "key": "OPENAI_API_KEY",
+        "class": "secret",
+        "version": 3,
+        "scope": "slice"
+      },
+      {
+        "key": "NODE_ENV",
+        "class": "value",
+        "version": 1,
+        "scope": "home"
+      }
+    ],
     "materialized_paths": [
       {
         "path": ".env.local",
@@ -357,25 +425,33 @@ gs env validate --slice payments-api
 
 and exports it through the home slice workflow.
 
-### Secret Values
+### KV Entries
 
-Local secrets:
+All KV commands read and write server-side entries. The `local`, `agent`, and
+`ci` names are profiles, not storage locations.
 
-```bash
-gs secret set OPENAI_API_KEY --slice payments-api --profile local
-gs secret list --slice payments-api --profile local
-gs secret unset OPENAI_API_KEY --slice payments-api --profile local
-```
-
-CI secrets:
+Local checkout and agent profiles:
 
 ```bash
-gs ci secret set CI_DATABASE_URL --home {home}
-gs ci secret list --home {home}
-gs ci secret unset CI_DATABASE_URL --home {home}
+gs kv set NODE_ENV development --slice payments-api --profile local
+gs kv set-secret OPENAI_API_KEY --slice payments-api --profile local
+gs kv list --slice payments-api --profile local
+gs kv unset NODE_ENV --slice payments-api --profile local
+gs kv unset-secret OPENAI_API_KEY --slice payments-api --profile local
 ```
 
-Secret list commands show names and configured/missing status only.
+CI profile:
+
+```bash
+gs kv set PUBLIC_API_BASE_URL https://api.agenttools.dev --home {home} --profile ci
+gs kv set-secret CI_DATABASE_URL --home {home} --profile ci
+gs kv list --home {home} --profile ci
+gs kv unset PUBLIC_API_BASE_URL --home {home} --profile ci
+gs kv unset-secret CI_DATABASE_URL --home {home} --profile ci
+```
+
+`list` commands may show non-secret values. Secret entries show only name,
+scope, profile, version, updated timestamp, and configured/missing status.
 
 ### Materialization
 
@@ -385,8 +461,8 @@ gs env materialize --profile agent --strict
 gs env status
 ```
 
-`--strict` fails when required secrets are missing. Agent startup and CI should
-use strict mode.
+`--strict` fails when required KV entries are missing. Agent startup and CI
+should use strict mode.
 
 ---
 
@@ -413,6 +489,49 @@ slice_env_requirement_index
 This table is cache/index data. It can be rebuilt from home-slice content and
 must not be the authoritative requirements store.
 
+### Authoritative KV Tables
+
+Server-side KV storage is authoritative. It should use one logical model with
+different readback rules per class:
+
+```text
+environment_kv_entries
+  id text
+  home_id text
+  slice_id text
+  slice_slug text
+  profile text
+  key text
+  class text check (class in ('secret', 'value'))
+  encrypted_value bytea
+  value_hash text
+  version bigint
+  created_by text
+  updated_by text
+  created_at timestamptz
+  updated_at timestamptz
+  deleted_at timestamptz
+```
+
+The storage layer can encrypt both classes at rest. `value_hash` should be an
+HMAC or keyed digest for secrets, not a raw SHA of the value, so leaked metadata
+cannot be used for offline guessing. The API behavior differs:
+
+- `class = secret`: set/update/delete/list metadata/status only. No get-value
+  API. Runners receive the value only through a short-lived materialization
+  lease.
+- `class = value`: set/update/delete/list/get value for authorized users and
+  runners.
+
+Unique active key:
+
+```text
+(home_id, slice_id, profile, key, class) where deleted_at is null
+```
+
+Use `slice_id` as the stable scope. Store `slice_slug` as denormalized display
+metadata only, because slugs can change.
+
 ### Suggested gRPC APIs
 
 Requirements are exposed gRPC-first with grpc-gateway bindings:
@@ -423,13 +542,26 @@ service SliceEnvironmentService {
       returns (GetSliceEnvRequirementsResponse);
   rpc ValidateSliceEnvRequirements(ValidateSliceEnvRequirementsRequest)
       returns (ValidateSliceEnvRequirementsResponse);
-  rpc GetSliceEnvSecretStatus(GetSliceEnvSecretStatusRequest)
-      returns (GetSliceEnvSecretStatusResponse);
+  rpc ListSliceEnvKV(ListSliceEnvKVRequest)
+      returns (ListSliceEnvKVResponse);
+  rpc SetSliceEnvValue(SetSliceEnvValueRequest)
+      returns (SetSliceEnvValueResponse);
+  rpc SetSliceEnvSecret(SetSliceEnvSecretRequest)
+      returns (SetSliceEnvSecretResponse);
+  rpc DeleteSliceEnvKV(DeleteSliceEnvKVRequest)
+      returns (DeleteSliceEnvKVResponse);
+  rpc RenderSliceEnvMaterialization(RenderSliceEnvMaterializationRequest)
+      returns (RenderSliceEnvMaterializationResponse);
 }
 ```
 
-These APIs should return requirements, parse errors, and secret status by name.
-They must not return secret values.
+These APIs should return requirements, parse errors, KV metadata, non-secret
+values, and secret configured/missing status by name. They must not return
+secret values to normal clients. `RenderSliceEnvMaterialization` is for
+checkout, local runner, and CI runner materialization flows. It should render
+the declared files server-side and return file payloads plus metadata, not raw
+secret key/value pairs. Each render should create a short-lived
+materialization lease/audit record.
 
 Editing requirements should go through normal file editing and changeset
 workflow, not a DB mutation API. The web UI can provide a form editor that
@@ -448,21 +580,76 @@ The slice settings page should show:
 - profiles
 - materialized file paths
 - required secret names
-- configured/missing secret status for the active profile
+- required non-secret value names
+- configured/missing KV status for the active profile
 
 The UI should support:
 
 - create/edit requirements as a home-slice file changeset
 - set/update/delete secret values through a no-readback secret form
+- set/update/delete non-secret environment values through a readable value form
 - trigger `gs env materialize` instructions for local checkout
 - show whether the current agent checkout has the expected requirements hash
 
-The UI must not display secret values. It should display only:
+The UI must not display secret values. It may display non-secret values. Secret
+rows should display only:
 
 ```text
 OPENAI_API_KEY configured
 DATABASE_URL missing
 ```
+
+---
+
+## Documentation Surfaces
+
+The implementation should update the user-facing docs in the same PR sequence
+that introduces the CLI/API behavior. The docs source of truth is:
+
+```text
+docs.md
+```
+
+The web app serves that content through:
+
+```text
+/docs
+/docs.md
+```
+
+`/docs` is the rendered documentation page. `/docs.md` is the raw markdown
+source. Both should stay consistent because the rendered page imports
+`docs.md`.
+
+The docs update should cover:
+
+- where env requirements live:
+  `/{home}/.gitslice/slices/{slice_slug}/env.yaml`
+- what profiles mean (`local`, `agent`, `ci`, `staging`, `prod`)
+- the server-side KV lookup scope:
+  `home_id / slice_id / profile / class / key`
+- the resolution order:
+  slice profile, slice default, home profile, home default
+- how to set non-secret values with `gs kv set`
+- how to set no-readback secrets with `gs kv set-secret`
+- how `gs slice checkout` and `gs env materialize` use server-side
+  materialization
+- how local agents choose the `agent` profile, then fall back to `local`
+- how CI uses the `ci` profile and trusted home-head policy
+- why materialized files are ignored by status, diff, export, local agent
+  change collection, cache, and artifacts
+
+The docs should include one end-to-end example:
+
+```bash
+gs env init --slice payments-api
+gs kv set NODE_ENV development --slice payments-api --profile local
+gs kv set-secret DATABASE_URL --slice payments-api --profile local
+gs env materialize --slice payments-api --profile local
+```
+
+Add or update docs tests to assert `/docs` contains the new section and
+`/docs.md` serves the same source content.
 
 ---
 
@@ -487,15 +674,16 @@ Both are home-slice files, but they have different trust roles:
 
 ### Trust Boundary
 
-CI must not let an unmerged changeset expose new secrets to itself.
+CI must not let an unmerged changeset expose new secret or environment-value
+keys to itself.
 
 For CI runs on a custom-slice changeset:
 
 1. Read platform policy from the trusted merged home head.
 2. Read env requirements from the trusted merged home head.
 3. Read folder CI manifests from the candidate tree, as currently designed.
-4. Materialize secret-backed files only if requested secrets are allowed by the
-   trusted platform policy.
+4. Materialize KV-backed files only if requested secret and value keys are
+   allowed by the trusted platform policy.
 
 If a changeset modifies:
 
@@ -504,8 +692,8 @@ If a changeset modifies:
 ```
 
 then CI should validate the candidate file's schema and policy compatibility,
-but it should not grant newly requested secrets until that file is merged into
-trusted home head.
+but it should not grant newly requested secret or value keys until that file is
+merged into trusted home head.
 
 This mirrors the existing CI rule for `/{home}/.gitslice/ci.yaml`: policy
 changes are tested under the old trusted policy and apply to future changesets
@@ -523,14 +711,17 @@ Add env requirements to the CI plan input set:
 - env requirements hash
 - selected materialization profile
 - requested secret names, not values
+- requested non-secret value names
 - changed path list
 
 The `plan_hash` should include the env requirements hash and selected profile.
 If requirements change, previous CI results are stale for future runs that use
 the new requirements.
 
-Secret values should not be included in `plan_hash`. CI run metadata may record
-secret version ids for audit and reproducibility, but never secret values.
+Secret values should not be included in `plan_hash`. Non-secret value versions
+or hashes should be included because those values can affect test behavior and
+are safe to audit. CI run metadata may record secret version ids for audit and
+reproducibility, but never secret values.
 
 ### Runner Materialization
 
@@ -541,9 +732,10 @@ Before executing job commands, a CI runner should:
 3. Fetch the trusted env requirements file for the target slice.
 4. Select profile `ci`, falling back to `local` only if platform policy allows
    it. Recommended v1 behavior: require an explicit `ci` profile.
-5. Validate requested secrets against `/{home}/.gitslice/ci.yaml`.
-6. Resolve secret values from the CI secret store.
-7. Render files into the workspace.
+5. Validate requested secret and value keys against
+   `/{home}/.gitslice/ci.yaml`.
+6. Request server-side materialization for the CI profile.
+7. Write the returned rendered files into the workspace.
 8. Mark generated sensitive paths as excluded from cache and artifacts.
 9. Run job commands.
 
@@ -554,21 +746,28 @@ GS_ENV_PROFILE=ci
 GS_ENV_REQUIREMENTS_PATH=/.gitslice/slices/payments-api/env.yaml
 GS_ENV_REQUIREMENTS_HASH=sha256:...
 GS_ENV_MATERIALIZED_FILES=.env.test
+GS_ENV_VALUE_KEYS=PUBLIC_API_BASE_URL
 ```
 
 It should not expose secret values except through the rendered files or explicit
-job environment variables allowed by CI policy.
+job environment variables allowed by CI policy. It may expose non-secret values
+as normal job environment variables when the trusted policy allows them.
 
-### Secrets Policy
+### KV Policy
 
-Extend `/{home}/.gitslice/ci.yaml` secrets policy to cover both job env refs and
+Extend `/{home}/.gitslice/ci.yaml` policy to cover both job env refs and
 materialized file refs:
 
 ```yaml
-secrets:
-  allow:
-    - CI_DATABASE_URL
-    - NPM_TOKEN
+kv:
+  secrets:
+    allow:
+      - CI_DATABASE_URL
+      - NPM_TOKEN
+  values:
+    allow:
+      - PUBLIC_API_BASE_URL
+      - NODE_ENV
   materialization:
     allow_profiles:
       - ci
@@ -576,8 +775,17 @@ secrets:
     deny_cache: true
 ```
 
-CI fails planning if an env requirements file requests a secret not allowed by
-trusted platform policy.
+The existing `secrets.allow` shape can remain as compatibility sugar:
+
+```yaml
+secrets:
+  allow:
+    - CI_DATABASE_URL
+    - NPM_TOKEN
+```
+
+CI fails planning if an env requirements file requests a secret or non-secret
+value not allowed by trusted platform policy.
 
 ### Cache And Artifacts
 
@@ -600,12 +808,15 @@ The final cache/artifact path set must subtract sensitive materialized paths.
 
 The runner must register all resolved secret values with the log redactor before
 job execution. Logs should mask exact values and common encoded forms where
-practical.
+practical. Non-secret values do not need redaction, but the runner should still
+avoid dumping the full resolved KV set unless debug logging is explicitly
+enabled.
 
-Planning and materialization errors should mention only secret names:
+Planning and materialization errors should mention only key names:
 
 ```text
 missing secret CI_DATABASE_URL
+missing value PUBLIC_API_BASE_URL
 ```
 
 not values or rendered template fragments.
@@ -650,11 +861,17 @@ Local checkout should warn and continue unless `--strict` is used.
 Agent startup and CI should fail fast, because a broken requirements file makes
 the runtime environment ambiguous.
 
-### Missing Secrets
+### Missing KV Entries
 
-Local checkout warns and records missing secret names.
+Local checkout warns and records missing secret and value key names.
 
 Agent startup and CI fail in strict mode before starting the agent or job.
+
+### KV Readback Violation
+
+Any API or UI path that attempts to read back a secret value should fail closed
+and return only metadata. Materialization-specific secret resolution must be
+audited and scoped to the target runner/session/job.
 
 ### Generated Path Conflicts With Tracked Content
 
@@ -673,13 +890,19 @@ in the pending export set.
 
 1. Add checkout ignored-local-path support independent of env materialization.
 2. Add parser and validator for `env.yaml`.
-3. Add local secret storage and `gs secret` commands.
-4. Add `gs env materialize` and wire it into `gs slice checkout`.
-5. Wire materialization into local agent per-session checkouts.
-6. Add server-side parsed requirements index for web and CI.
-7. Add no-readback CI secret storage.
-8. Wire CI planning and runners to materialize `ci` profile files.
-9. Add web UI for requirements and secret status.
+3. Add server-side scoped KV storage with encrypted values, no-readback secret
+   APIs, readable non-secret value APIs, and audit metadata.
+4. Add `gs kv` commands backed by the server-side KV APIs.
+5. Add `RenderSliceEnvMaterialization` and wire it into
+   `gs env materialize` and `gs slice checkout`.
+6. Wire materialization into local agent per-session checkouts.
+7. Add server-side parsed requirements index for web and CI.
+8. Wire CI planning and runners to request server-side materialization for
+   `ci` profile files.
+9. Add web UI for requirements, KV status, no-readback secret updates, and
+   readable non-secret value updates.
+10. Update `docs.md`, verify `/docs` renders the new materialization/KV guide,
+    and verify `/docs.md` serves the updated raw markdown.
 
 ---
 
@@ -689,9 +912,10 @@ in the pending export set.
    with slug aliases for readability?
 2. Should local checkout default to non-strict materialization forever, or
    should slices be able to require strict materialization?
-3. Should local secret storage use OS keychain as the default before file-based
-   storage is supported?
-4. Should CI require an explicit `ci` profile, or is fallback to `local` useful
+3. Should CI require an explicit `ci` profile, or is fallback to `local` useful
    enough to justify the risk?
-5. Should editing requirements from the web create a home-slice changeset
+4. Should editing requirements from the web create a home-slice changeset
    automatically, or should it only modify the file in a local checkout?
+5. Should non-secret values be encrypted at rest too, or only secrets?
+6. Should server-side KV support home-level defaults immediately, or should v1
+   only support slice-scoped values?
