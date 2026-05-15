@@ -47,6 +47,39 @@ test('buildConversationItems folds thinking tokens into one item', () => {
   assert.equal(items[2].message.label, 'Codex');
 });
 
+test('buildConversationItems preserves interleaved thinking and tool events', () => {
+  const items = buildConversationItems([
+    { seq: 1, ts: 't1', stream: 'agent', type: 'input', payload: { text: 'make a change' } },
+    { seq: 2, ts: 't2', stream: 'agent', type: 'thinking_delta', payload: { text: 'Checking files. ' } },
+    { seq: 3, ts: 't3', stream: 'tool', type: 'start', payload: { tool: 'Bash', input: { command: 'npm test' } } },
+    { seq: 4, ts: 't4', stream: 'agent', type: 'thinking_delta', payload: { text: 'Inspecting output.' } },
+    { seq: 5, ts: 't5', stream: 'tool', type: 'output', payload: { eventType: 'command_exec_output', text: 'ok' } },
+    { seq: 6, ts: 't6', stream: 'agent', type: 'output_final', payload: { text: 'Done', exitCode: 0 } },
+  ], { active: false }, { agentType: 'codex' });
+
+  assert.deepEqual(items.map((item) => item.kind), ['message', 'thinking', 'events', 'thinking', 'events', 'message']);
+  assert.equal(items[1].text, 'Checking files. ');
+  assert.equal(items[2].events[0].seq, 3);
+  assert.equal(items[3].text, 'Inspecting output.');
+  assert.equal(items[4].events[0].seq, 5);
+});
+
+test('buildConversationItems renders live deltas inline without duplicating aggregate stream state', () => {
+  const items = buildConversationItems([
+    { seq: 1, ts: 't1', stream: 'agent', type: 'input', payload: { text: 'continue' } },
+    { seq: 2, ts: 't2', stream: 'agent', type: 'thinking_delta', payload: { text: 'Thinking.' } },
+  ], {
+    active: true,
+    pendingInputSeq: 1,
+    thinkingText: 'Thinking.',
+    responseText: '',
+  }, { agentType: 'codex' });
+
+  assert.deepEqual(items.map((item) => item.kind), ['message', 'thinking']);
+  assert.equal(items[1].text, 'Thinking.');
+  assert.equal(items[1].live, true);
+});
+
 test('buildLiveStreamState exposes pending thinking and response text', () => {
   const state = buildLiveStreamState([
     { seq: 1, stream: 'agent', type: 'input', payload: { text: 'continue' } },
@@ -87,6 +120,45 @@ test('event display helpers preserve local changes and control errors', () => {
   assert.equal(eventTitle(localChangesEvent), 'Local changes');
   assert.equal(eventBody(localChangesEvent), '+1');
   assert.equal(eventTone(warningEvent), 'status');
+});
+
+test('tool event display helpers summarize known tool payloads', () => {
+  const bashEvent = {
+    stream: 'tool',
+    type: 'start',
+    payload: {
+      tool: 'Bash',
+      input: {
+        command: 'npm test',
+        description: 'run tests',
+      },
+    },
+  };
+  const readEvent = {
+    stream: 'tool',
+    type: 'start',
+    payload: {
+      tool: 'Read',
+      input: {
+        file_path: 'src/app.js',
+      },
+    },
+  };
+  const outputEvent = {
+    stream: 'tool',
+    type: 'output',
+    payload: {
+      eventType: 'command_exec_output',
+      text: 'ok',
+    },
+  };
+
+  assert.equal(eventTitle(bashEvent), 'Run command');
+  assert.equal(eventBody(bashEvent), 'npm test\nDescription: run tests');
+  assert.equal(eventTitle(readEvent), 'Read file');
+  assert.equal(eventBody(readEvent), 'Path: src/app.js');
+  assert.equal(eventTitle(outputEvent), 'Command output');
+  assert.equal(eventBody(outputEvent), 'ok');
 });
 
 test('latestCheckoutFailureEvent returns unresolved terminal checkout failures', () => {
