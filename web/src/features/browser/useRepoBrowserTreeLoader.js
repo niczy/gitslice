@@ -13,9 +13,14 @@ import {
   getTreeFileSize,
 } from './browserModel.js';
 
+function getListEntriesSliceHash(payload) {
+  return String(payload?.sliceHash || payload?.slice_hash || '').trim();
+}
+
 export function useRepoBrowserTreeLoader({
   buildEntriesUrl,
   buildFileUrl,
+  canPinEntriesSliceHash = true,
   canLoad,
   clearFilePreview,
   expandedPaths,
@@ -43,6 +48,7 @@ export function useRepoBrowserTreeLoader({
   setPreviewFilePath,
   setSelectedFile,
   setSelectedFileSize,
+  setSliceHash,
   setTreeEntries,
   sliceHash,
   sliceId,
@@ -83,6 +89,10 @@ export function useRepoBrowserTreeLoader({
         }
 
         const rootEntries = payload.entries || [];
+        const resolvedSliceHash = getListEntriesSliceHash(payload);
+        if (canPinEntriesSliceHash && resolvedSliceHash && resolvedSliceHash !== sliceHash) {
+          setSliceHash(resolvedSliceHash);
+        }
         const pendingFile = pendingFileRef.current;
         const shouldRestorePendingFile = !initialBrowserState?.slice || initialBrowserState.slice === sliceId;
         if (pendingFile && shouldRestorePendingFile) {
@@ -100,6 +110,10 @@ export function useRepoBrowserTreeLoader({
               const dirResp = await fetchWithAuth(buildEntriesUrl(parentPath), { signal: controller.signal });
               if (dirResp.ok) {
                 const dirData = await dirResp.json();
+                const dirSliceHash = getListEntriesSliceHash(dirData);
+                if (canPinEntriesSliceHash && dirSliceHash && dirSliceHash !== sliceHash) {
+                  setSliceHash(dirSliceHash);
+                }
                 allEntries[parentPath] = dirData.entries || [];
               }
             } catch (err) {
@@ -172,6 +186,7 @@ export function useRepoBrowserTreeLoader({
   }, [
     buildEntriesUrl,
     buildFileUrl,
+    canPinEntriesSliceHash,
     canLoad,
     hasLoadedRootEntries,
     initialBrowserData,
@@ -194,6 +209,7 @@ export function useRepoBrowserTreeLoader({
     setPreviewFilePath,
     setSelectedFile,
     setSelectedFileSize,
+    setSliceHash,
     setTreeEntries,
     sliceHash,
     sliceId,
@@ -213,6 +229,10 @@ export function useRepoBrowserTreeLoader({
         throw new Error(`Request failed (${response.status})`);
       }
       const payload = await response.json();
+      const resolvedSliceHash = getListEntriesSliceHash(payload);
+      if (canPinEntriesSliceHash && resolvedSliceHash && resolvedSliceHash !== sliceHash) {
+        setSliceHash(resolvedSliceHash);
+      }
       setTreeEntries((prev) => ({
         ...prev,
         [path]: payload.entries || [],
@@ -224,7 +244,7 @@ export function useRepoBrowserTreeLoader({
     } finally {
       setIsLoading(false);
     }
-  }, [buildEntriesUrl, canLoad, selectedFileRef, setError, setIsLoading, setTreeEntries]);
+  }, [buildEntriesUrl, canPinEntriesSliceHash, canLoad, selectedFileRef, setError, setIsLoading, setSliceHash, setTreeEntries, sliceHash]);
 
   useEffect(() => {
     if (!isActive || !canLoad || !selectedFile) {
@@ -266,6 +286,10 @@ export function useRepoBrowserTreeLoader({
           if (!active) {
             return;
           }
+          const resolvedSliceHash = getListEntriesSliceHash(payload);
+          if (canPinEntriesSliceHash && resolvedSliceHash && resolvedSliceHash !== sliceHash) {
+            setSliceHash(resolvedSliceHash);
+          }
           const entries = payload.entries || [];
           setTreeEntries((prev) => {
             if (Object.prototype.hasOwnProperty.call(prev, path)) {
@@ -290,7 +314,7 @@ export function useRepoBrowserTreeLoader({
       active = false;
       controller.abort();
     };
-  }, [buildEntriesUrl, canLoad, isActive, selectedFile, setTreeEntries, treeEntriesRef, treeEntriesScopeKey]);
+  }, [buildEntriesUrl, canPinEntriesSliceHash, canLoad, isActive, selectedFile, setSliceHash, setTreeEntries, sliceHash, treeEntriesRef, treeEntriesScopeKey]);
 
   const openDirectoryPath = useCallback(async (targetPath, options = {}) => {
     if (!canLoad) {

@@ -35,8 +35,15 @@ export default function RepoBrowser({
   initialBrowserData,
 }) {
   const initialBrowserState = useInitialBrowserState();
+  const initialRouteSliceHash = initialBrowserState?.sliceHash || '';
   const initialDataMatchesRawSlice = initialBrowserData?.selectedSliceId === currentSliceId
-    && String(initialBrowserData?.sliceHash || '') === String(initialBrowserState?.sliceHash || '');
+    && (
+      !initialRouteSliceHash
+      || String(initialBrowserData?.sliceHash || '') === String(initialRouteSliceHash)
+    );
+  const initialResolvedSliceHash = initialDataMatchesRawSlice
+    ? initialBrowserData?.sliceHash || initialRouteSliceHash
+    : initialRouteSliceHash;
   const initialSelectedFilePayload = initialDataMatchesRawSlice ? initialBrowserData?.selectedFilePayload : null;
   const initialSelectedFilePath = initialDataMatchesRawSlice
     ? initialBrowserData?.selectedFile || initialBrowserState?.file || ''
@@ -45,7 +52,7 @@ export default function RepoBrowser({
     ? ''
     : String(initialBrowserState?.dir || '').replace(/^\/+/, '');
   const hasInitialSelectedFilePayload = Boolean(initialSelectedFilePayload?.content);
-  const [sliceHash, setSliceHash] = useState(initialBrowserState?.sliceHash || '');
+  const [sliceHash, setSliceHash] = useState(initialResolvedSliceHash);
   const {
     closeSidebar,
     handleSidebarResizeKeyDown,
