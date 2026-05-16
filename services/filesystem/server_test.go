@@ -437,6 +437,69 @@ func TestSearchReturnsPrivateAndPublicMatchesForAuthorizedUser(t *testing.T) {
 	}
 }
 
+func TestSearchWithRequiredStateTokenReturnsNotReady(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	homeID := homeslice.IDForUsername("tester")
+	writeResp, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: homeID,
+		Path:        "/tester/docs/search.md",
+		Content:     []byte("needle from token\n"),
+	})
+	if err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	token := &filev1.SliceStateToken{
+		SliceId:   homeID,
+		SliceHash: writeResp.GetCommitHash(),
+	}
+	if err := st.PutWorkspaceSearchArtifact(context.Background(), homeID, searchindex.CurrentArtifactVersion, []byte("corrupt")); err != nil {
+		t.Fatalf("PutWorkspaceSearchArtifact(corrupt) failed: %v", err)
+	}
+	if impl, ok := svc.(*filesystemServiceServer); ok {
+		impl.searchArtifactCache.DeleteSlice(homeID)
+	}
+
+	searchResp, err := svc.Search(ctx, &filesystemv1.SearchRequest{
+		WorkspaceId:        homeID,
+		Query:              "needle",
+		RequiredStateToken: token,
+	})
+	if err != nil {
+		t.Fatalf("Search with required token returned error: %v", err)
+	}
+	if searchResp.GetStatus() != filesystemv1.SearchStatus_SEARCH_STATUS_INDEX_NOT_READY {
+		t.Fatalf("search status = %v, want index not ready", searchResp.GetStatus())
+	}
+	if len(searchResp.GetMatches()) != 0 {
+		t.Fatalf("not-ready search returned matches: %#v", searchResp.GetMatches())
+	}
+
+	waitForSearchIndexForTest(t, svc)
+	searchResp, err = svc.Search(ctx, &filesystemv1.SearchRequest{
+		WorkspaceId:        homeID,
+		Query:              "needle",
+		RequiredStateToken: token,
+	})
+	if err != nil {
+		t.Fatalf("Search after indexing failed: %v", err)
+	}
+	if searchResp.GetStatus() != filesystemv1.SearchStatus_SEARCH_STATUS_READY {
+		t.Fatalf("search status after indexing = %v, want ready", searchResp.GetStatus())
+	}
+	if got := searchResp.GetIndexedStateToken().GetSliceHash(); got != writeResp.GetCommitHash() {
+		t.Fatalf("indexed token slice hash = %q, want %q", got, writeResp.GetCommitHash())
+	}
+	if len(searchResp.GetMatches()) != 1 || searchResp.GetMatches()[0].GetPath() != "/tester/docs/search.md" {
+		t.Fatalf("unexpected ready search matches: %#v", searchResp.GetMatches())
+	}
+}
+
 func TestSearchUsesMountedLiveBackingSlice(t *testing.T) {
 	ctx := authContext("tester")
 	st := storage.NewInMemoryStorage()

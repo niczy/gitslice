@@ -5,6 +5,7 @@ package filesystem.v1;
 option go_package = "github.com/niczy/gitslice/proto/filesystem;filesystemv1";
 
 import "common/visibility.proto";
+import "file/file_service.proto";
 import "google/api/annotations.proto";
 
 service FilesystemService {
@@ -609,6 +610,8 @@ message SearchRequest {
   string query = 2;
   string glob = 3;
   bool regex = 4;
+  file.v1.SliceStateToken required_state_token = 5;
+  int32 wait_ms = 6;
 }
 
 message SearchMatch {
@@ -624,6 +627,14 @@ message SearchResponse {
   string query = 2;
   string glob = 3;
   repeated SearchMatch matches = 4;
+  file.v1.SliceStateToken indexed_state_token = 5;
+  SearchStatus status = 6;
+  string message = 7;
+}
+
+enum SearchStatus {
+  SEARCH_STATUS_READY = 0;
+  SEARCH_STATUS_INDEX_NOT_READY = 1;
 }
 
 message SnapshotInfo {

@@ -25,6 +25,7 @@ import (
 	"github.com/niczy/gitslice/internal/searchindex"
 	"github.com/niczy/gitslice/internal/storage"
 	commonv1 "github.com/niczy/gitslice/proto/common"
+	filev1 "github.com/niczy/gitslice/proto/file"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	"github.com/pmezard/go-difflib/difflib"
 	"google.golang.org/grpc"
@@ -1741,6 +1742,9 @@ func (s *filesystemServiceServer) Search(ctx context.Context, req *filesystemv1.
 	}
 
 	var matches []*filesystemv1.SearchMatch
+	indexedStateToken := req.GetRequiredStateToken()
+	searchStatus := filesystemv1.SearchStatus_SEARCH_STATUS_READY
+	message := ""
 	backingSliceID, mountedEntries, mountedView, err := s.mountedWorkspaceView(ctx, workspace)
 	if err != nil {
 		return nil, err
@@ -1748,9 +1752,19 @@ func (s *filesystemServiceServer) Search(ctx context.Context, req *filesystemv1.
 	if mountedView {
 		matches, err = s.searchMountedWorkspace(ctx, workspace.ID, strings.TrimSpace(meta.HeadCommitHash), backingSliceID, mountedEntries, query, globPattern, homeMode, req.GetRegex())
 	} else {
-		matches, err = s.searchWorkspaceIndexed(ctx, workspace.ID, strings.TrimSpace(meta.HeadCommitHash), query, globPattern, homeMode, req.GetRegex())
+		matches, indexedStateToken, err = s.searchWorkspaceIndexed(ctx, workspace.ID, strings.TrimSpace(meta.HeadCommitHash), query, globPattern, homeMode, req.GetRegex(), req.GetRequiredStateToken())
 	}
 	if err != nil {
+		if req.GetRequiredStateToken() != nil && status.Code(err) == codes.FailedPrecondition {
+			return &filesystemv1.SearchResponse{
+				WorkspaceId:       workspace.ID,
+				Query:             query,
+				Glob:              displaySearchGlob(globPattern, homeMode),
+				IndexedStateToken: indexedStateToken,
+				Status:            filesystemv1.SearchStatus_SEARCH_STATUS_INDEX_NOT_READY,
+				Message:           status.Convert(err).Message(),
+			}, nil
+		}
 		return nil, err
 	}
 
@@ -1765,10 +1779,13 @@ func (s *filesystemServiceServer) Search(ctx context.Context, req *filesystemv1.
 	})
 
 	return &filesystemv1.SearchResponse{
-		WorkspaceId: workspace.ID,
-		Query:       query,
-		Glob:        displaySearchGlob(globPattern, homeMode),
-		Matches:     matches,
+		WorkspaceId:       workspace.ID,
+		Query:             query,
+		Glob:              displaySearchGlob(globPattern, homeMode),
+		Matches:           matches,
+		IndexedStateToken: indexedStateToken,
+		Status:            searchStatus,
+		Message:           message,
 	}, nil
 }
 
@@ -3529,14 +3546,18 @@ func (s *filesystemServiceServer) searchMountedWorkspace(
 	return matches, nil
 }
 
-func (s *filesystemServiceServer) searchWorkspaceIndexed(ctx context.Context, sliceID, headCommitHash, query, globPattern string, homeMode, regex bool) ([]*filesystemv1.SearchMatch, error) {
+func (s *filesystemServiceServer) searchWorkspaceIndexed(ctx context.Context, sliceID, headCommitHash, query, globPattern string, homeMode, regex bool, requiredStateToken *filev1.SliceStateToken) ([]*filesystemv1.SearchMatch, *filev1.SliceStateToken, error) {
 	artifactLoadStartedAt := time.Now()
 	artifact, artifactOutcome, artifactErr := s.loadSliceSearchArtifact(ctx, sliceID, headCommitHash)
 	if artifactOutcome != "" {
 		observeFilesystemSearchArtifactLoad(artifactOutcome, time.Since(artifactLoadStartedAt))
 	}
+	indexedStateToken := s.searchArtifactStateToken(ctx, sliceID, artifact)
 	if artifactErr != nil {
-		return nil, artifactErr
+		return nil, indexedStateToken, artifactErr
+	}
+	if !searchStateTokenCovers(indexedStateToken, requiredStateToken) {
+		return nil, indexedStateToken, status.Error(codes.FailedPrecondition, "search index is not ready for the requested slice state; retry shortly")
 	}
 
 	indexQuery := query
@@ -3545,7 +3566,7 @@ func (s *filesystemServiceServer) searchWorkspaceIndexed(ctx context.Context, sl
 	}
 	queryNode, err := searchindex.BuildRegexQuery(indexQuery, searchindex.DefaultWeighter(), searchindex.SparseModeCovering)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid regex query: %v", err))
+		return nil, indexedStateToken, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid regex query: %v", err))
 	}
 	candidateIndexes := searchindex.CandidateFileIndexes(artifact, queryNode)
 	searchMode := "text_indexed"
@@ -3554,20 +3575,21 @@ func (s *filesystemServiceServer) searchWorkspaceIndexed(ctx context.Context, sl
 	}
 	observeFilesystemSearchCandidates(searchMode, len(candidateIndexes))
 	if len(candidateIndexes) == 0 {
-		return []*filesystemv1.SearchMatch{}, nil
+		return []*filesystemv1.SearchMatch{}, indexedStateToken, nil
 	}
 
 	var re *regexp.Regexp
 	if regex {
 		re, err = regexp.Compile(query)
 		if err != nil {
-			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid regex query: %v", err))
+			return nil, indexedStateToken, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid regex query: %v", err))
 		}
 	}
 
 	verifyStartedAt := time.Now()
 	defer observeFilesystemSearchVerify(searchMode, time.Since(verifyStartedAt))
-	return s.verifyIndexedSearchCandidates(ctx, sliceID, artifact, candidateIndexes, globPattern, homeMode, regex, query, re)
+	matches, err := s.verifyIndexedSearchCandidates(ctx, sliceID, artifact, candidateIndexes, globPattern, homeMode, regex, query, re)
+	return matches, indexedStateToken, err
 }
 
 type searchCandidateResult struct {
@@ -3729,6 +3751,77 @@ func (s *filesystemServiceServer) loadSliceSearchArtifact(ctx context.Context, s
 	}
 	s.searchArtifactCache.Put(sliceID, headCommitHash, artifact)
 	return artifact, outcome.String(), nil
+}
+
+func (s *filesystemServiceServer) searchArtifactStateToken(ctx context.Context, sliceID string, artifact *searchindex.SliceArtifact) *filev1.SliceStateToken {
+	if artifact == nil {
+		return nil
+	}
+	token := &filev1.SliceStateToken{
+		SliceId:   strings.TrimSpace(sliceID),
+		SliceHash: strings.TrimSpace(artifact.CommitHash),
+	}
+	if token.SliceHash == "" {
+		return token
+	}
+	eventStore, ok := s.storage.(storage.MergeEventStore)
+	if !ok {
+		return token
+	}
+	event, err := eventStore.GetMergeEventBySourceCommitHash(ctx, token.SliceHash)
+	if err != nil || event == nil {
+		return token
+	}
+	token.Cursors = []*filev1.StateCursor{{
+		HomeId:     strings.TrimSpace(event.HomeID),
+		MergeShard: event.ShardID,
+		MergeSeq:   event.MergeSeq,
+	}}
+	return token
+}
+
+func searchStateTokenCovers(indexed *filev1.SliceStateToken, required *filev1.SliceStateToken) bool {
+	if required == nil {
+		return true
+	}
+	requiredSliceHash := strings.TrimSpace(required.GetSliceHash())
+	if requiredSliceHash != "" {
+		if indexed == nil || strings.TrimSpace(indexed.GetSliceHash()) != requiredSliceHash {
+			return false
+		}
+	}
+	if len(required.GetCursors()) == 0 {
+		return true
+	}
+	if indexed == nil || len(indexed.GetCursors()) == 0 {
+		return false
+	}
+	indexedSeqByHome := make(map[string]int64, len(indexed.GetCursors()))
+	for _, cursor := range indexed.GetCursors() {
+		if cursor == nil {
+			continue
+		}
+		homeID := strings.TrimSpace(cursor.GetHomeId())
+		if homeID == "" {
+			continue
+		}
+		if current, ok := indexedSeqByHome[homeID]; !ok || cursor.GetMergeSeq() > current {
+			indexedSeqByHome[homeID] = cursor.GetMergeSeq()
+		}
+	}
+	for _, cursor := range required.GetCursors() {
+		if cursor == nil {
+			continue
+		}
+		homeID := strings.TrimSpace(cursor.GetHomeId())
+		if homeID == "" {
+			continue
+		}
+		if indexedSeqByHome[homeID] < cursor.GetMergeSeq() {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *filesystemServiceServer) snapshotInfoByCommitHash(ctx context.Context, workspaceID, commitHash string) (*filesystemv1.SnapshotInfo, error) {
