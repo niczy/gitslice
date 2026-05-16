@@ -10,6 +10,7 @@ import {
 import { Button } from '../ui/button.jsx';
 
 export default function RepoBrowserFileActions({
+  canEdit = true,
   isEditingFile,
   onActionDone,
   onCancelEdit,
@@ -26,7 +27,7 @@ export default function RepoBrowserFileActions({
 
   return (
     <>
-      {!showHistory && (
+      {!showHistory && canEdit && (
         <>
           <Button
             type="button"

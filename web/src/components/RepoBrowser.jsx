@@ -209,6 +209,7 @@ export default function RepoBrowser({
 
   const sidebarVisible = sidebarOpen || isSidebarDismissing;
   const fileActionProps = useMemo(() => ({
+    canEdit: Boolean(String(authUsername || '').trim()),
     isEditingFile,
     onCancelEdit: cancelFileEdit,
     onCommitEdit: confirmFileEdit,
@@ -219,6 +220,7 @@ export default function RepoBrowser({
     selectedFile,
     showHistory,
   }), [
+    authUsername,
     cancelFileEdit,
     closeCompactActions,
     confirmFileEdit,

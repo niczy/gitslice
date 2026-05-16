@@ -2075,11 +2075,17 @@ func (s *accountServiceServer) GetMe(ctx context.Context, req *accountv1.GetMeRe
 				if err != nil {
 					return nil, status.Error(codes.Internal, "failed to ensure user")
 				}
+				if _, err := homeslice.EnsureUserHomeSlice(ctx, s.st, user.Username); err != nil {
+					return nil, status.Error(codes.Internal, "failed to provision home slice")
+				}
 				return userToProto(user), nil
 			}
 			return nil, status.Error(codes.NotFound, "user not found")
 		}
 		return nil, status.Error(codes.Internal, "failed to load user")
+	}
+	if _, err := homeslice.EnsureUserHomeSlice(ctx, s.st, user.Username); err != nil {
+		return nil, status.Error(codes.Internal, "failed to provision home slice")
 	}
 	return userToProto(user), nil
 }

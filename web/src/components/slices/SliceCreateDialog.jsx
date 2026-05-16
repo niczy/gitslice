@@ -107,7 +107,7 @@ export function SliceCreateDialog({
         <div className="slice-create-header">
           <div>
             <h2>Create slice</h2>
-            <p>Select the root folders this workspace slice should track.</p>
+            <p>Select the home folders this slice should track.</p>
           </div>
           <Button
             type="button"
@@ -126,7 +126,7 @@ export function SliceCreateDialog({
             type="text"
             value={sliceName}
             onChange={(event) => onNameChange(event.target.value)}
-            placeholder="Feature workspace"
+            placeholder="Feature slice"
             data-testid="slice-create-name"
             autoFocus
           />

@@ -69,6 +69,20 @@ func authCtx() context.Context {
 	return metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 }
 
+func adminAuthCtx(t testing.TB, st storage.Storage) context.Context {
+	t.Helper()
+	t.Setenv("ADMIN_USER_EMAILS", "admin@example.com")
+	err := st.CreateUser(context.Background(), &models.User{
+		Username:     "admin",
+		PrimaryEmail: "admin@example.com",
+		RootPath:     "admin",
+	})
+	if err != nil && err != storage.ErrEntryExists {
+		t.Fatalf("CreateUser(admin) failed: %v", err)
+	}
+	return metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User admin"))
+}
+
 func mustWriteSliceManifest(tb testing.TB, ctx context.Context, st storage.Storage, sliceID, filePath string, content []byte) string {
 	tb.Helper()
 	manifest, err := storage.WriteSliceFileManifest(ctx, st, sliceID, filePath, content)
@@ -203,11 +217,12 @@ func TestGetPublicFileAllowsAnonymousReadForPublicFile(t *testing.T) {
 	st := storage.NewInMemoryStorage()
 
 	slice := &models.Slice{
-		ID:        "public-file",
-		Name:      "public-file",
-		Owners:    []string{"tester"},
-		CreatedBy: "tester",
-		Files:     []string{"docs/public.txt"},
+		ID:         "public-file",
+		Name:       "public-file",
+		Owners:     []string{"tester"},
+		CreatedBy:  "tester",
+		Visibility: models.VisibilityPublic,
+		Files:      []string{"docs/public.txt"},
 	}
 	if err := st.CreateSlice(ctx, slice); err != nil {
 		t.Fatalf("CreateSlice failed: %v", err)
@@ -222,13 +237,6 @@ func TestGetPublicFileAllowsAnonymousReadForPublicFile(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AddEntry failed: %v", err)
 	}
-	if err := st.UpsertPathVisibilityRule(ctx, &models.PathVisibilityRule{
-		Path:       "/docs/public.txt",
-		EntryType:  models.PathVisibilityEntryTypeFile,
-		Visibility: models.VisibilityPublic,
-	}); err != nil {
-		t.Fatalf("UpsertPathVisibilityRule failed: %v", err)
-	}
 
 	svc := newFileServiceServer(st)
 	resp, err := svc.GetPublicFile(context.Background(), &filev1.GetPublicFileRequest{
@@ -240,6 +248,127 @@ func TestGetPublicFileAllowsAnonymousReadForPublicFile(t *testing.T) {
 	}
 	if got := string(resp.GetFile().GetContent()); got != "hello public" {
 		t.Fatalf("unexpected content %q", got)
+	}
+}
+
+func TestListEntriesAllowsAnonymousReadForPublicSlice(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{
+		ID:         "public-slice-list",
+		Name:       "public-slice-list",
+		Owners:     []string{"tester"},
+		CreatedBy:  "tester",
+		Visibility: models.VisibilityPublic,
+		Files:      []string{"docs/public.txt"},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	mustWriteSliceManifest(t, ctx, st, slice.ID, "docs/public.txt", []byte("hello public"))
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(slice.ID, "docs/public.txt"),
+		Path:     "docs/public.txt",
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     int64(len("hello public")),
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	resp, err := svc.ListEntries(context.Background(), &filev1.ListEntriesRequest{
+		Version: &filev1.ListEntriesRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: slice.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ListEntries failed: %v", err)
+	}
+	if got, want := len(resp.GetEntries()), 1; got != want {
+		t.Fatalf("len(entries) = %d, want %d", got, want)
+	}
+	if got, want := resp.GetEntries()[0].GetPath(), "docs"; got != want {
+		t.Fatalf("entry path = %q, want %q", got, want)
+	}
+}
+
+func TestGetFileAllowsAnonymousReadForPublicSlice(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{
+		ID:         "public-slice-file",
+		Name:       "public-slice-file",
+		Owners:     []string{"tester"},
+		CreatedBy:  "tester",
+		Visibility: models.VisibilityPublic,
+		Files:      []string{"docs/public.txt"},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	mustWriteSliceManifest(t, ctx, st, slice.ID, "docs/public.txt", []byte("hello public"))
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(slice.ID, "docs/public.txt"),
+		Path:     "docs/public.txt",
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     int64(len("hello public")),
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	resp, err := svc.GetFile(context.Background(), &filev1.GetFileRequest{
+		Path: "docs/public.txt",
+		Version: &filev1.GetFileRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: slice.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetFile failed: %v", err)
+	}
+	if got := string(resp.GetFile().GetContent()); got != "hello public" {
+		t.Fatalf("unexpected content %q", got)
+	}
+}
+
+func TestGetFileRequiresAuthForPrivateSlice(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{
+		ID:        "private-slice-file",
+		Name:      "private-slice-file",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files:     []string{"docs/private.txt"},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	mustWriteSliceManifest(t, ctx, st, slice.ID, "docs/private.txt", []byte("hidden"))
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(slice.ID, "docs/private.txt"),
+		Path:     "docs/private.txt",
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     int64(len("hidden")),
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	_, err := svc.GetFile(context.Background(), &filev1.GetFileRequest{
+		Path: "docs/private.txt",
+		Version: &filev1.GetFileRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: slice.ID},
+		},
+	})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("GetFile error = %v, want %v", status.Code(err), codes.Unauthenticated)
 	}
 }
 
@@ -278,15 +407,16 @@ func TestGetPublicFileReturnsNotFoundForPrivateFile(t *testing.T) {
 	}
 }
 
-func TestListPublicEntriesHidesPrivateSiblings(t *testing.T) {
+func TestListPublicEntriesReturnsPublicSliceEntries(t *testing.T) {
 	ctx := authCtx()
 	st := storage.NewInMemoryStorage()
 
 	slice := &models.Slice{
-		ID:        "public-folder",
-		Name:      "public-folder",
-		Owners:    []string{"tester"},
-		CreatedBy: "tester",
+		ID:         "public-folder",
+		Name:       "public-folder",
+		Owners:     []string{"tester"},
+		CreatedBy:  "tester",
+		Visibility: models.VisibilityPublic,
 		Files: []string{
 			"docs/public.txt",
 			"docs/private.txt",
@@ -310,21 +440,6 @@ func TestListPublicEntriesHidesPrivateSiblings(t *testing.T) {
 			t.Fatalf("AddEntry(%s) failed: %v", filePath, err)
 		}
 	}
-	if err := st.UpsertPathVisibilityRule(ctx, &models.PathVisibilityRule{
-		Path:       "/docs",
-		EntryType:  models.PathVisibilityEntryTypeDirectory,
-		Visibility: models.VisibilityPublic,
-	}); err != nil {
-		t.Fatalf("UpsertPathVisibilityRule(dir) failed: %v", err)
-	}
-	if err := st.UpsertPathVisibilityRule(ctx, &models.PathVisibilityRule{
-		Path:       "/docs/private.txt",
-		EntryType:  models.PathVisibilityEntryTypeFile,
-		Visibility: models.VisibilityPrivate,
-	}); err != nil {
-		t.Fatalf("UpsertPathVisibilityRule(file) failed: %v", err)
-	}
-
 	storedSlice, err := st.GetSlice(ctx, slice.ID)
 	if err != nil {
 		t.Fatalf("GetSlice failed: %v", err)
@@ -338,24 +453,30 @@ func TestListPublicEntriesHidesPrivateSiblings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPublicEntries failed: %v", err)
 	}
-	if got, want := len(resp.GetEntries()), 1; got != want {
+	if got, want := len(resp.GetEntries()), 2; got != want {
 		t.Fatalf("len(entries) = %d, want %d", got, want)
 	}
-	if got := resp.GetEntries()[0].GetPath(); got != "docs/public.txt" {
-		t.Fatalf("entry path = %q, want %q", got, "docs/public.txt")
+	gotPaths := []string{resp.GetEntries()[0].GetPath(), resp.GetEntries()[1].GetPath()}
+	sort.Strings(gotPaths)
+	wantPaths := []string{"docs/private.txt", "docs/public.txt"}
+	for i := range wantPaths {
+		if gotPaths[i] != wantPaths[i] {
+			t.Fatalf("entry paths = %#v, want %#v", gotPaths, wantPaths)
+		}
 	}
 }
 
-func TestListPublicEntriesAllowsAncestorTraversalForPublicDescendant(t *testing.T) {
+func TestListPublicEntriesAllowsTraversalForPublicSlice(t *testing.T) {
 	ctx := authCtx()
 	st := storage.NewInMemoryStorage()
 
 	slice := &models.Slice{
-		ID:        "public-ancestor",
-		Name:      "public-ancestor",
-		Owners:    []string{"tester"},
-		CreatedBy: "tester",
-		Files:     []string{"docs/guides/public.txt"},
+		ID:         "public-ancestor",
+		Name:       "public-ancestor",
+		Owners:     []string{"tester"},
+		CreatedBy:  "tester",
+		Visibility: models.VisibilityPublic,
+		Files:      []string{"docs/guides/public.txt"},
 	}
 	if err := st.CreateSlice(ctx, slice); err != nil {
 		t.Fatalf("CreateSlice failed: %v", err)
@@ -370,21 +491,6 @@ func TestListPublicEntriesAllowsAncestorTraversalForPublicDescendant(t *testing.
 	}); err != nil {
 		t.Fatalf("AddEntry failed: %v", err)
 	}
-	if err := st.UpsertPathVisibilityRule(ctx, &models.PathVisibilityRule{
-		Path:       "/docs/guides/public.txt",
-		EntryType:  models.PathVisibilityEntryTypeFile,
-		Visibility: models.VisibilityPublic,
-	}); err != nil {
-		t.Fatalf("UpsertPathVisibilityRule(public file) failed: %v", err)
-	}
-	if err := st.UpsertPathVisibilityRule(ctx, &models.PathVisibilityRule{
-		Path:       "/docs",
-		EntryType:  models.PathVisibilityEntryTypeDirectory,
-		Visibility: models.VisibilityPrivate,
-	}); err != nil {
-		t.Fatalf("UpsertPathVisibilityRule(private dir) failed: %v", err)
-	}
-
 	storedSlice, err := st.GetSlice(ctx, slice.ID)
 	if err != nil {
 		t.Fatalf("GetSlice failed: %v", err)
@@ -443,13 +549,6 @@ func TestGetPublicFileAllowsSlicePublicOverride(t *testing.T) {
 		Size:     int64(len("slice public")),
 	}); err != nil {
 		t.Fatalf("AddEntry failed: %v", err)
-	}
-	if err := st.UpsertPathVisibilityRule(ctx, &models.PathVisibilityRule{
-		Path:       "/docs/private.txt",
-		EntryType:  models.PathVisibilityEntryTypeFile,
-		Visibility: models.VisibilityPrivate,
-	}); err != nil {
-		t.Fatalf("UpsertPathVisibilityRule failed: %v", err)
 	}
 
 	svc := newFileServiceServer(st)
@@ -964,7 +1063,8 @@ func TestRootSliceDirectReadsUseLiveHomeBackingTree(t *testing.T) {
 	}
 
 	svc := newFileServiceServer(st)
-	listResp, err := svc.ListEntries(ctx, &filev1.ListEntriesRequest{Path: "tester/shared"})
+	requestCtx := adminAuthCtx(t, st)
+	listResp, err := svc.ListEntries(requestCtx, &filev1.ListEntriesRequest{Path: "tester/shared"})
 	if err != nil {
 		t.Fatalf("ListEntries(root home path) failed: %v", err)
 	}
@@ -975,7 +1075,7 @@ func TestRootSliceDirectReadsUseLiveHomeBackingTree(t *testing.T) {
 		t.Fatalf("expected logical root file tester/shared/live.txt, got %q", got)
 	}
 
-	fileResp, err := svc.GetFile(ctx, &filev1.GetFileRequest{Path: "tester/shared/live.txt"})
+	fileResp, err := svc.GetFile(requestCtx, &filev1.GetFileRequest{Path: "tester/shared/live.txt"})
 	if err != nil {
 		t.Fatalf("GetFile(root home path) failed: %v", err)
 	}
@@ -1313,7 +1413,8 @@ func TestSnapshotPathsExcludeStaleFileIDs(t *testing.T) {
 	}
 
 	svc := newFileServiceServer(st)
-	listResp, err := svc.ListEntries(ctx, &filev1.ListEntriesRequest{
+	requestCtx := adminAuthCtx(t, st)
+	listResp, err := svc.ListEntries(requestCtx, &filev1.ListEntriesRequest{
 		Version: &filev1.ListEntriesRequest_SliceVersion{SliceVersion: &filev1.SliceVersion{SliceId: sliceID, SliceHash: headCommit}},
 	})
 	if err != nil {
@@ -1323,7 +1424,7 @@ func TestSnapshotPathsExcludeStaleFileIDs(t *testing.T) {
 		t.Fatalf("expected stale path to be excluded, got %#v", listResp.GetEntries())
 	}
 
-	_, err = svc.GetFile(ctx, &filev1.GetFileRequest{
+	_, err = svc.GetFile(requestCtx, &filev1.GetFileRequest{
 		Path:    stalePath,
 		Version: &filev1.GetFileRequest_SliceVersion{SliceVersion: &filev1.SliceVersion{SliceId: sliceID, SliceHash: headCommit}},
 	})
@@ -1366,7 +1467,8 @@ func TestGetCommitChangesSkipsBinaryPatchContent(t *testing.T) {
 	}
 
 	svc := newFileServiceServer(st)
-	resp, err := svc.GetCommitChanges(ctx, &filev1.GetCommitChangesRequest{CommitHash: commitHash, IncludePatches: true})
+	requestCtx := adminAuthCtx(t, st)
+	resp, err := svc.GetCommitChanges(requestCtx, &filev1.GetCommitChangesRequest{CommitHash: commitHash, IncludePatches: true})
 	if err != nil {
 		t.Fatalf("GetCommitChanges failed: %v", err)
 	}
@@ -1423,8 +1525,9 @@ func TestGetCommitChangesLooksUpParentCommitByHashOncePerCommit(t *testing.T) {
 
 	countedStorage := &commitByHashCounter{Storage: baseStorage}
 	svc := newFileServiceServer(countedStorage)
+	requestCtx := adminAuthCtx(t, baseStorage)
 
-	resp, err := svc.GetCommitChanges(ctx, &filev1.GetCommitChangesRequest{CommitHash: commitHash, IncludePatches: true})
+	resp, err := svc.GetCommitChanges(requestCtx, &filev1.GetCommitChangesRequest{CommitHash: commitHash, IncludePatches: true})
 	if err != nil {
 		t.Fatalf("GetCommitChanges failed: %v", err)
 	}
@@ -1459,6 +1562,48 @@ func TestGetCommitChangesRequiresAuthForPrivateSlice(t *testing.T) {
 	}
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("expected permission denied, got %v", status.Code(err))
+	}
+}
+
+func TestGetCommitChangesAllowsAnonymousPublicSlice(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	const (
+		sliceID    = "public"
+		commitHash = "c1"
+	)
+
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:         sliceID,
+		Name:       sliceID,
+		Owners:     []string{"owner"},
+		CreatedBy:  "owner",
+		Visibility: models.VisibilityPublic,
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	if err := st.AddFileChange(ctx, &models.FileChangeRecord{
+		ID:         "fc1",
+		SliceID:    sliceID,
+		CommitHash: commitHash,
+		Path:       "README.md",
+		ChangeType: models.ChangeTypeModify,
+		Timestamp:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("AddFileChange failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	resp, err := svc.GetCommitChanges(context.Background(), &filev1.GetCommitChangesRequest{CommitHash: commitHash})
+	if err != nil {
+		t.Fatalf("GetCommitChanges failed: %v", err)
+	}
+	if got, want := len(resp.GetChanges()), 1; got != want {
+		t.Fatalf("len(changes) = %d, want %d", got, want)
+	}
+	if got, want := resp.GetChanges()[0].GetSliceId(), sliceID; got != want {
+		t.Fatalf("slice id = %q, want %q", got, want)
 	}
 }
 
@@ -1579,9 +1724,10 @@ func TestGetCommitChangesOmitsPatchesByDefault(t *testing.T) {
 	}
 
 	svc := newFileServiceServer(st)
+	requestCtx := adminAuthCtx(t, st)
 
 	// Without include_patches: no patch generated.
-	resp, err := svc.GetCommitChanges(ctx, &filev1.GetCommitChangesRequest{CommitHash: commitHash})
+	resp, err := svc.GetCommitChanges(requestCtx, &filev1.GetCommitChangesRequest{CommitHash: commitHash})
 	if err != nil {
 		t.Fatalf("GetCommitChanges (no patches) failed: %v", err)
 	}
@@ -1593,7 +1739,7 @@ func TestGetCommitChangesOmitsPatchesByDefault(t *testing.T) {
 	}
 
 	// With include_patches: patch should be generated.
-	resp, err = svc.GetCommitChanges(ctx, &filev1.GetCommitChangesRequest{CommitHash: commitHash, IncludePatches: true})
+	resp, err = svc.GetCommitChanges(requestCtx, &filev1.GetCommitChangesRequest{CommitHash: commitHash, IncludePatches: true})
 	if err != nil {
 		t.Fatalf("GetCommitChanges (with patches) failed: %v", err)
 	}
@@ -1646,9 +1792,10 @@ func TestGetCommitChangesSkipsPatchesOverThreshold(t *testing.T) {
 	}
 
 	svc := newFileServiceServer(st)
+	requestCtx := adminAuthCtx(t, st)
 
 	// Even with include_patches=true, patches should be skipped when over threshold.
-	resp, err := svc.GetCommitChanges(ctx, &filev1.GetCommitChangesRequest{CommitHash: commitHash, IncludePatches: true})
+	resp, err := svc.GetCommitChanges(requestCtx, &filev1.GetCommitChangesRequest{CommitHash: commitHash, IncludePatches: true})
 	if err != nil {
 		t.Fatalf("GetCommitChanges failed: %v", err)
 	}

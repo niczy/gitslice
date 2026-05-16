@@ -808,15 +808,6 @@ func TestSliceVisibilityStorageRoundTrip(t *testing.T) {
 	}
 }
 
-func TestPathVisibilityStorageRoundTrip(t *testing.T) {
-	ctx := context.Background()
-	for _, tc := range storageTestCases(ctx) {
-		t.Run(tc.name, func(t *testing.T) {
-			runPathVisibilityStorageRoundTrip(ctx, t, tc.factory(t))
-		})
-	}
-}
-
 func TestDirectoryEntryAggregatesSubtreeSizes(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range storageTestCases(ctx) {
@@ -1124,68 +1115,6 @@ func runSliceVisibilityStorageRoundTrip(ctx context.Context, t *testing.T, st St
 	}
 	if got, want := stored.Visibility, models.VisibilityPublic; got != want {
 		t.Fatalf("updated visibility = %q, want %q", got, want)
-	}
-}
-
-func runPathVisibilityStorageRoundTrip(ctx context.Context, t *testing.T, st Storage) {
-	t.Helper()
-
-	if _, err := st.GetPathVisibilityRule(ctx, "/alice/docs"); err != ErrEntryNotFound {
-		t.Fatalf("GetPathVisibilityRule(missing) = %v, want %v", err, ErrEntryNotFound)
-	}
-
-	dirRule := &models.PathVisibilityRule{
-		Path:       "/alice/docs",
-		EntryType:  models.PathVisibilityEntryTypeDirectory,
-		Visibility: models.VisibilityPublic,
-		UpdatedBy:  "alice",
-	}
-	if err := st.UpsertPathVisibilityRule(ctx, dirRule); err != nil {
-		t.Fatalf("UpsertPathVisibilityRule(dir) failed: %v", err)
-	}
-
-	fileRule := &models.PathVisibilityRule{
-		Path:       "/alice/docs/README.md",
-		EntryType:  models.PathVisibilityEntryTypeFile,
-		Visibility: models.VisibilityPrivate,
-		UpdatedBy:  "alice",
-	}
-	if err := st.UpsertPathVisibilityRule(ctx, fileRule); err != nil {
-		t.Fatalf("UpsertPathVisibilityRule(file) failed: %v", err)
-	}
-
-	gotDir, err := st.GetPathVisibilityRule(ctx, "/alice/docs")
-	if err != nil {
-		t.Fatalf("GetPathVisibilityRule(dir) failed: %v", err)
-	}
-	if got, want := gotDir.Visibility, models.VisibilityPublic; got != want {
-		t.Fatalf("dir visibility = %q, want %q", got, want)
-	}
-
-	gotFile, err := st.GetPathVisibilityRule(ctx, "/alice/docs/README.md")
-	if err != nil {
-		t.Fatalf("GetPathVisibilityRule(file) failed: %v", err)
-	}
-	if got, want := gotFile.Visibility, models.VisibilityPrivate; got != want {
-		t.Fatalf("file visibility = %q, want %q", got, want)
-	}
-
-	rules, err := st.ListPathVisibilityRules(ctx, "/alice/docs")
-	if err != nil {
-		t.Fatalf("ListPathVisibilityRules failed: %v", err)
-	}
-	if got, want := len(rules), 2; got != want {
-		t.Fatalf("ListPathVisibilityRules len = %d, want %d", got, want)
-	}
-	if rules[0].Path != "/alice/docs" || rules[1].Path != "/alice/docs/README.md" {
-		t.Fatalf("unexpected rule order: %#v", rules)
-	}
-
-	if err := st.DeletePathVisibilityRule(ctx, "/alice/docs/README.md"); err != nil {
-		t.Fatalf("DeletePathVisibilityRule failed: %v", err)
-	}
-	if _, err := st.GetPathVisibilityRule(ctx, "/alice/docs/README.md"); err != ErrEntryNotFound {
-		t.Fatalf("GetPathVisibilityRule(after delete) = %v, want %v", err, ErrEntryNotFound)
 	}
 }
 

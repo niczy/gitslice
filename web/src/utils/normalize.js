@@ -224,6 +224,7 @@ export function normalizeSliceInfo(slice) {
     file_count: slice.file_count ?? slice.fileCount,
     is_root: slice.is_root ?? slice.isRoot ?? false,
     environment: slice.environment ?? '',
+    visibility: slice.visibility ?? slice.Visibility ?? '',
   };
 }
 

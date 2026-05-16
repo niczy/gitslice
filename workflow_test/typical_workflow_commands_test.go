@@ -3,8 +3,10 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/niczy/gitslice/internal/common"
+	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
@@ -59,24 +62,13 @@ func createFocusedSliceFromPublishedFolder(t *testing.T, folderPath string) stri
 	if testStorage == nil {
 		t.Fatal("expected test storage to be initialized")
 	}
-	rootSlice, err := testStorage.GetRootSlice(ctx)
+	username := workflowUsername(t)
+	homeSlice, err := homeslice.EnsureUserHomeSlice(ctx, testStorage, username)
 	if err != nil {
-		t.Fatalf("GetRootSlice failed: %v", err)
+		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
 	}
 	content := []byte("seed focused folder\n")
-	mustWriteSliceManifest(t, ctx, testStorage, rootSlice.ID, filePath, content)
-	if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
-		ID:       common.GenerateEntryID(rootSlice.ID, filePath),
-		Path:     filePath,
-		Type:     "file",
-		ParentID: rootSlice.ID,
-		Size:     int64(len(content)),
-	}); err != nil {
-		t.Fatalf("AddEntry failed: %v", err)
-	}
-	if err := testStorage.AddFileToSlice(ctx, filePath, rootSlice.ID); err != nil {
-		t.Fatalf("AddFileToSlice failed: %v", err)
-	}
+	seedSliceFile(t, ctx, homeSlice.ID, path.Join(homeslice.RelativeRootPath(username), filePath), content)
 
 	workdir := t.TempDir()
 	sliceName := fmt.Sprintf("focused-slice-%d", time.Now().UnixNano())
@@ -87,11 +79,86 @@ func createFocusedSliceFromPublishedFolder(t *testing.T, folderPath string) stri
 	return createSliceResp.SliceID
 }
 
+func seedWorkflowHomeFile(t *testing.T, folderPath, filename string, content []byte) string {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if testStorage == nil {
+		t.Fatal("expected test storage to be initialized")
+	}
+	username := workflowUsername(t)
+	homeSlice, err := homeslice.EnsureUserHomeSlice(ctx, testStorage, username)
+	if err != nil {
+		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
+	}
+	storedPath := path.Join(homeslice.RelativeRootPath(username), common.CleanRelativePath(folderPath), common.CleanRelativePath(filename))
+	seedSliceFile(t, ctx, homeSlice.ID, storedPath, content)
+	return storedPath
+}
+
+func seedSliceFile(t *testing.T, ctx context.Context, sliceID, filePath string, content []byte) {
+	t.Helper()
+
+	filePath = common.CleanRelativePath(filePath)
+	if filePath == "" {
+		t.Fatal("seed file path cannot be empty")
+	}
+	seedSliceDirectories(t, ctx, sliceID, path.Dir(filePath))
+	manifestHash := mustWriteSliceManifest(t, ctx, testStorage, sliceID, filePath, content)
+	parentID := sliceID
+	if dir := path.Dir(filePath); dir != "." && dir != "" {
+		parentID = common.GenerateEntryID(sliceID, dir)
+	}
+	err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(sliceID, filePath),
+		Path:     filePath,
+		Type:     "file",
+		ParentID: parentID,
+		Size:     int64(len(content)),
+		Hash:     manifestHash,
+	})
+	if err != nil && !errors.Is(err, storage.ErrEntryExists) {
+		t.Fatalf("AddEntry(%s) failed: %v", filePath, err)
+	}
+	if err := testStorage.AddFileToSlice(ctx, filePath, sliceID); err != nil && !errors.Is(err, storage.ErrEntryExists) {
+		t.Fatalf("AddFileToSlice(%s) failed: %v", filePath, err)
+	}
+}
+
+func seedSliceDirectories(t *testing.T, ctx context.Context, sliceID, dirPath string) {
+	t.Helper()
+
+	dirPath = common.CleanRelativePath(dirPath)
+	if dirPath == "" || dirPath == "." {
+		return
+	}
+	parentID := sliceID
+	current := ""
+	for _, part := range strings.Split(dirPath, "/") {
+		if part == "" {
+			continue
+		}
+		current = path.Join(current, part)
+		entryID := common.GenerateEntryID(sliceID, current)
+		err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       entryID,
+			Path:     current,
+			Type:     "directory",
+			ParentID: parentID,
+		})
+		if err != nil && !errors.Is(err, storage.ErrEntryExists) {
+			t.Fatalf("AddEntry(%s) failed: %v", current, err)
+		}
+		parentID = entryID
+	}
+}
+
 func publishRootFolderFromWorktree(t *testing.T, folderPath, message string, populate func(rootWorkdir string)) {
 	t.Helper()
 
 	rootWorkdir := t.TempDir()
-	_ = runCLIOrFail(t, rootWorkdir, "init", sliceIDArg("root"))
+	_ = runCLIAsRootAdminOrFail(t, rootWorkdir, "init", sliceIDArg("root"))
 	populate(rootWorkdir)
 
 	rootFolder := filepath.Join(rootWorkdir, filepath.FromSlash(folderPath))
@@ -117,11 +184,11 @@ func publishRootFolderFromWorktree(t *testing.T, folderPath, message string, pop
 		modifiedPaths = append(modifiedPaths, folderPath)
 	}
 
-	createResp := runCLIJSONOrFail[changesetCreateJSON](t, rootWorkdir, "changeset", "create", "--message", message, "--files", strings.Join(modifiedPaths, ","))
+	createResp := runCLIJSONAsRootAdminOrFail[changesetCreateJSON](t, rootWorkdir, "changeset", "create", "--message", message, "--files", strings.Join(modifiedPaths, ","))
 	if createResp.ChangesetID == "" {
 		t.Fatalf("expected root changeset ID for %s, got: %+v", folderPath, createResp)
 	}
-	mergeResp := runCLIJSONOrFail[mergeJSON](t, rootWorkdir, "changeset", "merge", createResp.ChangesetID, "--wait")
+	mergeResp := runCLIJSONAsRootAdminOrFail[mergeJSON](t, rootWorkdir, "changeset", "merge", createResp.ChangesetID, "--wait")
 	if mergeResp.Status != "MERGE_STATUS_SUCCESS" {
 		t.Fatalf("expected root merge success for %s, got: %+v", folderPath, mergeResp)
 	}
@@ -232,30 +299,13 @@ func createSeededWorkflowSlice(t *testing.T, sliceID string, files map[string]se
 }
 
 func TestSliceWorkflowCommands(t *testing.T) {
-	rootWorkdir := t.TempDir()
-	rootSliceArg := sliceIDArg("root")
-	_ = runCLIOrFail(t, rootWorkdir, "init", rootSliceArg)
-
 	folderPath := fmt.Sprintf("apps/workflow-%d", time.Now().UnixNano())
 	filePath := folderPath + "/README.md"
-	localPath := filepath.Join(rootWorkdir, filepath.FromSlash(filePath))
-	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
-		t.Fatalf("mkdir workflow seed path: %v", err)
-	}
-	if err := os.WriteFile(localPath, []byte("seed workflow folder\n"), 0o644); err != nil {
-		t.Fatalf("write workflow seed file: %v", err)
-	}
-	createResp := runCLIJSONOrFail[changesetCreateJSON](t, rootWorkdir, "changeset", "create", "--message", "seed workflow folder", "--files", filePath)
-	if createResp.ChangesetID == "" {
-		t.Fatalf("failed to create changeset")
-	}
-	mergeResp := runCLIJSONOrFail[mergeJSON](t, rootWorkdir, "changeset", "merge", createResp.ChangesetID, "--wait")
-	if mergeResp.Status != "MERGE_STATUS_SUCCESS" {
-		t.Fatalf("expected merge success, got: %+v", mergeResp)
-	}
+	seedWorkflowHomeFile(t, folderPath, "README.md", []byte("seed workflow folder\n"))
 
+	workdir := t.TempDir()
 	sliceName := fmt.Sprintf("workflow-slice-%d", time.Now().UnixNano())
-	sliceCreateResp := runCLIJSONOrFail[sliceCreateJSON](t, rootWorkdir, "slice", "create", sliceName, folderPath)
+	sliceCreateResp := runCLIJSONOrFail[sliceCreateJSON](t, workdir, "slice", "create", sliceName, folderPath)
 	if sliceCreateResp.SliceID == "" || sliceCreateResp.Slug == "" {
 		t.Fatalf("expected slice ID and slug in output, got: %+v", sliceCreateResp)
 	}
@@ -399,7 +449,7 @@ func TestSliceTreeRenameAndChangesetRebaseJSON(t *testing.T) {
 }
 
 func TestSliceResourceAliasesWorkflow(t *testing.T) {
-	rootResp := runCLIJSONOrFail[sliceRootJSON](t, "", "slice", "root")
+	rootResp := runCLIJSONAsRootAdminOrFail[sliceRootJSON](t, "", "slice", "root")
 	if rootResp.SliceID != "root" {
 		t.Fatalf("unexpected slice root response: %+v", rootResp)
 	}
@@ -410,7 +460,7 @@ func TestSliceResourceAliasesWorkflow(t *testing.T) {
 	})
 
 	bindDir := t.TempDir()
-	bindResp := runCLIJSONOrFail[initJSON](t, bindDir, "slice", "bind", rootResp.SliceID)
+	bindResp := runCLIJSONAsRootAdminOrFail[initJSON](t, bindDir, "slice", "bind", rootResp.SliceID)
 	if bindResp.Status != "initialized" || bindResp.SliceID != rootResp.SliceID {
 		t.Fatalf("unexpected slice bind response: %+v", bindResp)
 	}

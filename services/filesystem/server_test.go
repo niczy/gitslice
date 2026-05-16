@@ -41,6 +41,20 @@ func bearerAuthContext(token string) context.Context {
 	return metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer "+token))
 }
 
+func adminAuthContextForUser(t testing.TB, st storage.Storage, username string) context.Context {
+	t.Helper()
+	email := strings.ToLower(strings.TrimSpace(username)) + "@example.com"
+	t.Setenv("ADMIN_USER_EMAILS", email)
+	if err := st.CreateUser(context.Background(), &models.User{
+		Username:     username,
+		PrimaryEmail: email,
+		RootPath:     username,
+	}); err != nil && err != storage.ErrEntryExists {
+		t.Fatalf("CreateUser(%s) failed: %v", username, err)
+	}
+	return authContext(username)
+}
+
 func waitForSearchIndexForTest(t *testing.T, svc filesystemv1.FilesystemServiceServer) {
 	t.Helper()
 	impl, ok := svc.(*filesystemServiceServer)
@@ -220,144 +234,6 @@ func TestCreateWorkspaceAcceptsBearerSessionToken(t *testing.T) {
 	}
 }
 
-func TestSetAndGetPathVisibilityUsesAncestorRule(t *testing.T) {
-	ctx := authContext("tester")
-	st := storage.NewInMemoryStorage()
-	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
-		t.Fatalf("init root slice: %v", err)
-	}
-
-	svc := NewService(st)
-
-	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
-		WorkspaceId: "ws-visibility",
-		Name:        "Visibility Workspace",
-	}); err != nil {
-		t.Fatalf("CreateWorkspace failed: %v", err)
-	}
-	if _, err := svc.MakeDirectory(ctx, &filesystemv1.MakeDirectoryRequest{
-		WorkspaceId: "ws-visibility",
-		Path:        "docs",
-	}); err != nil {
-		t.Fatalf("MakeDirectory failed: %v", err)
-	}
-	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
-		WorkspaceId: "ws-visibility",
-		Path:        "docs/README.md",
-		Content:     []byte("hello"),
-	}); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-
-	setResp, err := svc.SetPathVisibility(ctx, &filesystemv1.SetPathVisibilityRequest{
-		Path:       "/docs",
-		Visibility: commonv1.Visibility_VISIBILITY_PUBLIC,
-		Recursive:  true,
-	})
-	if err != nil {
-		t.Fatalf("SetPathVisibility failed: %v", err)
-	}
-	if got, want := setResp.GetVisibility().GetPath(), "/docs"; got != want {
-		t.Fatalf("set path = %q, want %q", got, want)
-	}
-	if got, want := setResp.GetVisibility().GetEffectiveVisibility(), commonv1.Visibility_VISIBILITY_PUBLIC; got != want {
-		t.Fatalf("set effective_visibility = %v, want %v", got, want)
-	}
-
-	getResp, err := svc.GetPathVisibility(ctx, &filesystemv1.GetPathVisibilityRequest{
-		WorkspaceId: "ws-visibility",
-		Path:        "docs/README.md",
-	})
-	if err != nil {
-		t.Fatalf("GetPathVisibility(file) failed: %v", err)
-	}
-	if got, want := getResp.GetVisibility().GetPath(), "docs/README.md"; got != want {
-		t.Fatalf("get file path = %q, want %q", got, want)
-	}
-	if getResp.GetVisibility().GetExplicitRule() {
-		t.Fatal("expected inherited file visibility rule")
-	}
-	if got, want := getResp.GetVisibility().GetResolvedFromPath(), "/docs"; got != want {
-		t.Fatalf("resolved_from_path = %q, want %q", got, want)
-	}
-	if got, want := getResp.GetVisibility().GetEffectiveVisibility(), commonv1.Visibility_VISIBILITY_PUBLIC; got != want {
-		t.Fatalf("effective_visibility = %v, want %v", got, want)
-	}
-
-	dirResp, err := svc.GetPathVisibility(ctx, &filesystemv1.GetPathVisibilityRequest{
-		WorkspaceId: "ws-visibility",
-		Path:        "docs",
-	})
-	if err != nil {
-		t.Fatalf("GetPathVisibility(dir) failed: %v", err)
-	}
-	if !dirResp.GetVisibility().GetExplicitRule() {
-		t.Fatal("expected explicit directory visibility rule")
-	}
-	if got, want := dirResp.GetVisibility().GetResolvedFromPath(), "/docs"; got != want {
-		t.Fatalf("dir resolved_from_path = %q, want %q", got, want)
-	}
-}
-
-func TestGetPathVisibilityMakesAncestorsTraversableForPublicFile(t *testing.T) {
-	ctx := authContext("tester")
-	st := storage.NewInMemoryStorage()
-	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
-		t.Fatalf("init root slice: %v", err)
-	}
-
-	svc := NewService(st)
-	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
-		WorkspaceId: "ws-traversal",
-		Name:        "Traversal Workspace",
-	}); err != nil {
-		t.Fatalf("CreateWorkspace failed: %v", err)
-	}
-	if _, err := svc.MakeDirectory(ctx, &filesystemv1.MakeDirectoryRequest{
-		WorkspaceId: "ws-traversal",
-		Path:        "docs/guides",
-	}); err != nil {
-		t.Fatalf("MakeDirectory failed: %v", err)
-	}
-	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
-		WorkspaceId: "ws-traversal",
-		Path:        "docs/guides/public.txt",
-		Content:     []byte("hello"),
-	}); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-	if _, err := svc.SetPathVisibility(ctx, &filesystemv1.SetPathVisibilityRequest{
-		Path:       "/docs/guides/public.txt",
-		Visibility: commonv1.Visibility_VISIBILITY_PUBLIC,
-	}); err != nil {
-		t.Fatalf("SetPathVisibility(public file) failed: %v", err)
-	}
-	if _, err := svc.SetPathVisibility(ctx, &filesystemv1.SetPathVisibilityRequest{
-		Path:       "/docs",
-		Visibility: commonv1.Visibility_VISIBILITY_PRIVATE,
-		Recursive:  true,
-	}); err != nil {
-		t.Fatalf("SetPathVisibility(private dir) failed: %v", err)
-	}
-
-	resp, err := svc.GetPathVisibility(ctx, &filesystemv1.GetPathVisibilityRequest{
-		WorkspaceId: "ws-traversal",
-		Path:        "docs",
-	})
-	if err != nil {
-		t.Fatalf("GetPathVisibility failed: %v", err)
-	}
-	if got, want := resp.GetVisibility().GetVisibility(), commonv1.Visibility_VISIBILITY_PRIVATE; got != want {
-		t.Fatalf("visibility = %v, want %v", got, want)
-	}
-	if got, want := resp.GetVisibility().GetEffectiveVisibility(), commonv1.Visibility_VISIBILITY_PUBLIC; got != want {
-		t.Fatalf("effective_visibility = %v, want %v", got, want)
-	}
-	if got, want := resp.GetVisibility().GetResolvedFromPath(), "/docs/guides/public.txt"; got != want {
-		t.Fatalf("resolved_from_path = %q, want %q", got, want)
-	}
-}
-
 func TestListDirectoryAndStatIncludeEffectiveVisibility(t *testing.T) {
 	ctx := authContext("tester")
 	st := storage.NewInMemoryStorage()
@@ -392,11 +268,8 @@ func TestListDirectoryAndStatIncludeEffectiveVisibility(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("WriteFile(private) failed: %v", err)
 	}
-	if _, err := svc.SetPathVisibility(ctx, &filesystemv1.SetPathVisibilityRequest{
-		Path:       "/docs/guides/public.txt",
-		Visibility: commonv1.Visibility_VISIBILITY_PUBLIC,
-	}); err != nil {
-		t.Fatalf("SetPathVisibility(public file) failed: %v", err)
+	if err := st.UpdateSliceVisibility(ctx, "ws-visibility-list", models.VisibilityPublic); err != nil {
+		t.Fatalf("UpdateSliceVisibility failed: %v", err)
 	}
 
 	rootStat, err := svc.Stat(ctx, &filesystemv1.StatRequest{
@@ -442,7 +315,7 @@ func TestListDirectoryAndStatIncludeEffectiveVisibility(t *testing.T) {
 	if got, want := entriesByPath["docs/guides"].GetEffectiveVisibility(), commonv1.Visibility_VISIBILITY_PUBLIC; got != want {
 		t.Fatalf("guides effective_visibility = %v, want %v", got, want)
 	}
-	if got, want := entriesByPath["docs/private.txt"].GetEffectiveVisibility(), commonv1.Visibility_VISIBILITY_PRIVATE; got != want {
+	if got, want := entriesByPath["docs/private.txt"].GetEffectiveVisibility(), commonv1.Visibility_VISIBILITY_PUBLIC; got != want {
 		t.Fatalf("private file effective_visibility = %v, want %v", got, want)
 	}
 
@@ -544,19 +417,6 @@ func TestSearchReturnsPrivateAndPublicMatchesForAuthorizedUser(t *testing.T) {
 			t.Fatalf("WriteFile(%s) failed: %v", filePath, err)
 		}
 	}
-	if _, err := svc.SetPathVisibility(ctx, &filesystemv1.SetPathVisibilityRequest{
-		Path:       "/docs/public.txt",
-		Visibility: commonv1.Visibility_VISIBILITY_PUBLIC,
-	}); err != nil {
-		t.Fatalf("SetPathVisibility(public file) failed: %v", err)
-	}
-	if _, err := svc.SetPathVisibility(ctx, &filesystemv1.SetPathVisibilityRequest{
-		Path:       "/docs/private.txt",
-		Visibility: commonv1.Visibility_VISIBILITY_PRIVATE,
-	}); err != nil {
-		t.Fatalf("SetPathVisibility(private file) failed: %v", err)
-	}
-
 	waitForSearchIndexForTest(t, svc)
 	searchResp, err := svc.Search(ctx, &filesystemv1.SearchRequest{
 		WorkspaceId: "ws-search-visibility",
@@ -895,8 +755,13 @@ func TestWorkspaceFileLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListWorkspaces failed: %v", err)
 	}
-	if workspaces.GetTotal() != 2 {
-		t.Fatalf("expected root + created workspace, got total=%d", workspaces.GetTotal())
+	if workspaces.GetTotal() != 1 {
+		t.Fatalf("expected created workspace only, got total=%d", workspaces.GetTotal())
+	}
+	for _, workspace := range workspaces.GetWorkspaces() {
+		if workspace.GetIsRoot() || workspace.GetWorkspaceId() == "root" {
+			t.Fatalf("root workspace should not be visible to non-admin users: %#v", workspace)
+		}
 	}
 }
 
@@ -1943,8 +1808,8 @@ func TestDeleteWorkspaceRemovesWorkspace(t *testing.T) {
 
 func TestDeleteWorkspaceRejectsRootAndActiveSession(t *testing.T) {
 	ctx := authContext("tester")
-	rootCtx := authContext("system")
 	st := storage.NewInMemoryStorage()
+	rootCtx := adminAuthContextForUser(t, st, "system")
 	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
 		t.Fatalf("init root slice: %v", err)
 	}

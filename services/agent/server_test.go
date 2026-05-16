@@ -294,6 +294,111 @@ func TestLocalSessionResponsesExposeLocalAvailability(t *testing.T) {
 	}
 }
 
+func TestPublicSliceSessionsAllowAnonymousRead(t *testing.T) {
+	st := storage.NewInMemoryStorage()
+	now := time.Now().UTC()
+	if err := st.CreateSlice(context.Background(), &models.Slice{
+		ID:         "slice-public-agents",
+		Name:       "Public Agents",
+		Owners:     []string{"alice"},
+		CreatedBy:  "alice",
+		Visibility: models.VisibilityPublic,
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	if err := st.CreateAgentSession(context.Background(), &models.AgentSession{
+		SessionID:      "sess-public-agent",
+		SliceID:        "slice-public-agents",
+		RunnerID:       "runner-public-agent",
+		UserID:         "alice",
+		State:          models.AgentSessionStateRunning,
+		Provider:       agentsession.RuntimeProviderLocal,
+		AgentType:      "codex",
+		IdleTimeoutSec: 1800,
+		TTLSec:         14400,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("CreateAgentSession failed: %v", err)
+	}
+	if err := st.AppendAgentSessionEvent(context.Background(), &models.AgentSessionEvent{
+		SessionID: "sess-public-agent",
+		Seq:       1,
+		Stream:    agentsession.EventStreamAgent,
+		Type:      agentsession.EventTypeOutputDelta,
+		Payload:   []byte(`{"text":"hello"}`),
+		TS:        now,
+	}); err != nil {
+		t.Fatalf("AppendAgentSessionEvent failed: %v", err)
+	}
+
+	srv := &agentServiceServer{st: st, svc: agentsession.NewService(st, "test-secret")}
+	listResp, err := srv.ListSessions(context.Background(), &agentv1.ListSessionsRequest{SliceId: "slice-public-agents"})
+	if err != nil {
+		t.Fatalf("ListSessions failed: %v", err)
+	}
+	if got, want := len(listResp.GetSessions()), 1; got != want {
+		t.Fatalf("len(sessions) = %d, want %d", got, want)
+	}
+	if got, want := listResp.GetSessions()[0].GetSessionId(), "sess-public-agent"; got != want {
+		t.Fatalf("session id = %q, want %q", got, want)
+	}
+
+	getResp, err := srv.GetSession(context.Background(), &agentv1.GetSessionRequest{SessionId: "sess-public-agent"})
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if got, want := getResp.GetSliceId(), "slice-public-agents"; got != want {
+		t.Fatalf("slice id = %q, want %q", got, want)
+	}
+
+	eventsResp, err := srv.ListEvents(context.Background(), &agentv1.ListEventsRequest{SessionId: "sess-public-agent"})
+	if err != nil {
+		t.Fatalf("ListEvents failed: %v", err)
+	}
+	if got, want := len(eventsResp.GetEvents()), 1; got != want {
+		t.Fatalf("len(events) = %d, want %d", got, want)
+	}
+	if got, want := eventsResp.GetEvents()[0].GetType(), agentsession.EventTypeOutputDelta; got != want {
+		t.Fatalf("event type = %q, want %q", got, want)
+	}
+}
+
+func TestPrivateSliceSessionsRequireLoginForAnonymousRead(t *testing.T) {
+	st := storage.NewInMemoryStorage()
+	now := time.Now().UTC()
+	if err := st.CreateSlice(context.Background(), &models.Slice{
+		ID:        "slice-private-agents",
+		Name:      "Private Agents",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	if err := st.CreateAgentSession(context.Background(), &models.AgentSession{
+		SessionID: "sess-private-agent",
+		SliceID:   "slice-private-agents",
+		UserID:    "alice",
+		State:     models.AgentSessionStateRunning,
+		Provider:  agentsession.RuntimeProviderLocal,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateAgentSession failed: %v", err)
+	}
+
+	srv := &agentServiceServer{st: st, svc: agentsession.NewService(st, "test-secret")}
+	if _, err := srv.ListSessions(context.Background(), &agentv1.ListSessionsRequest{SliceId: "slice-private-agents"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("ListSessions error = %v, want %v", status.Code(err), codes.Unauthenticated)
+	}
+	if _, err := srv.GetSession(context.Background(), &agentv1.GetSessionRequest{SessionId: "sess-private-agent"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("GetSession error = %v, want %v", status.Code(err), codes.Unauthenticated)
+	}
+	if _, err := srv.ListEvents(context.Background(), &agentv1.ListEventsRequest{SessionId: "sess-private-agent"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("ListEvents error = %v, want %v", status.Code(err), codes.Unauthenticated)
+	}
+}
+
 func TestLocalSessionResponsesSupportLegacyRunnerDiscovery(t *testing.T) {
 	ctx := agentTestContext("alice")
 	st := storage.NewInMemoryStorage()
@@ -454,6 +559,14 @@ func TestListEventsTailReturnsLatestEvents(t *testing.T) {
 	svc := agentsession.NewService(st, "test-secret")
 	srv := &agentServiceServer{st: st, svc: svc}
 
+	if err := st.CreateSlice(context.Background(), &models.Slice{
+		ID:        "slice-tail",
+		Name:      "Tail Slice",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
 	if err := st.CreateAgentSession(ctx, &models.AgentSession{
 		SessionID: "sess-tail",
 		SliceID:   "slice-tail",

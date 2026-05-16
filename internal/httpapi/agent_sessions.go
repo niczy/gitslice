@@ -145,7 +145,12 @@ func (a *AgentSessionsAPI) HandleCollection(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusNotFound, "slice not found")
 		return
 	}
-	if !authz.HasSliceViewAccess(slice, userID) {
+	canView, err := authz.CanViewSlice(r.Context(), a.st, slice, userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to validate slice access")
+		return
+	}
+	if !canView {
 		writeError(w, http.StatusForbidden, "forbidden")
 		return
 	}

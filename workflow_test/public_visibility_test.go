@@ -13,7 +13,6 @@ import (
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
 	commonv1 "github.com/niczy/gitslice/proto/common"
-	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
 
@@ -36,10 +35,11 @@ func TestPublicGatewayRoutesRespectVisibility(t *testing.T) {
 
 	sliceID := fmt.Sprintf("public-vis-%d", time.Now().UnixNano())
 	slice := &models.Slice{
-		ID:        sliceID,
-		Name:      sliceID,
-		Owners:    []string{"tester"},
-		CreatedBy: "tester",
+		ID:         sliceID,
+		Name:       sliceID,
+		Owners:     []string{"tester"},
+		CreatedBy:  "tester",
+		Visibility: models.VisibilityPublic,
 		Files: []string{
 			"docs/public.txt",
 			"docs/private.txt",
@@ -66,25 +66,8 @@ func TestPublicGatewayRoutesRespectVisibility(t *testing.T) {
 			t.Fatalf("AddFileToSlice(%s) failed: %v", filePath, err)
 		}
 	}
-	if err := testStorage.UpsertPathVisibilityRule(ctx, &models.PathVisibilityRule{
-		Path:       "/docs",
-		EntryType:  models.PathVisibilityEntryTypeDirectory,
-		Visibility: models.VisibilityPublic,
-		UpdatedBy:  "tester",
-	}); err != nil {
-		t.Fatalf("UpsertPathVisibilityRule(dir) failed: %v", err)
-	}
-	if err := testStorage.UpsertPathVisibilityRule(ctx, &models.PathVisibilityRule{
-		Path:       "/docs/private.txt",
-		EntryType:  models.PathVisibilityEntryTypeFile,
-		Visibility: models.VisibilityPrivate,
-		UpdatedBy:  "tester",
-	}); err != nil {
-		t.Fatalf("UpsertPathVisibilityRule(file) failed: %v", err)
-	}
-
 	entries := fetchPublicGatewayEntries(t, fmt.Sprintf("%s/v1/public/entries/docs?slice_id=%s", gatewayServiceURL, sliceID))
-	assertGatewayEntryNames(t, entries.Entries, "public.txt")
+	assertGatewayEntryNames(t, entries.Entries, "private.txt", "public.txt")
 
 	file := fetchPublicGatewayFile(t, fmt.Sprintf("%s/v1/public/files/docs/public.txt?slice_id=%s", gatewayServiceURL, sliceID))
 	raw, err := base64.StdEncoding.DecodeString(file.File.Content)
@@ -95,7 +78,14 @@ func TestPublicGatewayRoutesRespectVisibility(t *testing.T) {
 		t.Fatalf("public file content = %q, want %q", got, "hello public")
 	}
 
-	assertGatewayStatus(t, fmt.Sprintf("%s/v1/public/files/docs/private.txt?slice_id=%s", gatewayServiceURL, sliceID), http.StatusNotFound)
+	privateFile := fetchPublicGatewayFile(t, fmt.Sprintf("%s/v1/public/files/docs/private.txt?slice_id=%s", gatewayServiceURL, sliceID))
+	privateRaw, err := base64.StdEncoding.DecodeString(privateFile.File.Content)
+	if err != nil {
+		t.Fatalf("DecodeString(private) failed: %v", err)
+	}
+	if got := string(privateRaw); got != "hidden" {
+		t.Fatalf("private file content = %q, want %q", got, "hidden")
+	}
 }
 
 func TestPublicGatewayRoutesFollowSliceVisibilityToggle(t *testing.T) {
@@ -192,20 +182,13 @@ func TestPublicGatewayRoutesExposeAncestorDirectoriesForPublicFile(t *testing.T)
 	}
 	mustWriteSliceManifest(t, ctx, testStorage, sliceID, "ancestorzone/guides/public.txt", []byte("ancestor public"))
 
-	filesystemClient := newFilesystemClient(t)
+	sliceClient := newSliceClient(t)
 	authCtx := withUsername(ctx, "tester")
-	if _, err := filesystemClient.SetPathVisibility(authCtx, &filesystemv1.SetPathVisibilityRequest{
-		Path:       "/ancestorzone/guides/public.txt",
+	if _, err := sliceClient.SetSliceVisibility(authCtx, &slicev1.SetSliceVisibilityRequest{
+		SliceId:    sliceID,
 		Visibility: commonv1.Visibility_VISIBILITY_PUBLIC,
 	}); err != nil {
-		t.Fatalf("SetPathVisibility(public file) failed: %v", err)
-	}
-	if _, err := filesystemClient.SetPathVisibility(authCtx, &filesystemv1.SetPathVisibilityRequest{
-		Path:       "/ancestorzone",
-		Visibility: commonv1.Visibility_VISIBILITY_PRIVATE,
-		Recursive:  true,
-	}); err != nil {
-		t.Fatalf("SetPathVisibility(private dir) failed: %v", err)
+		t.Fatalf("SetSliceVisibility(public) failed: %v", err)
 	}
 
 	rootEntries := fetchPublicGatewayEntries(t, fmt.Sprintf("%s/v1/public/entries?slice_id=%s", gatewayServiceURL, sliceID))

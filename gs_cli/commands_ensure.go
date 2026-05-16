@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/niczy/gitslice/internal/homeslice"
 	accountv1 "github.com/niczy/gitslice/proto/account"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"google.golang.org/grpc/codes"
@@ -42,7 +43,11 @@ func handleSliceEnsure(ctx context.Context, cli *CLI, args []string) {
 	if err != nil {
 		commandFatalf("SLICE_ENSURE_FAILED", true, "", "Failed to resolve current user: %v", err)
 	}
-	slug := ensureSliceSlug(meResp.GetUsername(), sliceName)
+	username := strings.TrimSpace(meResp.GetUsername())
+	if username == "" {
+		commandFatalf("SLICE_ENSURE_FAILED", true, "", "Failed to resolve current user: current user has no username")
+	}
+	slug := ensureSliceSlug(username, sliceName)
 	if slugResp, err := cli.sliceClient.GetSliceBySlug(ctx, &slicev1.GetSliceBySlugRequest{Slug: slug}); err == nil {
 		if jsonEnabled {
 			writeJSONOutput(jsonSliceEnsureOutput{
@@ -62,12 +67,8 @@ func handleSliceEnsure(ctx context.Context, cli *CLI, args []string) {
 		commandFatalf("SLICE_ENSURE_FAILED", true, "", "Failed to resolve slice slug %s: %v", slug, err)
 	}
 
-	rootResp, err := cli.sliceClient.GetRootSlice(ctx, &slicev1.GetRootSliceRequest{})
-	if err != nil {
-		commandFatalf("SLICE_ENSURE_FAILED", true, "", "Failed to resolve published root slice: %v", err)
-	}
 	resp, err := cli.sliceClient.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
-		ParentSliceId: rootResp.GetSliceId(),
+		ParentSliceId: homeslice.IDForUsername(username),
 		FolderPaths:   folderPaths,
 		Name:          sliceName,
 		Description:   *description,

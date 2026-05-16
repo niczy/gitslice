@@ -18,13 +18,13 @@ import (
 	"unicode/utf8"
 
 	"github.com/niczy/gitslice/internal/authresolver"
+	"github.com/niczy/gitslice/internal/authz"
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/rootpromote"
 	"github.com/niczy/gitslice/internal/searchindex"
 	"github.com/niczy/gitslice/internal/storage"
-	"github.com/niczy/gitslice/internal/visibility"
 	commonv1 "github.com/niczy/gitslice/proto/common"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	"github.com/pmezard/go-difflib/difflib"
@@ -79,6 +79,15 @@ type preparedFilesystemWrite struct {
 	path        string
 	displayPath string
 	content     []byte
+}
+
+func (s *filesystemServiceServer) canViewSlice(ctx context.Context, slice *models.Slice, username string) bool {
+	ok, err := authz.CanViewSlice(ctx, s.storage, slice, username)
+	if err != nil {
+		log.Printf("filesystem: failed to resolve slice access for %s: %v", strings.TrimSpace(username), err)
+		return false
+	}
+	return ok
 }
 
 type preparedFilesystemUpload struct {
@@ -279,176 +288,6 @@ func filesystemProtoToModelVisibility(v commonv1.Visibility) models.Visibility {
 	}
 }
 
-func displayPathFromVisibilityRule(homeMode bool, normalizedPath string) string {
-	if homeMode {
-		return visibility.NormalizePath(normalizedPath)
-	}
-	return common.CleanRelativePath(strings.TrimPrefix(normalizedPath, "/"))
-}
-
-func storedPathFromVisibilityRule(homeMode bool, normalizedPath string) string {
-	if homeMode {
-		return strings.TrimPrefix(visibility.NormalizePath(normalizedPath), "/")
-	}
-	return common.CleanRelativePath(strings.TrimPrefix(normalizedPath, "/"))
-}
-
-func (s *filesystemServiceServer) workspacePathExists(ctx context.Context, workspaceID, storedPath string) (bool, bool, error) {
-	storedPath = strings.TrimSpace(storedPath)
-	if storedPath == "" {
-		return true, true, nil
-	}
-
-	entry, err := s.storage.GetEntryByPath(ctx, workspaceID, storedPath)
-	if err == nil && entry != nil {
-		return true, entry.Type == "directory", nil
-	}
-	if err != nil && err != storage.ErrEntryNotFound {
-		return false, false, err
-	}
-
-	entries, err := s.collectWorkspaceEntries(ctx, workspaceID)
-	if err != nil {
-		return false, false, err
-	}
-	prefix := storedPath + "/"
-	for _, entry := range entries {
-		if entry == nil || strings.TrimSpace(entry.Path) == "" {
-			continue
-		}
-		if strings.HasPrefix(entry.Path, prefix) {
-			return true, true, nil
-		}
-	}
-	return false, false, nil
-}
-
-func (s *filesystemServiceServer) workspaceDirectoryHasPublicDescendant(ctx context.Context, workspace *models.Slice, homeMode bool, displayPath string) (bool, string, error) {
-	prefix := ""
-	normalizedDisplayPath := displayPathFromVisibilityRule(homeMode, displayPath)
-	if normalizedDisplayPath != "" {
-		prefix = visibility.NormalizePath(normalizedDisplayPath) + "/"
-	}
-
-	rules, err := s.storage.ListPathVisibilityRules(ctx, prefix)
-	if err != nil {
-		return false, "", err
-	}
-	for _, rule := range rules {
-		if rule == nil || !models.NormalizeVisibility(rule.Visibility).IsPublic() {
-			continue
-		}
-		storedRulePath := storedPathFromVisibilityRule(homeMode, rule.Path)
-		exists, _, err := s.workspacePathExists(ctx, workspace.ID, storedRulePath)
-		if err != nil {
-			return false, "", err
-		}
-		if exists {
-			return true, rule.Path, nil
-		}
-	}
-	return false, "", nil
-}
-
-func (s *filesystemServiceServer) buildGlobalPathVisibilityInfo(ctx context.Context, normalizedPath string) (*filesystemv1.PathVisibilityInfo, error) {
-	resolution, err := visibility.Resolve(ctx, s.storage, nil, normalizedPath)
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve visibility: %v", err))
-	}
-	return &filesystemv1.PathVisibilityInfo{
-		Path:                normalizedPath,
-		Visibility:          modelVisibilityToFilesystemProto(resolution.Visibility),
-		ExplicitRule:        resolution.ExplicitRule,
-		ResolvedFromPath:    resolution.ResolvedFromPath,
-		EffectiveVisibility: modelVisibilityToFilesystemProto(resolution.EffectiveVisibility),
-	}, nil
-}
-
-func (s *filesystemServiceServer) buildWorkspacePathVisibilityInfo(ctx context.Context, workspace *models.Slice, homeMode bool, storedPath, displayPath string, isDirectory bool) (*filesystemv1.PathVisibilityInfo, error) {
-	resolution, err := visibility.Resolve(ctx, s.storage, workspace, displayPathFromVisibilityRule(homeMode, displayPath))
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve visibility: %v", err))
-	}
-
-	effectiveVisibility := resolution.EffectiveVisibility
-	resolvedFromPath := resolution.ResolvedFromPath
-	if isDirectory && !effectiveVisibility.IsPublic() {
-		hasDescendant, descendantPath, err := s.workspaceDirectoryHasPublicDescendant(ctx, workspace, homeMode, displayPath)
-		if err != nil {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve visibility: %v", err))
-		}
-		if hasDescendant {
-			effectiveVisibility = models.VisibilityPublic
-			resolvedFromPath = descendantPath
-		}
-	}
-
-	return &filesystemv1.PathVisibilityInfo{
-		Path:                displayPath,
-		Visibility:          modelVisibilityToFilesystemProto(resolution.Visibility),
-		ExplicitRule:        resolution.ExplicitRule,
-		ResolvedFromPath:    resolvedFromPath,
-		EffectiveVisibility: modelVisibilityToFilesystemProto(effectiveVisibility),
-	}, nil
-}
-
-func (s *filesystemServiceServer) canManageGlobalPathVisibility(ctx context.Context, username, normalizedPath string) (bool, error) {
-	userRoot := visibility.NormalizePath(homeslice.VisibleRootPath(username))
-	if userRoot != "" && (normalizedPath == userRoot || strings.HasPrefix(normalizedPath, userRoot+"/")) {
-		return true, nil
-	}
-
-	ownedSlices, err := s.storage.ListSlicesByOwner(ctx, username, int(^uint(0)>>1), 0)
-	if err != nil {
-		return false, err
-	}
-	for _, candidate := range ownedSlices {
-		if candidate == nil {
-			continue
-		}
-		homeMode := candidate.ID == homeslice.IDForUsername(username)
-		storedPath := storedPathFromVisibilityRule(homeMode, normalizedPath)
-		exists, _, err := s.workspacePathExists(ctx, candidate.ID, storedPath)
-		if err != nil {
-			return false, err
-		}
-		if exists {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func (s *filesystemServiceServer) inferPathVisibilityEntryType(ctx context.Context, username, normalizedPath string, recursive bool, rawPath string) (models.PathVisibilityEntryType, error) {
-	if recursive || strings.HasSuffix(strings.TrimSpace(rawPath), "/") {
-		return models.PathVisibilityEntryTypeDirectory, nil
-	}
-
-	ownedSlices, err := s.storage.ListSlicesByOwner(ctx, username, int(^uint(0)>>1), 0)
-	if err != nil {
-		return "", err
-	}
-	for _, candidate := range ownedSlices {
-		if candidate == nil {
-			continue
-		}
-		homeMode := candidate.ID == homeslice.IDForUsername(username)
-		storedPath := storedPathFromVisibilityRule(homeMode, normalizedPath)
-		exists, isDirectory, err := s.workspacePathExists(ctx, candidate.ID, storedPath)
-		if err != nil {
-			return "", err
-		}
-		if !exists {
-			continue
-		}
-		if isDirectory {
-			return models.PathVisibilityEntryTypeDirectory, nil
-		}
-		return models.PathVisibilityEntryTypeFile, nil
-	}
-	return models.PathVisibilityEntryTypeFile, nil
-}
-
 func (s *filesystemServiceServer) CreateWorkspace(ctx context.Context, req *filesystemv1.CreateWorkspaceRequest) (*filesystemv1.WorkspaceInfo, error) {
 	username, err := s.requireUser(ctx)
 	if err != nil {
@@ -500,12 +339,15 @@ func (s *filesystemServiceServer) DeleteWorkspace(ctx context.Context, req *file
 		return nil, err
 	}
 
-	workspace, _, err := s.requireWorkspaceWriteAccess(ctx, req.GetWorkspaceId(), username)
+	workspace, _, err := s.requireWorkspaceViewAccess(ctx, req.GetWorkspaceId())
 	if err != nil {
 		return nil, err
 	}
 	if workspace.IsRoot {
 		return nil, status.Error(codes.FailedPrecondition, "root workspace cannot be deleted")
+	}
+	if !canWriteSlice(workspace, username) {
+		return nil, status.Error(codes.PermissionDenied, "not authorized to modify slice")
 	}
 
 	activeSession, err := s.storage.GetActiveAgentSessionBySlice(ctx, workspace.ID)
@@ -541,7 +383,7 @@ func (s *filesystemServiceServer) ListWorkspaces(ctx context.Context, req *files
 
 	workspaces := make([]*models.Slice, 0)
 	seen := make(map[string]struct{})
-	if root, rootErr := s.storage.GetRootSlice(ctx); rootErr == nil && root != nil {
+	if root, rootErr := s.storage.GetRootSlice(ctx); rootErr == nil && root != nil && s.canViewSlice(ctx, root, username) {
 		workspaces = append(workspaces, root)
 		seen[root.ID] = struct{}{}
 	}
@@ -603,84 +445,6 @@ func (s *filesystemServiceServer) GetWorkspaceInfo(ctx context.Context, req *fil
 		return nil, err
 	}
 	return s.workspaceInfo(ctx, workspace)
-}
-
-func (s *filesystemServiceServer) GetPathVisibility(ctx context.Context, req *filesystemv1.GetPathVisibilityRequest) (*filesystemv1.GetPathVisibilityResponse, error) {
-	username, err := s.requireUser(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, false)
-	if err != nil {
-		return nil, err
-	}
-
-	storedPath, displayPath, err := s.resolveOperationPath(username, homeMode, req.GetPath(), false)
-	if err != nil {
-		return nil, err
-	}
-
-	exists, isDirectory, err := s.workspacePathExists(ctx, workspace.ID, storedPath)
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to inspect workspace path: %v", err))
-	}
-	if !exists && strings.TrimSpace(displayPath) != "" {
-		return nil, status.Error(codes.NotFound, "path not found")
-	}
-
-	info, err := s.buildWorkspacePathVisibilityInfo(ctx, workspace, homeMode, storedPath, displayPath, isDirectory)
-	if err != nil {
-		return nil, err
-	}
-	return &filesystemv1.GetPathVisibilityResponse{
-		WorkspaceId: workspace.ID,
-		Visibility:  info,
-	}, nil
-}
-
-func (s *filesystemServiceServer) SetPathVisibility(ctx context.Context, req *filesystemv1.SetPathVisibilityRequest) (*filesystemv1.SetPathVisibilityResponse, error) {
-	username, err := s.requireUser(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	normalizedPath := visibility.NormalizePath(req.GetPath())
-	if normalizedPath == "" {
-		return nil, status.Error(codes.InvalidArgument, "path is required")
-	}
-
-	canManage, err := s.canManageGlobalPathVisibility(ctx, username, normalizedPath)
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to validate path visibility access: %v", err))
-	}
-	if !canManage {
-		return nil, status.Error(codes.NotFound, "path not found")
-	}
-
-	entryType, err := s.inferPathVisibilityEntryType(ctx, username, normalizedPath, req.GetRecursive(), req.GetPath())
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve path visibility type: %v", err))
-	}
-
-	if err := s.storage.UpsertPathVisibilityRule(ctx, &models.PathVisibilityRule{
-		Path:       normalizedPath,
-		EntryType:  entryType,
-		Visibility: filesystemProtoToModelVisibility(req.GetVisibility()),
-		UpdatedBy:  username,
-		UpdatedAt:  time.Now().UTC(),
-	}); err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to save path visibility: %v", err))
-	}
-
-	info, err := s.buildGlobalPathVisibilityInfo(ctx, normalizedPath)
-	if err != nil {
-		return nil, err
-	}
-	return &filesystemv1.SetPathVisibilityResponse{
-		Visibility: info,
-		Recursive:  req.GetRecursive(),
-	}, nil
 }
 
 func (s *filesystemServiceServer) ReadFile(ctx context.Context, req *filesystemv1.ReadFileRequest) (*filesystemv1.ReadFileResponse, error) {
@@ -1031,13 +795,9 @@ func (s *filesystemServiceServer) ListDirectory(ctx context.Context, req *filesy
 		Path:        displayPath,
 		Entries:     make([]*filesystemv1.WorkspaceEntry, 0, len(entries)),
 	}
+	effectiveVisibility := modelVisibilityToFilesystemProto(workspace.Visibility)
 	for _, entry := range entries {
-		protoEntry := entryToProto(entry, homeMode)
-		info, err := s.buildWorkspacePathVisibilityInfo(ctx, workspace, homeMode, entry.Path, protoEntry.GetPath(), entry.Type == "directory")
-		if err != nil {
-			return nil, err
-		}
-		protoEntry.EffectiveVisibility = info.GetEffectiveVisibility()
+		protoEntry := entryToProto(entry, homeMode, effectiveVisibility)
 		response.Entries = append(response.Entries, protoEntry)
 	}
 	return response, nil
@@ -1098,10 +858,6 @@ func (s *filesystemServiceServer) Stat(ctx context.Context, req *filesystemv1.St
 		if err != nil && err != storage.ErrEntryNotFound {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to stat path: %v", err))
 		}
-		info, err := s.buildWorkspacePathVisibilityInfo(ctx, workspace, homeMode, "", "", true)
-		if err != nil {
-			return nil, err
-		}
 		var size int64
 		if rootEntry != nil {
 			size = rootEntry.Size
@@ -1113,7 +869,7 @@ func (s *filesystemServiceServer) Stat(ctx context.Context, req *filesystemv1.St
 				Path:                "",
 				Type:                filesystemv1.EntryType_ENTRY_TYPE_DIRECTORY,
 				Size:                size,
-				EffectiveVisibility: info.GetEffectiveVisibility(),
+				EffectiveVisibility: modelVisibilityToFilesystemProto(workspace.Visibility),
 			},
 		}, nil
 	}
@@ -1125,12 +881,7 @@ func (s *filesystemServiceServer) Stat(ctx context.Context, req *filesystemv1.St
 		}
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to stat path: %v", err))
 	}
-	protoEntry := entryToProto(entry, homeMode)
-	info, err := s.buildWorkspacePathVisibilityInfo(ctx, workspace, homeMode, entry.Path, protoEntry.GetPath(), entry.Type == "directory")
-	if err != nil {
-		return nil, err
-	}
-	protoEntry.EffectiveVisibility = info.GetEffectiveVisibility()
+	protoEntry := entryToProto(entry, homeMode, modelVisibilityToFilesystemProto(workspace.Visibility))
 	return &filesystemv1.StatResponse{
 		Exists: true,
 		Entry:  protoEntry,
@@ -4507,7 +4258,7 @@ func (s *filesystemServiceServer) listVisibleWorkspaceConflicts(ctx context.Cont
 				visible = false
 				break
 			}
-			if !canViewWorkspace(otherWorkspace, username) {
+			if !s.canViewSlice(ctx, otherWorkspace, username) {
 				visible = false
 				break
 			}
@@ -4618,8 +4369,8 @@ func (s *filesystemServiceServer) requireWorkspaceViewAccess(ctx context.Context
 	if err != nil {
 		return nil, nil, err
 	}
-	if !canViewWorkspace(workspace, username) {
-		return nil, nil, status.Error(codes.PermissionDenied, "not authorized for workspace")
+	if !s.canViewSlice(ctx, workspace, username) {
+		return nil, nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
 	meta, err := s.storage.GetSliceMetadata(ctx, workspace.ID)
@@ -4634,8 +4385,8 @@ func (s *filesystemServiceServer) requireWorkspaceWriteAccess(ctx context.Contex
 	if err != nil {
 		return nil, nil, err
 	}
-	if !canWriteWorkspace(workspace, username) {
-		return nil, nil, status.Error(codes.PermissionDenied, "not authorized to modify workspace")
+	if !canWriteSlice(workspace, username) {
+		return nil, nil, status.Error(codes.PermissionDenied, "not authorized to modify slice")
 	}
 	return workspace, meta, nil
 }
@@ -5354,24 +5105,17 @@ func validateWorkspacePath(raw string, required bool) (string, error) {
 	return cleaned, nil
 }
 
-func canViewWorkspace(workspace *models.Slice, username string) bool {
-	if workspace == nil {
+func canWriteSlice(slice *models.Slice, username string) bool {
+	if slice == nil || username == "" {
 		return false
 	}
-	if workspace.IsRoot {
-		return true
-	}
-	return canWriteWorkspace(workspace, username)
-}
-
-func canWriteWorkspace(workspace *models.Slice, username string) bool {
-	if workspace == nil || username == "" {
+	if slice.IsRoot {
 		return false
 	}
-	if workspace.CreatedBy == username {
+	if slice.CreatedBy == username {
 		return true
 	}
-	for _, owner := range workspace.Owners {
+	for _, owner := range slice.Owners {
 		if owner == username {
 			return true
 		}

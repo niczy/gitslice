@@ -48,16 +48,14 @@ export {
   createSliceFromFolder,
   fetchSliceEntries,
   getSliceEnvRequirements,
-  getPathVisibility,
   getSliceVisibility,
   listSliceEnvKV,
   listSliceChangesets,
   listSliceCommits,
   removeSliceFolder,
-  searchWorkspaceFiles,
   setSliceEnvSecret,
   setSliceEnvValue,
-  updatePathVisibility,
+  searchSliceFiles,
   updateSliceVisibility,
 } from '../api/slices.js';
 

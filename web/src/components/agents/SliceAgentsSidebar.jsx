@@ -193,7 +193,7 @@ export default function SliceAgentsSidebar({
           {createError && <div className="panel-error">{createError}</div>}
           {sessionsError && <div className="panel-error">{sessionsError}</div>}
           {sessionsLoading && selectedRunnerSessions.length === 0 && <div className="panel-empty">Loading conversations...</div>}
-          {!sessionsLoading && !sessionsError && !selectedRunner && (
+          {!sessionsLoading && !sessionsError && !selectedRunner && selectedRunnerSessions.length === 0 && (
             <div className="panel-empty">Select a running agent to view conversations.</div>
           )}
           {!sessionsLoading && !sessionsError && selectedRunner && selectedRunnerSessions.length === 0 && (

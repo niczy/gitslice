@@ -9,12 +9,20 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/niczy/gitslice/internal/homeslice"
 )
 
 type workflowTestEnvironment struct {
 	Username string
 	HomeDir  string
 }
+
+const (
+	workflowRootAdminUsername = "workflow-root-admin"
+	workflowRootAdminEmail    = "workflow-root-admin@example.test"
+)
 
 var (
 	workflowTestEnvs    sync.Map
@@ -72,6 +80,34 @@ func workflowProcessEnv(t *testing.T, extra map[string]string) map[string]string
 func withWorkflowUser(t *testing.T, ctx context.Context) context.Context {
 	t.Helper()
 	return withUsername(ctx, workflowUsername(t))
+}
+
+func workflowRootAdminUser(t *testing.T) string {
+	t.Helper()
+	t.Setenv("ADMIN_USER_EMAILS", workflowRootAdminEmail)
+	if testStorage == nil {
+		t.Fatal("expected test storage to be initialized")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	user, err := testStorage.EnsureUser(ctx, workflowRootAdminUsername)
+	if err != nil {
+		t.Fatalf("ensure workflow root admin user: %v", err)
+	}
+	if strings.TrimSpace(user.PrimaryEmail) != workflowRootAdminEmail {
+		user.PrimaryEmail = workflowRootAdminEmail
+		user.Name = "Workflow Root Admin"
+		user.AuthSource = "local"
+		if err := testStorage.UpdateUser(ctx, user); err != nil {
+			t.Fatalf("update workflow root admin user: %v", err)
+		}
+	}
+	if _, err := homeslice.EnsureUserHomeSlice(ctx, testStorage, workflowRootAdminUsername); err != nil {
+		t.Fatalf("ensure workflow root admin home slice: %v", err)
+	}
+	return workflowRootAdminUsername
 }
 
 func sanitizeWorkflowTestName(name string) string {

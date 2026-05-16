@@ -1,7 +1,7 @@
 import { apiBaseUrl, fetchWithAuth, readErrorMessage } from './client.js';
 import { normalizeChangesetListResponse, normalizeCommitListResponse } from '../utils/normalize.js';
 
-export async function searchWorkspaceFiles(workspaceId, { query, glob = '', regex = false, signal = undefined } = {}) {
+export async function searchSliceFiles(sliceId, { query, glob = '', regex = false, signal = undefined } = {}) {
   const params = new URLSearchParams();
   params.set('query', String(query || '').trim());
   if (String(glob || '').trim()) {
@@ -11,7 +11,7 @@ export async function searchWorkspaceFiles(workspaceId, { query, glob = '', rege
     params.set('regex', 'true');
   }
 
-  const response = await fetchWithAuth(`${apiBaseUrl}/v1/fs/workspaces/${encodeURIComponent(workspaceId)}:search?${params.toString()}`, { signal });
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/fs/workspaces/${encodeURIComponent(sliceId)}:search?${params.toString()}`, { signal });
   if (!response.ok) {
     throw new Error(await readErrorMessage(response, 'Unable to search files'));
   }
@@ -19,7 +19,7 @@ export async function searchWorkspaceFiles(workspaceId, { query, glob = '', rege
 }
 
 export async function createSliceFromFolder({
-  parentSliceId = 'root',
+  parentSliceId = '',
   folderPaths = [],
   newSliceId = '',
   name = '',
@@ -66,13 +66,12 @@ export async function getSliceVisibility(sliceId) {
   return response.json();
 }
 
-export async function updateSliceVisibility(sliceId, { visibility, pathPropagationMode }) {
+export async function updateSliceVisibility(sliceId, { visibility }) {
   const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}:setVisibility`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       visibility,
-      pathPropagationMode,
     }),
   });
   if (!response.ok) {
@@ -163,34 +162,6 @@ export async function deleteSliceEnvKV(sliceId, {
   });
   if (!response.ok) {
     throw new Error(await readErrorMessage(response, 'Unable to delete environment KV entry'));
-  }
-  return response.json();
-}
-
-export async function getPathVisibility({ workspaceId, path }) {
-  const params = new URLSearchParams({
-    workspace_id: workspaceId,
-    path,
-  });
-  const response = await fetchWithAuth(`${apiBaseUrl}/v1/fs:visibility?${params.toString()}`);
-  if (!response.ok) {
-    throw new Error(await readErrorMessage(response, 'Unable to load path visibility'));
-  }
-  return response.json();
-}
-
-export async function updatePathVisibility({ path, visibility, recursive = false }) {
-  const response = await fetchWithAuth(`${apiBaseUrl}/v1/fs:visibility`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      path,
-      visibility,
-      recursive,
-    }),
-  });
-  if (!response.ok) {
-    throw new Error(await readErrorMessage(response, 'Unable to update path visibility'));
   }
   return response.json();
 }

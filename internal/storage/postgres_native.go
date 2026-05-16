@@ -979,22 +979,6 @@ func (s *postgresNativeTxView) UpdateSliceFolderMounts(ctx context.Context, slic
 	return nil
 }
 
-func (s *postgresNativeTxView) GetPathVisibilityRule(ctx context.Context, p string) (*models.PathVisibilityRule, error) {
-	return s.PostgresNativeStorage.getPathVisibilityRule(ctx, s.tx, p)
-}
-
-func (s *postgresNativeTxView) ListPathVisibilityRules(ctx context.Context, pathPrefix string) ([]*models.PathVisibilityRule, error) {
-	return s.PostgresNativeStorage.listPathVisibilityRules(ctx, s.tx, pathPrefix)
-}
-
-func (s *postgresNativeTxView) UpsertPathVisibilityRule(ctx context.Context, rule *models.PathVisibilityRule) error {
-	return s.PostgresNativeStorage.upsertPathVisibilityRule(ctx, s.tx, rule)
-}
-
-func (s *postgresNativeTxView) DeletePathVisibilityRule(ctx context.Context, p string) error {
-	return s.PostgresNativeStorage.deletePathVisibilityRule(ctx, s.tx, p)
-}
-
 func (s *postgresNativeTxView) CreateSlice(ctx context.Context, slice *models.Slice) error {
 	ctx = ensureCtx(ctx)
 	if slice == nil || slice.ID == "" {
@@ -2019,22 +2003,6 @@ func (s *PostgresNativeStorage) UpdateSliceFolderMounts(ctx context.Context, sli
 		return err
 	}
 	return nil
-}
-
-func (s *PostgresNativeStorage) GetPathVisibilityRule(ctx context.Context, p string) (*models.PathVisibilityRule, error) {
-	return s.getPathVisibilityRule(ctx, s.pool, p)
-}
-
-func (s *PostgresNativeStorage) ListPathVisibilityRules(ctx context.Context, pathPrefix string) ([]*models.PathVisibilityRule, error) {
-	return s.listPathVisibilityRules(ctx, s.pool, pathPrefix)
-}
-
-func (s *PostgresNativeStorage) UpsertPathVisibilityRule(ctx context.Context, rule *models.PathVisibilityRule) error {
-	return s.upsertPathVisibilityRule(ctx, s.pool, rule)
-}
-
-func (s *PostgresNativeStorage) DeletePathVisibilityRule(ctx context.Context, p string) error {
-	return s.deletePathVisibilityRule(ctx, s.pool, p)
 }
 
 // GetSliceByName retrieves the first non-root slice matching the given display name.
@@ -7069,106 +7037,6 @@ func (s *PostgresNativeStorage) getSliceBySlug(ctx context.Context, q queryable,
 		return nil, ErrSliceNotFound
 	}
 	return slices[0], nil
-}
-
-func (s *PostgresNativeStorage) getPathVisibilityRule(ctx context.Context, q queryable, p string) (*models.PathVisibilityRule, error) {
-	ctx = ensureCtx(ctx)
-	pathKey := normalizeVisibilityPath(p)
-	if pathKey == "" {
-		return nil, ErrInvalidInput
-	}
-
-	var rule models.PathVisibilityRule
-	err := q.QueryRow(ctx, `
-		SELECT path, entry_type, visibility, updated_by, updated_at
-		FROM path_visibility
-		WHERE path = $1
-	`, pathKey).Scan(&rule.Path, &rule.EntryType, &rule.Visibility, &rule.UpdatedBy, &rule.UpdatedAt)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, ErrEntryNotFound
-		}
-		return nil, err
-	}
-	return copyPathVisibilityRule(&rule), nil
-}
-
-func (s *PostgresNativeStorage) listPathVisibilityRules(ctx context.Context, q queryable, pathPrefix string) ([]*models.PathVisibilityRule, error) {
-	ctx = ensureCtx(ctx)
-	prefix := normalizeVisibilityPath(pathPrefix)
-
-	sql := `
-		SELECT path, entry_type, visibility, updated_by, updated_at
-		FROM path_visibility
-	`
-	args := []interface{}{}
-	if prefix != "" {
-		sql += ` WHERE path = $1 OR path LIKE $1 || '/%'`
-		args = append(args, prefix)
-	}
-	sql += ` ORDER BY path`
-
-	rows, err := q.Query(ctx, sql, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	rules := make([]*models.PathVisibilityRule, 0)
-	for rows.Next() {
-		var rule models.PathVisibilityRule
-		if err := rows.Scan(&rule.Path, &rule.EntryType, &rule.Visibility, &rule.UpdatedBy, &rule.UpdatedAt); err != nil {
-			return nil, err
-		}
-		rules = append(rules, copyPathVisibilityRule(&rule))
-	}
-	if rules == nil {
-		rules = []*models.PathVisibilityRule{}
-	}
-	return rules, rows.Err()
-}
-
-func (s *PostgresNativeStorage) upsertPathVisibilityRule(ctx context.Context, q execable, rule *models.PathVisibilityRule) error {
-	ctx = ensureCtx(ctx)
-	if rule == nil {
-		return ErrInvalidInput
-	}
-	pathKey := normalizeVisibilityPath(rule.Path)
-	if pathKey == "" {
-		return ErrInvalidInput
-	}
-
-	updatedAt := rule.UpdatedAt
-	if updatedAt.IsZero() {
-		updatedAt = time.Now()
-	}
-
-	_, err := q.Exec(ctx, `
-		INSERT INTO path_visibility (path, entry_type, visibility, updated_by, updated_at)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (path) DO UPDATE SET
-			entry_type = EXCLUDED.entry_type,
-			visibility = EXCLUDED.visibility,
-			updated_by = EXCLUDED.updated_by,
-			updated_at = EXCLUDED.updated_at
-	`, pathKey, string(rule.EntryType), string(models.NormalizeVisibility(rule.Visibility)), rule.UpdatedBy, updatedAt)
-	return err
-}
-
-func (s *PostgresNativeStorage) deletePathVisibilityRule(ctx context.Context, q execable, p string) error {
-	ctx = ensureCtx(ctx)
-	pathKey := normalizeVisibilityPath(p)
-	if pathKey == "" {
-		return ErrInvalidInput
-	}
-	tag, err := q.Exec(ctx, `DELETE FROM path_visibility WHERE path = $1`, pathKey)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrEntryNotFound
-	}
-	return nil
 }
 
 func (s *PostgresNativeStorage) collectFileChanges(rows pgx.Rows) ([]*models.FileChangeRecord, error) {

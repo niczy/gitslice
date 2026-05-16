@@ -1,9 +1,6 @@
 package models
 
-import (
-	"strings"
-	"time"
-)
+import "strings"
 
 type Visibility string
 
@@ -23,19 +20,4 @@ func NormalizeVisibility(v Visibility) Visibility {
 
 func (v Visibility) IsPublic() bool {
 	return NormalizeVisibility(v) == VisibilityPublic
-}
-
-type PathVisibilityEntryType string
-
-const (
-	PathVisibilityEntryTypeFile      PathVisibilityEntryType = "file"
-	PathVisibilityEntryTypeDirectory PathVisibilityEntryType = "directory"
-)
-
-type PathVisibilityRule struct {
-	Path       string                  `json:"path"`
-	EntryType  PathVisibilityEntryType `json:"entry_type"`
-	Visibility Visibility              `json:"visibility"`
-	UpdatedBy  string                  `json:"updated_by"`
-	UpdatedAt  time.Time               `json:"updated_at"`
 }

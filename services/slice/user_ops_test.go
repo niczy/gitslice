@@ -9,6 +9,7 @@ import (
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
+	commonv1 "github.com/niczy/gitslice/proto/common"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -47,6 +48,7 @@ func TestListSlicesForAuthenticatedUserExcludesRootSlice(t *testing.T) {
 		CreatedAt:   now,
 		UpdatedAt:   now,
 		CreatedBy:   "alice",
+		Visibility:  models.VisibilityPublic,
 	}); err != nil {
 		t.Fatalf("CreateSlice(team.alpha) failed: %v", err)
 	}
@@ -69,6 +71,9 @@ func TestListSlicesForAuthenticatedUserExcludesRootSlice(t *testing.T) {
 		if slice.GetSliceId() == "home_alice" && slice.GetSlug() != "alice" {
 			t.Fatalf("expected home slice slug alice, got %#v", slice)
 		}
+		if slice.GetSliceId() == "team.alpha" && slice.GetVisibility() != commonv1.Visibility_VISIBILITY_PUBLIC {
+			t.Fatalf("expected public slice visibility in list response, got %#v", slice)
+		}
 	}
 }
 
@@ -86,6 +91,65 @@ func TestListSlicesWithoutUserReturnsUnauthenticated(t *testing.T) {
 	}
 	if status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("expected Unauthenticated, got %v", status.Code(err))
+	}
+}
+
+func TestResolveSliceAllowsAnonymousPublicSliceRef(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	svc := newSliceServiceServer(st)
+
+	now := time.Now()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:          "sl_public",
+		Name:        "test1",
+		Slug:        "test1",
+		Description: "public slice",
+		Owners:      []string{"alice"},
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		CreatedBy:   "alice",
+		Visibility:  models.VisibilityPublic,
+	}); err != nil {
+		t.Fatalf("CreateSlice(sl_public) failed: %v", err)
+	}
+
+	resp, err := svc.ResolveSlice(ctx, &slicev1.ResolveSliceRequest{Ref: "sl_public"})
+	if err != nil {
+		t.Fatalf("ResolveSlice failed: %v", err)
+	}
+	if resp.GetSliceId() != "sl_public" {
+		t.Fatalf("slice_id = %q, want sl_public", resp.GetSliceId())
+	}
+	if resp.GetSlug() != "alice/test1" {
+		t.Fatalf("slug = %q, want alice/test1", resp.GetSlug())
+	}
+	if resp.GetVisibility() != commonv1.Visibility_VISIBILITY_PUBLIC {
+		t.Fatalf("visibility = %v, want VISIBILITY_PUBLIC", resp.GetVisibility())
+	}
+}
+
+func TestResolveSliceRequiresAuthForPrivateSliceRef(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	svc := newSliceServiceServer(st)
+
+	now := time.Now()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "sl_private",
+		Name:      "private",
+		Slug:      "private",
+		Owners:    []string{"alice"},
+		CreatedAt: now,
+		UpdatedAt: now,
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice(sl_private) failed: %v", err)
+	}
+
+	_, err := svc.ResolveSlice(ctx, &slicev1.ResolveSliceRequest{Ref: "sl_private"})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("ResolveSlice error = %v, want %v", status.Code(err), codes.Unauthenticated)
 	}
 }
 

@@ -47,6 +47,39 @@ func (s *agentServiceServer) requireUser(ctx context.Context) (string, error) {
 	return identity.Username, nil
 }
 
+func (s *agentServiceServer) optionalUser(ctx context.Context) (string, error) {
+	identity, err := authresolver.OptionalGRPCIdentity(ctx, s.st)
+	if err != nil {
+		return "", err
+	}
+	if identity == nil {
+		return "", nil
+	}
+	return strings.TrimSpace(identity.Username), nil
+}
+
+func (s *agentServiceServer) hasSliceViewAccess(ctx context.Context, slice *models.Slice, username string) bool {
+	ok, err := authz.CanViewSlice(ctx, s.st, slice, username)
+	if err != nil {
+		return false
+	}
+	return ok
+}
+
+func (s *agentServiceServer) canReadSlice(ctx context.Context, slice *models.Slice, username string) bool {
+	if s.hasSliceViewAccess(ctx, slice, username) {
+		return true
+	}
+	return slice != nil && !slice.IsRoot && slice.Visibility.IsPublic()
+}
+
+func agentSliceReadAccessError(username string) error {
+	if strings.TrimSpace(username) == "" {
+		return status.Error(codes.Unauthenticated, "login required")
+	}
+	return status.Error(codes.PermissionDenied, "forbidden")
+}
+
 func (s *agentServiceServer) notifyRunnerUpdate(ctx context.Context, userID, runnerID string) {
 	if s.svc != nil {
 		s.svc.NotifyRunnerUpdate(ctx, userID, runnerID)
@@ -407,6 +440,17 @@ func (s *agentServiceServer) runnerForSession(ctx context.Context, userID string
 	return runner
 }
 
+func (s *agentServiceServer) publicRunnerForSession(ctx context.Context, session *models.AgentSession) *models.AgentRunner {
+	if session == nil || strings.TrimSpace(session.RunnerID) == "" {
+		return nil
+	}
+	runner, err := s.st.GetAgentRunner(ctx, strings.TrimSpace(session.RunnerID))
+	if err != nil || runner.UserID != session.UserID {
+		return nil
+	}
+	return runner
+}
+
 func agentRunnerToProto(runner *models.AgentRunner, now time.Time) *agentv1.AgentRunner {
 	if runner == nil {
 		return nil
@@ -451,7 +495,7 @@ func firstNonEmpty(values ...string) string {
 }
 
 func (s *agentServiceServer) ListSessions(ctx context.Context, req *agentv1.ListSessionsRequest) (*agentv1.ListSessionsResponse, error) {
-	userID, err := s.requireUser(ctx)
+	userID, err := s.optionalUser(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -463,8 +507,8 @@ func (s *agentServiceServer) ListSessions(ctx context.Context, req *agentv1.List
 	if err != nil {
 		return nil, status.Error(codes.NotFound, "slice not found")
 	}
-	if !authz.HasSliceViewAccess(slice, userID) {
-		return nil, status.Error(codes.PermissionDenied, "forbidden")
+	if !s.canReadSlice(ctx, slice, userID) {
+		return nil, agentSliceReadAccessError(userID)
 	}
 	limit := int(req.GetLimit())
 	if limit <= 0 {
@@ -480,6 +524,9 @@ func (s *agentServiceServer) ListSessions(ctx context.Context, req *agentv1.List
 	now := time.Now().UTC()
 	runners := make(map[string]*models.AgentRunner)
 	for _, session := range sessions {
+		if session == nil {
+			continue
+		}
 		runnerID := strings.TrimSpace(session.RunnerID)
 		if runnerID == "" {
 			continue
@@ -488,18 +535,22 @@ func (s *agentServiceServer) ListSessions(ctx context.Context, req *agentv1.List
 			continue
 		}
 		runner, err := s.st.GetAgentRunner(ctx, runnerID)
-		if err == nil && runner.UserID == userID {
+		if err == nil && userID != "" && runner.UserID == userID {
 			runner, err = s.markRunnerOfflineIfStale(ctx, runner, now)
 		}
-		if err == nil && runner.UserID == userID {
+		if err == nil && runner.UserID == session.UserID {
 			runners[runnerID] = runner
 		} else {
 			runners[runnerID] = nil
 		}
 	}
 	out := make([]*agentv1.AgentSessionSummary, 0, len(sessions))
+	publicSlice := slice != nil && !slice.IsRoot && slice.Visibility.IsPublic()
 	for _, session := range sessions {
-		if session.UserID != userID {
+		if session == nil {
+			continue
+		}
+		if !publicSlice && session.UserID != userID {
 			continue
 		}
 		availability := s.agentSessionAvailability(ctx, session, runners[strings.TrimSpace(session.RunnerID)], now)
@@ -517,7 +568,7 @@ func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.Cre
 	if err != nil {
 		return nil, status.Error(codes.NotFound, "slice not found")
 	}
-	if !authz.HasSliceViewAccess(slice, userID) {
+	if !s.hasSliceViewAccess(ctx, slice, userID) {
 		return nil, status.Error(codes.PermissionDenied, "forbidden")
 	}
 
@@ -595,16 +646,27 @@ func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.Cre
 }
 
 func (s *agentServiceServer) GetSession(ctx context.Context, req *agentv1.GetSessionRequest) (*agentv1.GetSessionResponse, error) {
-	userID, err := s.requireUser(ctx)
+	userID, err := s.optionalUser(ctx)
 	if err != nil {
 		return nil, err
 	}
-	session, err := s.svc.GetSessionForUser(ctx, userID, req.GetSessionId())
+	session, err := s.svc.GetSession(ctx, req.GetSessionId())
 	if err != nil {
 		return nil, status.Error(codes.NotFound, "session not found")
 	}
+	slice, err := s.st.GetSlice(ctx, session.SliceID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "slice not found")
+	}
+	publicSlice := slice != nil && !slice.IsRoot && slice.Visibility.IsPublic()
+	if !s.canReadSlice(ctx, slice, userID) || (!publicSlice && session.UserID != userID) {
+		return nil, agentSliceReadAccessError(userID)
+	}
 	now := time.Now().UTC()
-	runner := s.runnerForSession(ctx, userID, session, now)
+	runner := s.publicRunnerForSession(ctx, session)
+	if userID != "" && session.UserID == userID {
+		runner = s.runnerForSession(ctx, userID, session, now)
+	}
 	resp := &agentv1.GetSessionResponse{
 		SessionId:      session.SessionID,
 		SliceId:        session.SliceID,
@@ -658,18 +720,38 @@ func (s *agentServiceServer) MintToken(ctx context.Context, req *agentv1.MintTok
 }
 
 func (s *agentServiceServer) ListEvents(ctx context.Context, req *agentv1.ListEventsRequest) (*agentv1.ListEventsResponse, error) {
-	userID, err := s.requireUser(ctx)
+	userID, err := s.optionalUser(ctx)
 	if err != nil {
 		return nil, err
+	}
+	session, err := s.svc.GetSession(ctx, req.GetSessionId())
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "session not found")
+	}
+	slice, err := s.st.GetSlice(ctx, session.SliceID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "slice not found")
+	}
+	publicSlice := slice != nil && !slice.IsRoot && slice.Visibility.IsPublic()
+	if !s.canReadSlice(ctx, slice, userID) || (!publicSlice && session.UserID != userID) {
+		return nil, agentSliceReadAccessError(userID)
 	}
 	limit := boundedAgentEventLimit(int(req.GetLimit()))
 	tail := boundedAgentEventTail(int(req.GetTail()))
 	var events []*models.AgentSessionEvent
 	var nextSeq uint64
 	if tail > 0 {
-		events, nextSeq, err = s.svc.ListLatestEventsForUser(ctx, userID, req.GetSessionId(), tail)
+		events, err = s.st.ListLatestAgentSessionEvents(ctx, req.GetSessionId(), tail)
+		nextSeq = uint64(1)
+		if len(events) > 0 {
+			nextSeq = events[len(events)-1].Seq + 1
+		}
 	} else {
-		events, nextSeq, err = s.svc.ListEventsForUser(ctx, userID, req.GetSessionId(), req.GetSinceSeq(), limit)
+		events, err = s.st.ListAgentSessionEvents(ctx, req.GetSessionId(), req.GetSinceSeq(), limit)
+		nextSeq = req.GetSinceSeq() + 1
+		if len(events) > 0 {
+			nextSeq = events[len(events)-1].Seq + 1
+		}
 	}
 	if err != nil {
 		return nil, status.Error(codes.NotFound, "session not found")

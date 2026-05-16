@@ -7,9 +7,7 @@ import {
 } from './SliceSettingsHelpers.js';
 
 export function SliceVisibilityCard({
-  onPropagationModeChange,
   onSaveVisibility,
-  slicePropagationMode,
   sliceVisibility,
   sliceVisibilityError,
   sliceVisibilityLoading,
@@ -40,18 +38,6 @@ export function SliceVisibilityCard({
         {!sliceVisibilityLoading && !sliceVisibilityError && (
           <div className="visibility-stack" data-testid="slice-visibility-panel">
             <div className="visibility-controls">
-              <label className="visibility-field">
-                <span>Path propagation when making the slice public</span>
-                <select
-                  value={slicePropagationMode}
-                  onChange={(event) => onPropagationModeChange(event.target.value)}
-                  data-testid="slice-visibility-propagation"
-                >
-                  <option value="unchanged">Leave existing path rules unchanged</option>
-                  <option value="public">Mark current slice paths public</option>
-                  <option value="private">Mark current slice paths private</option>
-                </select>
-              </label>
               <div className="visibility-actions">
                 <Button
                   type="button"

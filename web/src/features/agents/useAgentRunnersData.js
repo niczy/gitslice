@@ -11,6 +11,7 @@ const RUNNER_UPDATE_WAIT_MS = 25000;
 const RUNNER_WATCH_RETRY_MS = 5000;
 
 export function useAgentRunnersData({
+  enabled = true,
   loadSessions,
   setSelectedRunnerId,
 }) {
@@ -22,6 +23,13 @@ export function useAgentRunnersData({
   const defaultAgentType = capabilities?.defaultAgentType || capabilities?.default_agent_type || '';
 
   const loadRunners = useCallback(async ({ keepSelection = true, quiet = false } = {}) => {
+    if (!enabled) {
+      setRunners([]);
+      setSelectedRunnerId('');
+      setRunnersError('');
+      setRunnersLoading(false);
+      return;
+    }
     if (!quiet) {
       setRunnersLoading(true);
       setRunnersError('');
@@ -48,9 +56,13 @@ export function useAgentRunnersData({
         setRunnersLoading(false);
       }
     }
-  }, [setSelectedRunnerId]);
+  }, [enabled, setSelectedRunnerId]);
 
   useEffect(() => {
+    if (!enabled) {
+      setCapabilities(null);
+      return undefined;
+    }
     let active = true;
     getAgentCapabilities()
       .then((nextCapabilities) => {
@@ -62,9 +74,13 @@ export function useAgentRunnersData({
     return () => {
       active = false;
     };
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
+    if (!enabled) {
+      loadSessions({ keepSelection: true });
+      return undefined;
+    }
     let active = true;
     let retryTimer = 0;
     let controller = null;
@@ -111,7 +127,7 @@ export function useAgentRunnersData({
         window.clearTimeout(retryTimer);
       }
     };
-  }, [loadRunners, loadSessions]);
+  }, [enabled, loadRunners, loadSessions]);
 
   return {
     capabilities,

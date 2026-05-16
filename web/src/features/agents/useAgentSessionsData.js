@@ -9,6 +9,7 @@ import { useAgentRunnersData } from './useAgentRunnersData.js';
 import { useAgentSessionEventsData } from './useAgentSessionEventsData.js';
 
 export function useAgentSessionsData({
+  isAuthenticated = false,
   onSelectSession,
   routeSessionId = '',
   sliceId,
@@ -35,6 +36,7 @@ export function useAgentSessionsData({
     runnersError,
     runnersLoading,
   } = useAgentRunnersData({
+    enabled: isAuthenticated,
     loadSessions,
     setSelectedRunnerId,
   });
@@ -45,8 +47,10 @@ export function useAgentSessionsData({
     [onlineRunners],
   );
   const runnerSessions = useMemo(
-    () => sessions.filter((session) => session.runnerId && onlineRunnerIds.has(session.runnerId)),
-    [onlineRunnerIds, sessions],
+    () => (isAuthenticated
+      ? sessions.filter((session) => session.runnerId && onlineRunnerIds.has(session.runnerId))
+      : sessions),
+    [isAuthenticated, onlineRunnerIds, sessions],
   );
   const sessionsByRunnerId = useMemo(() => {
     const grouped = new Map();
@@ -68,11 +72,13 @@ export function useAgentSessionsData({
       ? runnerSessions.find((session) => session.sessionId === normalizedRouteSessionId) || null
       : null
   ), [runnerSessions, normalizedRouteSessionId]);
-  const selectedRunner = onlineRunners.find((runner) => runner.runnerId === selectedRunnerId)
+  const selectedRunner = isAuthenticated ? onlineRunners.find((runner) => runner.runnerId === selectedRunnerId)
     || (routeSession?.runnerId ? onlineRunners.find((runner) => runner.runnerId === routeSession.runnerId) : null)
     || onlineRunners[0]
-    || null;
-  const selectedRunnerSessions = selectedRunner
+    || null : null;
+  const selectedRunnerSessions = !isAuthenticated
+    ? runnerSessions
+    : selectedRunner
     ? sessionsByRunnerId.get(selectedRunner.runnerId) || []
     : [];
   const selectedSession = selectedRunnerSessions.find((session) => session.sessionId === selectedSessionId) || null;
@@ -113,6 +119,17 @@ export function useAgentSessionsData({
   }, [selectSessionId, selectedRunnerSessions]);
 
   useEffect(() => {
+    if (!isAuthenticated) {
+      if (routeSession) {
+        setSelectedSessionId(routeSession.sessionId);
+        return;
+      }
+      const fallbackSessionId = runnerSessions[0]?.sessionId || '';
+      if (selectedSessionId !== fallbackSessionId) {
+        setSelectedSessionId(fallbackSessionId);
+      }
+      return;
+    }
     if (!routeSession) {
       return;
     }
@@ -120,9 +137,12 @@ export function useAgentSessionsData({
       setSelectedRunnerId(routeSession.runnerId);
     }
     setSelectedSessionId(routeSession.sessionId);
-  }, [onlineRunnerIds, routeSession]);
+  }, [isAuthenticated, onlineRunnerIds, routeSession, runnerSessions, selectedSessionId]);
 
   useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
     if (!selectedRunner) {
       if (selectedSessionId) {
         setSelectedSessionId('');
@@ -139,7 +159,7 @@ export function useAgentSessionsData({
     if (selectedSessionId !== fallbackSessionId) {
       setSelectedSessionId(fallbackSessionId);
     }
-  }, [routeSession, selectedRunner, selectedRunnerSessions, selectedSessionId]);
+  }, [isAuthenticated, routeSession, selectedRunner, selectedRunnerSessions, selectedSessionId]);
 
   return {
     assistantStreaming,

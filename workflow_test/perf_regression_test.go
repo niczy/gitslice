@@ -49,37 +49,18 @@ func timeCLI(t *testing.T, workdir string, args ...string) (string, time.Duratio
 func buildPerfFixtureSlice(t *testing.T, basePath string) string {
 	t.Helper()
 
-	rootWorkdir := t.TempDir()
-	_ = runCLIOrFail(t, rootWorkdir, "init", sliceIDArg("root"))
+	workdir := t.TempDir()
 
-	paths := make([]string, 0, perfFixtureDirCount*perfFixtureFilesPerDir)
 	for dirIdx := 0; dirIdx < perfFixtureDirCount; dirIdx++ {
 		dirPath := fmt.Sprintf("%s/dir-%02d", basePath, dirIdx)
 		for fileIdx := 0; fileIdx < perfFixtureFilesPerDir; fileIdx++ {
-			paths = append(paths, fmt.Sprintf("%s/file-%03d.txt", dirPath, fileIdx))
+			seedWorkflowHomeFile(t, dirPath, fmt.Sprintf("file-%03d.txt", fileIdx), nil)
 		}
-	}
-
-	createResp := runCLIJSONOrFail[changesetCreateJSON](
-		t,
-		rootWorkdir,
-		"changeset",
-		"create",
-		"--message", "seed workflow perf fixture",
-		"--files", strings.Join(paths, ","),
-	)
-	if createResp.ChangesetID == "" {
-		t.Fatalf("expected changeset ID while seeding perf fixture")
-	}
-
-	mergeResp := runCLIJSONOrFail[mergeJSON](t, rootWorkdir, "changeset", "merge", createResp.ChangesetID)
-	if mergeResp.Status != "MERGE_STATUS_SUCCESS" {
-		t.Fatalf("expected seed merge success, got %+v", mergeResp)
 	}
 
 	sliceResp := runCLIJSONOrFail[sliceCreateJSON](
 		t,
-		rootWorkdir,
+		workdir,
 		"slice",
 		"create",
 		fmt.Sprintf("perf-slice-%d", time.Now().UnixNano()),

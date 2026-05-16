@@ -243,10 +243,6 @@ type Storage interface {
 	ListEntries(ctx context.Context, sliceID, parentID string) ([]*models.DirectoryEntry, error)
 	UpdateEntry(ctx context.Context, entry *models.DirectoryEntry) error
 	DeleteEntry(ctx context.Context, entryID string) error
-	GetPathVisibilityRule(ctx context.Context, path string) (*models.PathVisibilityRule, error)
-	ListPathVisibilityRules(ctx context.Context, pathPrefix string) ([]*models.PathVisibilityRule, error)
-	UpsertPathVisibilityRule(ctx context.Context, rule *models.PathVisibilityRule) error
-	DeletePathVisibilityRule(ctx context.Context, path string) error
 
 	// Global state
 	GetGlobalState(ctx context.Context) (*models.GlobalState, error)
