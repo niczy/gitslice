@@ -1337,6 +1337,12 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		if len(modifiedFiles) == 0 {
 			return nil, status.Error(codes.InvalidArgument, "no modified files remain after filtering paths outside the slice tracked folders")
 		}
+		expectedPathBases := changesetExpectedPathBasesForFiles(slice, modifiedFiles, normalizeExpectedPathBases(req.GetExpectedPathBases()))
+		if drifts, err := s.validateExpectedChangesetPathBases(ctx, slice, modifiedFiles, expectedPathBases); err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to validate expected path bases: %v", err))
+		} else if len(drifts) > 0 {
+			return nil, status.Error(codes.FailedPrecondition, expectedPathBasePreconditionMessage(drifts))
+		}
 		baseCommitHash := strings.TrimSpace(req.BaseCommitHash)
 		if baseCommitHash == "" {
 			baseCommitHash = strings.TrimSpace(existing.BaseCommitHash)
@@ -1357,7 +1363,7 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		if err := s.storage.UpdateChangeset(ctx, existing); err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update changeset: %v", err))
 		}
-		if err := s.createChangesetSnapshot(ctx, existing); err != nil {
+		if err := s.createChangesetSnapshot(ctx, existing, expectedPathBases); err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to save changeset snapshot: %v", err))
 		}
 		ciRunID, ciStatus := s.enqueueChangesetExportCI(ctx, existing.ID, username)
@@ -1387,6 +1393,12 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 	if len(modifiedFiles) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "no modified files remain after filtering paths outside the slice tracked folders")
 	}
+	expectedPathBases := changesetExpectedPathBasesForFiles(slice, modifiedFiles, normalizeExpectedPathBases(req.GetExpectedPathBases()))
+	if drifts, err := s.validateExpectedChangesetPathBases(ctx, slice, modifiedFiles, expectedPathBases); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to validate expected path bases: %v", err))
+	} else if len(drifts) > 0 {
+		return nil, status.Error(codes.FailedPrecondition, expectedPathBasePreconditionMessage(drifts))
+	}
 	if err := s.applyChangesetFileContents(ctx, req.SliceId, fileContents); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to apply changeset file content: %v", err))
 	}
@@ -1409,7 +1421,7 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 	if err := s.storage.CreateChangeset(ctx, cs); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to create changeset: %v", err))
 	}
-	if err := s.createChangesetSnapshot(ctx, cs); err != nil {
+	if err := s.createChangesetSnapshot(ctx, cs, expectedPathBases); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to save changeset snapshot: %v", err))
 	}
 	ciRunID, ciStatus := s.enqueueChangesetExportCI(ctx, cs.ID, username)
@@ -1446,6 +1458,12 @@ func (s *sliceServiceServer) CreateAndMergeChangeset(ctx context.Context, req *s
 
 	createResp, err := s.CreateChangeset(ctx, req)
 	if err != nil {
+		if status.Code(err) == codes.FailedPrecondition {
+			return &slicev1.MergeChangesetResponse{
+				Status:  slicev1.MergeStatus_MERGE_STATUS_STALE_BASE,
+				Message: status.Convert(err).Message(),
+			}, nil
+		}
 		return nil, err
 	}
 	return s.mergeChangeset(ctx, createResp.GetChangesetId(), username, false, mergeChangesetOptions{
@@ -2753,6 +2771,194 @@ func mergeModifiedFilesWithFileContents(files []string, changes []changesetFileC
 	return out
 }
 
+func normalizeExpectedPathBases(bases []*filev1.PathBase) map[string]*filev1.PathBase {
+	if len(bases) == 0 {
+		return nil
+	}
+	normalized := make(map[string]*filev1.PathBase, len(bases))
+	for _, base := range bases {
+		if base == nil {
+			continue
+		}
+		filePath := cleanDiffPath(base.GetPath())
+		if filePath == "" {
+			continue
+		}
+		clone := *base
+		clone.Path = filePath
+		normalized[filePath] = &clone
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
+}
+
+func changesetExpectedPathBasesForFiles(slice *models.Slice, modifiedFiles []string, bases map[string]*filev1.PathBase) map[string]*filev1.PathBase {
+	if len(bases) == 0 || len(modifiedFiles) == 0 {
+		return nil
+	}
+	filtered := make(map[string]*filev1.PathBase, len(modifiedFiles))
+	for _, rawPath := range normalizeModifiedFiles(modifiedFiles) {
+		filePath := cleanDiffPath(rawPath)
+		if filePath == "" {
+			continue
+		}
+		if base := expectedPathBaseForPath(slice, bases, filePath); base != nil {
+			filtered[filePath] = base
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return filtered
+}
+
+func expectedPathBaseForPath(slice *models.Slice, bases map[string]*filev1.PathBase, filePath string) *filev1.PathBase {
+	if len(bases) == 0 {
+		return nil
+	}
+	cleaned := cleanDiffPath(filePath)
+	if cleaned == "" {
+		return nil
+	}
+	if base := bases[cleaned]; base != nil {
+		return base
+	}
+	if displayPath := common.SliceDisplayPath(slice, cleaned); displayPath != "" {
+		if base := bases[displayPath]; base != nil {
+			return base
+		}
+	}
+	if storedPath := common.SliceStoredPath(slice, cleaned); storedPath != "" {
+		if base := bases[storedPath]; base != nil {
+			return base
+		}
+	}
+	return nil
+}
+
+func expectedPathBaseHeadPath(slice *models.Slice, filePath string, base *filev1.PathBase) string {
+	headPath := cleanDiffPath(filePath)
+	if base != nil {
+		if basePath := cleanDiffPath(base.GetPath()); basePath != "" {
+			headPath = basePath
+		}
+	}
+	if storedPath := common.SliceStoredPath(slice, headPath); storedPath != "" {
+		return storedPath
+	}
+	return headPath
+}
+
+func expectedPathBaseHomeID(slice *models.Slice, modifiedFiles []string, bases map[string]*filev1.PathBase) string {
+	if slice != nil {
+		if username := homeslice.UsernameFromSliceID(slice.ID); username != "" {
+			return username
+		}
+	}
+	for _, base := range bases {
+		if username := homeslice.UsernameFromSliceID(base.GetSourceSliceId()); username != "" {
+			return username
+		}
+	}
+	if homeRoot := commonTopLevelPathFromFiles(modifiedFiles); homeRoot != "" {
+		return homeRoot
+	}
+	if slice != nil {
+		if createdBy := strings.TrimSpace(slice.CreatedBy); createdBy != "" {
+			return createdBy
+		}
+		for _, owner := range slice.Owners {
+			if owner = strings.TrimSpace(owner); owner != "" {
+				return owner
+			}
+		}
+	}
+	return ""
+}
+
+func expectedPathBasePreconditionMessage(drifts []changesetPathHeadDrift) string {
+	if len(drifts) == 0 {
+		return "file changed since it was loaded. Reload before saving."
+	}
+	first := drifts[0]
+	return fmt.Sprintf(
+		"path %s changed from version %d to %d since it was loaded. Reload before saving.",
+		first.Path,
+		first.BaseVersion,
+		first.CurrentVersion,
+	)
+}
+
+func (s *sliceServiceServer) validateExpectedChangesetPathBases(ctx context.Context, slice *models.Slice, modifiedFiles []string, bases map[string]*filev1.PathBase) ([]changesetPathHeadDrift, error) {
+	if len(bases) == 0 {
+		return nil, nil
+	}
+	headStore, ok := s.storage.(storage.HomePathHeadStore)
+	if !ok {
+		return nil, nil
+	}
+	homeID := expectedPathBaseHomeID(slice, modifiedFiles, bases)
+	if strings.TrimSpace(homeID) == "" {
+		return nil, nil
+	}
+
+	type expectedTarget struct {
+		filePath string
+		headPath string
+		base     *filev1.PathBase
+	}
+	targets := make([]expectedTarget, 0, len(modifiedFiles))
+	headPaths := make([]string, 0, len(modifiedFiles))
+	seenHeadPaths := make(map[string]struct{}, len(modifiedFiles))
+	for _, rawPath := range normalizeModifiedFiles(modifiedFiles) {
+		filePath := cleanDiffPath(rawPath)
+		if filePath == "" {
+			continue
+		}
+		base := expectedPathBaseForPath(slice, bases, filePath)
+		if base == nil {
+			continue
+		}
+		headPath := expectedPathBaseHeadPath(slice, filePath, base)
+		if headPath == "" {
+			continue
+		}
+		targets = append(targets, expectedTarget{filePath: filePath, headPath: headPath, base: base})
+		if _, ok := seenHeadPaths[headPath]; ok {
+			continue
+		}
+		seenHeadPaths[headPath] = struct{}{}
+		headPaths = append(headPaths, headPath)
+	}
+	if len(targets) == 0 {
+		return nil, nil
+	}
+
+	heads, err := headStore.GetHomePathHeads(ctx, homeID, headPaths)
+	if err != nil {
+		return nil, err
+	}
+	drifts := make([]changesetPathHeadDrift, 0)
+	for _, target := range targets {
+		baseVersion := target.base.GetPathVersion()
+		currentVersion := int64(0)
+		if head := heads[target.headPath]; head != nil && head.PathVersion > 0 {
+			currentVersion = head.PathVersion
+		}
+		if currentVersion == baseVersion {
+			continue
+		}
+		drifts = append(drifts, changesetPathHeadDrift{
+			Path:           target.filePath,
+			BaseVersion:    baseVersion,
+			CurrentVersion: currentVersion,
+		})
+	}
+	return drifts, nil
+}
+
 func (s *sliceServiceServer) applyChangesetFileContents(ctx context.Context, sliceID string, changes []changesetFileContentChange) error {
 	for _, change := range changes {
 		if change.deleted {
@@ -3677,9 +3883,13 @@ func summarizeReviewChanges(changes []*filev1.FileChangeRecord) *slicev1.DiffSum
 	return summary
 }
 
-func (s *sliceServiceServer) createChangesetSnapshot(ctx context.Context, cs *models.Changeset) error {
+func (s *sliceServiceServer) createChangesetSnapshot(ctx context.Context, cs *models.Changeset, expectedPathBases ...map[string]*filev1.PathBase) error {
 	if cs == nil {
 		return nil
+	}
+	var expectedBases map[string]*filev1.PathBase
+	if len(expectedPathBases) > 0 {
+		expectedBases = expectedPathBases[0]
 	}
 
 	snapshots, err := s.storage.ListChangesetSnapshots(ctx, cs.ID, 1)
@@ -3708,7 +3918,7 @@ func (s *sliceServiceServer) createChangesetSnapshot(ctx context.Context, cs *mo
 		}
 		snapshotFileHashes[filePath] = strings.TrimSpace(fileHashes[filePath])
 	}
-	basePathVersions, err := s.changesetBasePathVersions(ctx, cs, modifiedFiles)
+	basePathVersions, err := s.changesetBasePathVersions(ctx, cs, modifiedFiles, expectedBases)
 	if err != nil {
 		return err
 	}
@@ -3741,7 +3951,7 @@ func (s *sliceServiceServer) enqueueChangesetExportCI(ctx context.Context, chang
 	return resp.GetRunId(), resp.GetStatus()
 }
 
-func (s *sliceServiceServer) changesetBasePathVersions(ctx context.Context, cs *models.Changeset, modifiedFiles []string) (map[string]int64, error) {
+func (s *sliceServiceServer) changesetBasePathVersions(ctx context.Context, cs *models.Changeset, modifiedFiles []string, expectedBases map[string]*filev1.PathBase) (map[string]int64, error) {
 	headStore, ok := s.storage.(storage.HomePathHeadStore)
 	if !ok || cs == nil {
 		return nil, nil
@@ -3764,6 +3974,10 @@ func (s *sliceServiceServer) changesetBasePathVersions(ctx context.Context, cs *
 	for _, rawPath := range paths {
 		filePath := cleanDiffPath(rawPath)
 		if filePath == "" {
+			continue
+		}
+		if base := expectedPathBaseForPath(slice, expectedBases, filePath); base != nil {
+			baseVersions[filePath] = base.GetPathVersion()
 			continue
 		}
 		version := int64(0)

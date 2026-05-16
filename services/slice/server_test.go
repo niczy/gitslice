@@ -5269,6 +5269,84 @@ jobs:
 	}
 }
 
+func TestCreateAndMergeChangesetRejectsStaleExpectedPathBase(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	homeSliceID := homeslice.IDForUsername("alice")
+	filePath := "alice/api/main.go"
+	oldContent := []byte("package main\n")
+
+	slice := &models.Slice{ID: homeSliceID, Name: "alice", Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	oldHash := mustWriteSliceManifest(t, ctx, st, homeSliceID, filePath, oldContent)
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(homeSliceID, filePath),
+		Path:     filePath,
+		Type:     "file",
+		ParentID: homeSliceID,
+		Hash:     oldHash,
+		Size:     int64(len(oldContent)),
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:           "alice",
+		Path:             filePath,
+		PathVersion:      2,
+		ContentHash:      oldHash,
+		ManifestHash:     oldHash,
+		SourceSliceID:    homeSliceID,
+		SourceCommitHash: "cmt_current",
+	}}); err != nil {
+		t.Fatalf("UpsertHomePathHeads failed: %v", err)
+	}
+
+	srv := NewService(st)
+	resp, err := srv.CreateAndMergeChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:        homeSliceID,
+		BaseCommitHash: "cmt_loaded",
+		ModifiedFiles:  []string{filePath},
+		Message:        "stale edit",
+		FileContents: []*slicev1.FileContentChange{{
+			Path:    filePath,
+			Content: []byte("package main\n\nfunc main() {}\n"),
+		}},
+		ExpectedPathBases: []*filev1.PathBase{{
+			Path:             filePath,
+			Exists:           true,
+			ContentHash:      oldHash,
+			PathVersion:      1,
+			SourceSliceId:    homeSliceID,
+			SourceCommitHash: "cmt_loaded",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateAndMergeChangeset returned error instead of stale response: %v", err)
+	}
+	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_STALE_BASE {
+		t.Fatalf("merge status = %v, want stale base", resp.GetStatus())
+	}
+	if !strings.Contains(resp.GetMessage(), "Reload before saving") {
+		t.Fatalf("stale message = %q, want reload guidance", resp.GetMessage())
+	}
+	entry, err := st.GetEntryByPath(ctx, homeSliceID, filePath)
+	if err != nil {
+		t.Fatalf("GetEntryByPath failed: %v", err)
+	}
+	if entry.Hash != oldHash {
+		t.Fatalf("entry hash changed despite stale base: got %q want %q", entry.Hash, oldHash)
+	}
+	heads, err := st.GetHomePathHeads(ctx, "alice", []string{filePath})
+	if err != nil {
+		t.Fatalf("GetHomePathHeads failed: %v", err)
+	}
+	if head := heads[filePath]; head == nil || head.PathVersion != 2 || head.ManifestHash != oldHash {
+		t.Fatalf("path head changed despite stale base: %#v", head)
+	}
+}
+
 func TestCreateAndMergeMountedHomeSliceUpdatesFileServiceHeadRead(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
 	st := storage.NewInMemoryStorage()

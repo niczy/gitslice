@@ -35,6 +35,27 @@ import { useRepoBrowserTreeState } from './useRepoBrowserTreeState.js';
 
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
+function numericPathBaseValue(pathBase, camelName, snakeName) {
+  const value = pathBase?.[camelName] ?? pathBase?.[snakeName] ?? 0;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function expectedPathBasesForEdit(filePath, pathBase) {
+  if (!filePath || !pathBase) {
+    return [];
+  }
+  return [{
+    path: filePath,
+    exists: Boolean(pathBase.exists),
+    contentHash: pathBase.contentHash || pathBase.content_hash || '',
+    pathVersion: numericPathBaseValue(pathBase, 'pathVersion', 'path_version'),
+    sourceSliceId: pathBase.sourceSliceId || pathBase.source_slice_id || '',
+    sourceCommitHash: pathBase.sourceCommitHash || pathBase.source_commit_hash || '',
+    moveGeneration: numericPathBaseValue(pathBase, 'moveGeneration', 'move_generation'),
+  }];
+}
+
 export function useRepoBrowserData({
   apiBaseUrl,
   buildEntriesUrl,
@@ -111,6 +132,7 @@ export function useRepoBrowserData({
     resetDraftState,
     resetHistory,
     selectedFile,
+    selectedFilePathBase,
     selectedFileSize,
     setDraftContent,
     setEncodedFileContent,
@@ -121,6 +143,7 @@ export function useRepoBrowserData({
     setPreviewFileContent,
     setPreviewFilePath,
     setSelectedFile,
+    setSelectedFilePathBase,
     setSelectedFileSize,
     showFileEditor,
     showHistory,
@@ -191,6 +214,7 @@ export function useRepoBrowserData({
       setPreviewFileContent(decodedContent);
       setPreviewEncodedFileContent(nextFilePayload.content);
       setSelectedFileSize(getFilePayloadSize(nextFilePayload, decodedContent));
+      setSelectedFilePathBase(nextFilePayload.pathBase || nextFilePayload.path_base || null);
       setDraftContent(decodedContent);
       setFileError(initialBrowserData.selectedFileError || '');
       setLoadingFilePath('');
@@ -211,6 +235,7 @@ export function useRepoBrowserData({
         Array.isArray(initialBrowserData?.rootEntries) ? { '': initialBrowserData.rootEntries } : {},
         nextSelectedFile,
       ));
+      setSelectedFilePathBase(null);
       setDraftContent('');
       setFileError(initialBrowserData?.selectedFileError || '');
       setLoadingFilePath(nextSelectedFile);
@@ -226,6 +251,7 @@ export function useRepoBrowserData({
     setPreviewFileContent('');
     setPreviewEncodedFileContent('');
     setSelectedFileSize(null);
+    setSelectedFilePathBase(null);
     setDraftContent('');
     setFileError('');
     setLoadingFilePath('');
@@ -255,6 +281,7 @@ export function useRepoBrowserData({
     setPreviewFileContent('');
     setPreviewEncodedFileContent('');
     setSelectedFileSize(null);
+    setSelectedFilePathBase(null);
     resetAllDrafts();
     setFileError('');
     setLoadingFilePath('');
@@ -305,6 +332,7 @@ export function useRepoBrowserData({
     setPreviewFileContent,
     setPreviewFilePath,
     setSelectedFile,
+    setSelectedFilePathBase,
     setSelectedFileSize,
     setTreeEntries,
     sliceHash,
@@ -429,6 +457,7 @@ export function useRepoBrowserData({
           path: filePath,
           content: encodeTreeTextContent(draftContent),
         }],
+        expectedPathBases: expectedPathBasesForEdit(filePath, selectedFilePathBase),
       });
       if (!isSuccessfulMergeResponse(mergeResponse)) {
         throw new Error(mergeResponseErrorMessage(mergeResponse));
@@ -484,6 +513,7 @@ export function useRepoBrowserData({
     isCommittingFileEdit,
     resetHistory,
     selectedFile,
+    selectedFilePathBase,
     setError,
     setFileError,
     setIsLoading,

@@ -44,6 +44,7 @@ export function useRepoBrowserFileLoader({
   setPreviewFileContent,
   setPreviewFilePath,
   setSelectedFile,
+  setSelectedFilePathBase,
   setSelectedFileSize,
   setTreeEntries,
   sliceHash,
@@ -66,6 +67,7 @@ export function useRepoBrowserFileLoader({
     openFilesView();
     setFocusedEntry({ path: normalizedPath, type: 'file' });
     setSelectedFile(normalizedPath);
+    setSelectedFilePathBase(null);
     setSelectedFileSize(
       getNumericFileSize(options.size)
         ?? getTreeFileSize(treeEntries, normalizedPath)
@@ -140,8 +142,10 @@ export function useRepoBrowserFileLoader({
       }
       const filePayload = await fileResponse.json();
       const content = filePayload?.file?.content || '';
+      const pathBase = filePayload?.file?.pathBase || filePayload?.file?.path_base || null;
       setFileError('');
       setEncodedFileContent(content);
+      setSelectedFilePathBase(pathBase);
       const decodedContent = decodeBase64(content);
       setFileContent(decodedContent);
       setPreviewFilePath(normalizedPath);
@@ -153,6 +157,7 @@ export function useRepoBrowserFileLoader({
     } catch (err) {
       setFileContent('');
       setEncodedFileContent('');
+      setSelectedFilePathBase(null);
       setSelectedFileSize(null);
       setFileError(err?.message || 'Unable to load file content.');
     } finally {
@@ -183,6 +188,7 @@ export function useRepoBrowserFileLoader({
     setPreviewFileContent,
     setPreviewFilePath,
     setSelectedFile,
+    setSelectedFilePathBase,
     setSelectedFileSize,
     setTreeEntries,
     treeEntries,
@@ -233,9 +239,11 @@ export function useRepoBrowserFileLoader({
           return;
         }
         const content = payload?.file?.content || '';
+        const pathBase = payload?.file?.pathBase || payload?.file?.path_base || null;
         const decodedContent = decodeBase64(content);
         setFileError('');
         setEncodedFileContent(content);
+        setSelectedFilePathBase(pathBase);
         setFileContent(decodedContent);
         setPreviewFilePath(selectedFile);
         setPreviewFileContent(decodedContent);
@@ -281,6 +289,7 @@ export function useRepoBrowserFileLoader({
     setPreviewEncodedFileContent,
     setPreviewFileContent,
     setPreviewFilePath,
+    setSelectedFilePathBase,
     setSelectedFileSize,
     sliceHash,
     sliceId,

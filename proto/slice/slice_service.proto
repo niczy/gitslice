@@ -363,6 +363,7 @@ message CreateChangesetRequest {
   string message = 6;
   string changeset_id = 7; // Optional: append a new snapshot to this changeset.
   repeated FileContentChange file_contents = 8; // Optional: file payloads for local checkout changes.
+  repeated file.v1.PathBase expected_path_bases = 9; // Optional: reject writes if these read-time bases are stale.
 }
 
 message CreateChangesetResponse {
