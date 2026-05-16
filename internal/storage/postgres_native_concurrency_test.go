@@ -92,13 +92,17 @@ func TestPostgresNativeStorageUsesVersionedManifestRefs(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("InitializeRootSlice failed: %v", err)
+	}
+
 	source := &models.Slice{ID: "source-slice", Name: "Source", Owners: []string{"alice"}, CreatedBy: "alice"}
-	target := &models.Slice{ID: "target-slice", Name: "Target", Owners: []string{"alice"}, CreatedBy: "alice"}
+	home := &models.Slice{ID: "home_alice", Name: "alice", Owners: []string{"alice"}, CreatedBy: "alice"}
 	if err := st.CreateSlice(ctx, source); err != nil {
 		t.Fatalf("CreateSlice(source) failed: %v", err)
 	}
-	if err := st.CreateSlice(ctx, target); err != nil {
-		t.Fatalf("CreateSlice(target) failed: %v", err)
+	if err := st.CreateSlice(ctx, home); err != nil {
+		t.Fatalf("CreateSlice(home) failed: %v", err)
 	}
 
 	filePath := "alice/app/main.go"
@@ -117,27 +121,41 @@ func TestPostgresNativeStorageUsesVersionedManifestRefs(t *testing.T) {
 		t.Fatalf("source manifest = %#v, want hash=%q path=%q", got, manifest.Hash, filePath)
 	}
 
-	if err := st.PromoteFilesToSlice(ctx, target.ID, []RootPromotionJob{{
-		SliceID:    source.ID,
-		CommitHash: "commit-1",
-		Files:      []string{filePath},
-		CommitTime: time.Now(),
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:           "alice",
+		Path:             filePath,
+		SourceSliceID:    source.ID,
+		SourceCommitHash: "commit-1",
+		ManifestHash:     manifest.Hash,
+		ContentHash:      manifest.Hash,
+		EntryType:        "file",
+		UpdatedAt:        time.Now(),
 	}}); err != nil {
-		t.Fatalf("PromoteFilesToSlice failed: %v", err)
+		t.Fatalf("UpsertHomePathHeads failed: %v", err)
 	}
 
-	if _, err := objectStore.GetObject(ctx, st.objKey("manifests", target.ID, filePath)); err != ErrEntryNotFound {
-		t.Fatalf("expected no target slice-local manifest object, got %v", err)
+	if _, err := objectStore.GetObject(ctx, st.objKey("manifests", "root", filePath)); err != ErrEntryNotFound {
+		t.Fatalf("expected no root slice-local manifest object, got %v", err)
 	}
-	promoted, err := ReadSliceFileContent(ctx, st, target.ID, filePath)
+	if _, err := objectStore.GetObject(ctx, st.objKey("manifests", home.ID, filePath)); err != ErrEntryNotFound {
+		t.Fatalf("expected no home slice-local manifest object, got %v", err)
+	}
+	projted, err := ReadSliceFileContent(ctx, st, "root", filePath)
 	if err != nil {
-		t.Fatalf("ReadSliceFileContent(target) failed: %v", err)
+		t.Fatalf("ReadSliceFileContent(root) failed: %v", err)
 	}
-	if !bytes.Equal(promoted.Content, content) {
-		t.Fatalf("promoted content mismatch: got %q want %q", promoted.Content, content)
+	if !bytes.Equal(projted.Content, content) {
+		t.Fatalf("projected root content mismatch: got %q want %q", projted.Content, content)
 	}
-	if promoted.Hash != manifest.Hash {
-		t.Fatalf("promoted hash=%q want %q", promoted.Hash, manifest.Hash)
+	if projted.Hash != manifest.Hash {
+		t.Fatalf("projected root hash=%q want %q", projted.Hash, manifest.Hash)
+	}
+	homeFile, err := ReadSliceFileContent(ctx, st, home.ID, filePath)
+	if err != nil {
+		t.Fatalf("ReadSliceFileContent(home) failed: %v", err)
+	}
+	if !bytes.Equal(homeFile.Content, content) || homeFile.Hash != manifest.Hash {
+		t.Fatalf("projected home content mismatch: hash=%q content=%q", homeFile.Hash, homeFile.Content)
 	}
 }
 

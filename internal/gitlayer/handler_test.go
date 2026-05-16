@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -385,18 +386,25 @@ func TestHandlerImportsRootMountedPushThroughHomeSliceAndPromotesRoot(t *testing
 		t.Fatalf("read home new file: %v", err)
 	}
 
-	if err := handler.waitForQueuedPromotions(ctx); err != nil {
-		t.Fatalf("wait for promotion: %v", err)
+	if err := handler.waitForQueuedProjections(ctx); err != nil {
+		t.Fatalf("wait for projection: %v", err)
 	}
 	rootReadme, err := storage.ReadSliceFileContent(ctx, st, root.ID, "alice/git-auth-smoke/README.md")
 	if err != nil {
 		t.Fatalf("read root README: %v", err)
 	}
-	if got, want := string(rootReadme.Content), "old root\n"; got != want {
+	if got, want := string(rootReadme.Content), "new via git\n"; got != want {
 		t.Fatalf("root README = %q, want %q", got, want)
 	}
-	if _, err := storage.ReadSliceFileContent(ctx, st, root.ID, "alice/git-auth-smoke/src/new.txt"); !errors.Is(err, storage.ErrEntryNotFound) {
-		t.Fatalf("expected no physical root copy for new file, got %v", err)
+	if _, err := storage.ReadSliceFileContent(ctx, st, root.ID, "alice/git-auth-smoke/src/new.txt"); err != nil {
+		t.Fatalf("read projected root new file: %v", err)
+	}
+	rootSlice, err := st.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("GetRootSlice failed: %v", err)
+	}
+	if slices.Contains(rootSlice.Files, "alice/git-auth-smoke/src/new.txt") {
+		t.Fatalf("expected root file index to stay projection-only, got %#v", rootSlice.Files)
 	}
 }
 

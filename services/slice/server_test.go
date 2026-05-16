@@ -14,7 +14,6 @@ import (
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
-	"github.com/niczy/gitslice/internal/rootpromote"
 	"github.com/niczy/gitslice/internal/searchindex"
 	"github.com/niczy/gitslice/internal/storage"
 	commonv1 "github.com/niczy/gitslice/proto/common"
@@ -1423,7 +1422,7 @@ func TestMergeProfileSummary(t *testing.T) {
 	profile := newMergeProfile("chg_123", "slice-123", 256)
 	profile.markRevertApply(15 * time.Millisecond)
 	profile.markFinalize(230 * time.Millisecond)
-	profile.markPromotion(40 * time.Millisecond)
+	profile.markProjection(40 * time.Millisecond)
 	profile.markConfig(5 * time.Millisecond)
 	profile.finish()
 
@@ -1434,7 +1433,7 @@ func TestMergeProfileSummary(t *testing.T) {
 		"modified_files=256",
 		"revert_ms=15",
 		"finalize_ms=230",
-		"promotion_ms=40",
+		"projection_ms=40",
 		"config_ms=5",
 	} {
 		if !strings.Contains(summary, want) {
@@ -1944,16 +1943,33 @@ func TestCreateSliceFromFolderUsesParentEntriesWhenSliceFilesEmpty(t *testing.T)
 	filePath := "tester/o/genesis/projects/repo/README.md"
 	displayPath := "o/genesis/projects/repo/README.md"
 	content := []byte("repo readme")
+	source := &models.Slice{ID: "source-entry-backed-root", Name: "source-entry-backed-root", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, source); err != nil {
+		t.Fatalf("CreateSlice(source) failed: %v", err)
+	}
+	hash := mustWriteSliceManifest(t, ctx, st, source.ID, filePath, content)
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
-		ID:       "root:" + filePath,
+		ID:       common.GenerateEntryID(source.ID, filePath),
 		Path:     filePath,
 		Type:     "file",
-		ParentID: "root",
+		ParentID: source.ID,
 		Size:     int64(len(content)),
+		Hash:     hash,
 	}); err != nil {
 		t.Fatalf("AddEntry failed: %v", err)
 	}
-	mustWriteSliceManifest(t, ctx, st, "root", filePath, content)
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:           "tester",
+		Path:             filePath,
+		EntryType:        "file",
+		PathVersion:      1,
+		SourceSliceID:    source.ID,
+		SourceCommitHash: "source-entry-backed-root-commit",
+		ManifestHash:     hash,
+		ContentHash:      hash,
+	}}); err != nil {
+		t.Fatalf("UpsertHomePathHeads failed: %v", err)
+	}
 
 	rootSlice, err := st.GetSlice(ctx, "root")
 	if err != nil {
@@ -2661,38 +2677,6 @@ func TestCreateSliceFromMultipleFoldersRemapsCheckoutPaths(t *testing.T) {
 	}
 }
 
-type rootSliceLookupCounter struct {
-	storage.Storage
-	lookups int
-}
-
-func (c *rootSliceLookupCounter) GetRootSlice(ctx context.Context) (*models.Slice, error) {
-	c.lookups++
-	return c.Storage.GetRootSlice(ctx)
-}
-
-func TestPromoteSliceCachesRootSliceLookup(t *testing.T) {
-	ctx := context.Background()
-	base := storage.NewInMemoryStorage()
-	if err := base.InitializeRootSlice(ctx); err != nil {
-		t.Fatalf("failed to initialize root slice: %v", err)
-	}
-
-	countingStorage := &rootSliceLookupCounter{Storage: base}
-	srv := newSliceServiceServer(countingStorage)
-
-	if err := srv.promoteSlice(ctx, "slice-a", "commit-a", []string{"a.txt"}, time.Now()); err != nil {
-		t.Fatalf("first promoteSlice failed: %v", err)
-	}
-	if err := srv.promoteSlice(ctx, "slice-b", "commit-b", []string{"b.txt"}, time.Now().Add(time.Second)); err != nil {
-		t.Fatalf("second promoteSlice failed: %v", err)
-	}
-
-	if countingStorage.lookups != 1 {
-		t.Fatalf("expected one GetRootSlice lookup across promotions, got %d", countingStorage.lookups)
-	}
-}
-
 type addFileToSliceCounter struct {
 	storage.Storage
 	counts map[string]int
@@ -2886,15 +2870,15 @@ func TestMergeChangesetDeduplicatesModifiedFiles(t *testing.T) {
 	}
 	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := srv.waitForQueuedPromotions(waitCtx); err != nil {
-		t.Fatalf("timed out waiting for root promotion queue: %v", err)
+	if err := srv.waitForQueuedProjections(waitCtx); err != nil {
+		t.Fatalf("timed out waiting for root projection queue: %v", err)
 	}
 
 	if got := countingStorage.counts["slice-dup:dup.txt"]; got != 1 {
 		t.Fatalf("expected one ownership write for slice file, got %d", got)
 	}
-	if got := countingStorage.counts["root:dup.txt"]; got != 1 {
-		t.Fatalf("expected one ownership write for root file, got %d", got)
+	if got := countingStorage.counts["root:dup.txt"]; got != 0 {
+		t.Fatalf("expected root ownership to stay projection-only, got %d writes", got)
 	}
 
 	updatedCS, err := base.GetChangeset(ctx, cs.ID)
@@ -2962,12 +2946,12 @@ func TestMergeChangesetAppendsAcceptedMergeEvent(t *testing.T) {
 		t.Fatalf("expected merge freshness token, got home=%q shard=%d seq=%d", resp.GetMergeHomeId(), resp.GetMergeShard(), resp.GetMergeSeq())
 	}
 	projections := projectionStatusByName(resp.GetProjections())
-	rootProjection := projections[durablePromotionProjectionName]
-	if rootProjection == nil || projections[historyProjectionName] == nil {
-		t.Fatalf("expected root and history projection statuses, got %#v", resp.GetProjections())
+	historyProjection := projections[historyProjectionName]
+	if historyProjection == nil {
+		t.Fatalf("expected history projection status, got %#v", resp.GetProjections())
 	}
-	if rootProjection.GetState() != slicev1.ProjectionState_PROJECTION_STATE_PENDING {
-		t.Fatalf("expected root projection to be pending before queued promotion drains, got %v", rootProjection.GetState())
+	if historyProjection.GetState() != slicev1.ProjectionState_PROJECTION_STATE_PENDING {
+		t.Fatalf("expected history projection to be pending before queued projection drains, got %v", historyProjection.GetState())
 	}
 
 	event, err := st.GetMergeEventByChangeset(ctx, cs.ID)
@@ -3198,7 +3182,7 @@ func TestMergeChangesetAcceptsRepeatedSnapshotContentRefs(t *testing.T) {
 	}
 }
 
-func TestMergeChangesetPromotionMaterializesRootFileTree(t *testing.T) {
+func TestMergeChangesetProjectsRootFileTreeFromPathHeads(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	base := storage.NewInMemoryStorage()
 	if err := base.InitializeRootSlice(ctx); err != nil {
@@ -3218,7 +3202,7 @@ func TestMergeChangesetPromotionMaterializesRootFileTree(t *testing.T) {
 		t.Fatalf("failed to seed root file ownership: %v", err)
 	}
 
-	slice := &models.Slice{ID: "slice-tree-promotion", Name: "slice-tree-promotion", Owners: []string{"tester"}, CreatedBy: "tester"}
+	slice := &models.Slice{ID: "slice-tree-projection", Name: "slice-tree-projection", Owners: []string{"tester"}, CreatedBy: "tester"}
 	if err := base.CreateSlice(ctx, slice); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}
@@ -3238,7 +3222,7 @@ func TestMergeChangesetPromotionMaterializesRootFileTree(t *testing.T) {
 	}
 
 	cs := &models.Changeset{
-		ID:            "chg_tree-promotion",
+		ID:            "chg_tree-projection",
 		SliceID:       slice.ID,
 		ModifiedFiles: []string{filePath},
 		Status:        models.ChangesetStatusPending,
@@ -3249,7 +3233,6 @@ func TestMergeChangesetPromotionMaterializesRootFileTree(t *testing.T) {
 	}
 
 	srv := newSliceServiceServer(base)
-	srv.promotionBatchWindow = 200 * time.Millisecond
 	mustCreateChangesetSnapshot(t, ctx, srv, cs)
 	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
 	if err != nil {
@@ -3258,18 +3241,20 @@ func TestMergeChangesetPromotionMaterializesRootFileTree(t *testing.T) {
 	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
 		t.Fatalf("expected merge success, got %v", resp.GetStatus())
 	}
-	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := srv.waitForQueuedPromotions(waitCtx); err != nil {
-		t.Fatalf("timed out waiting for root promotion queue: %v", err)
-	}
 
 	rootSlice, err := base.GetRootSlice(ctx)
 	if err != nil {
 		t.Fatalf("failed to load root slice: %v", err)
 	}
-	if !containsString(rootSlice.Files, filePath) {
-		t.Fatalf("expected promoted file ownership %q in root slice files, got %#v", filePath, rootSlice.Files)
+	if containsString(rootSlice.Files, filePath) {
+		t.Fatalf("expected root ownership to stay projection-only, got %#v", rootSlice.Files)
+	}
+	projected, err := storage.ReadSliceFileContent(ctx, base, "root", filePath)
+	if err != nil {
+		t.Fatalf("ReadSliceFileContent(root, %s) failed: %v", filePath, err)
+	}
+	if string(projected.Content) != string(content) || projected.Hash != contentHash {
+		t.Fatalf("projected root content mismatch: got hash=%q content=%q", projected.Hash, projected.Content)
 	}
 
 	fileSvc := fileservice.NewService(base)
@@ -3283,18 +3268,18 @@ func TestMergeChangesetPromotionMaterializesRootFileTree(t *testing.T) {
 		t.Fatalf("ListEntries(root) failed: %v", err)
 	}
 	if !listEntriesContainPath(listResp.GetEntries(), "docs") {
-		t.Fatalf("expected root file tree to include promoted directory %q, got paths %#v", "docs", listEntryPaths(listResp.GetEntries()))
+		t.Fatalf("expected root file tree to include projected directory %q, got paths %#v", "docs", listEntryPaths(listResp.GetEntries()))
 	}
 }
 
-func TestMergeChangesetReturnsBeforePromotionMaterializesRoot(t *testing.T) {
+func TestMergeChangesetDoesNotMaterializeRootFiles(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	base := storage.NewInMemoryStorage()
 	if err := base.InitializeRootSlice(ctx); err != nil {
 		t.Fatalf("failed to initialize root slice: %v", err)
 	}
 
-	slice := &models.Slice{ID: "slice-async-promotion", Name: "slice-async-promotion", Owners: []string{"tester"}, CreatedBy: "tester"}
+	slice := &models.Slice{ID: "slice-async-projection", Name: "slice-async-projection", Owners: []string{"tester"}, CreatedBy: "tester"}
 	if err := base.CreateSlice(ctx, slice); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}
@@ -3313,7 +3298,7 @@ func TestMergeChangesetReturnsBeforePromotionMaterializesRoot(t *testing.T) {
 	}
 
 	cs := &models.Changeset{
-		ID:            "chg_async-promotion",
+		ID:            "chg_async-projection",
 		SliceID:       slice.ID,
 		ModifiedFiles: []string{filePath},
 		Status:        models.ChangesetStatusPending,
@@ -3324,9 +3309,7 @@ func TestMergeChangesetReturnsBeforePromotionMaterializesRoot(t *testing.T) {
 	}
 
 	srv := newSliceServiceServer(base)
-	srv.promotionBatchWindow = 300 * time.Millisecond
 	mustCreateChangesetSnapshot(t, ctx, srv, cs)
-	start := time.Now()
 	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
 	if err != nil {
 		t.Fatalf("MergeChangeset failed: %v", err)
@@ -3334,29 +3317,33 @@ func TestMergeChangesetReturnsBeforePromotionMaterializesRoot(t *testing.T) {
 	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
 		t.Fatalf("expected merge success, got %v", resp.GetStatus())
 	}
-	if elapsed := time.Since(start); elapsed >= 250*time.Millisecond {
-		t.Fatalf("expected merge to return before promotion batch window, took %s", elapsed)
-	}
 
 	rootSlice, err := base.GetRootSlice(ctx)
 	if err != nil {
 		t.Fatalf("failed to load root slice: %v", err)
 	}
 	if containsString(rootSlice.Files, filePath) {
-		t.Fatalf("expected root materialization to lag immediately after merge")
+		t.Fatalf("expected root files to stay projection-only immediately after merge")
+	}
+	projected, err := storage.ReadSliceFileContent(ctx, base, "root", filePath)
+	if err != nil {
+		t.Fatalf("ReadSliceFileContent(root, %s) failed: %v", filePath, err)
+	}
+	if projected.Hash != contentHash {
+		t.Fatalf("projected root hash=%q want %q", projected.Hash, contentHash)
 	}
 
 	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := srv.waitForQueuedPromotions(waitCtx); err != nil {
-		t.Fatalf("timed out waiting for root promotion queue: %v", err)
+	if err := srv.waitForQueuedProjections(waitCtx); err != nil {
+		t.Fatalf("timed out waiting for queued projections: %v", err)
 	}
 	rootSlice, err = base.GetRootSlice(ctx)
 	if err != nil {
-		t.Fatalf("failed to load root slice after promotion: %v", err)
+		t.Fatalf("failed to load root slice after projections: %v", err)
 	}
-	if !containsString(rootSlice.Files, filePath) {
-		t.Fatalf("expected root materialization after queue drain, got %#v", rootSlice.Files)
+	if containsString(rootSlice.Files, filePath) {
+		t.Fatalf("expected root files to remain projection-only after queued projections, got %#v", rootSlice.Files)
 	}
 }
 
@@ -3428,8 +3415,8 @@ func TestMergeChangesetMountedSliceListsMergedFile(t *testing.T) {
 	}
 	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := srv.waitForQueuedPromotions(waitCtx); err != nil {
-		t.Fatalf("timed out waiting for root promotion queue: %v", err)
+	if err := srv.waitForQueuedProjections(waitCtx); err != nil {
+		t.Fatalf("timed out waiting for root projection queue: %v", err)
 	}
 
 	fileSvc := fileservice.NewService(base)
@@ -5421,250 +5408,14 @@ func TestListChangesetSnapshotsReturnsSyntheticWhenNoStoredSnapshots(t *testing.
 	}
 }
 
-type promotionWriteCounter struct {
-	storage.Storage
-
-	mu                      sync.Mutex
-	rootAddCalls            map[string]int
-	updateGlobalStateCalls  int
-	updateRootMetadataCalls int
-}
-
-func (c *promotionWriteCounter) AddFileToSlice(ctx context.Context, fileID, sliceID string) error {
-	if sliceID == "root" {
-		c.mu.Lock()
-		if c.rootAddCalls == nil {
-			c.rootAddCalls = make(map[string]int)
-		}
-		c.rootAddCalls[fileID]++
-		c.mu.Unlock()
-	}
-	return c.Storage.AddFileToSlice(ctx, fileID, sliceID)
-}
-
-func (c *promotionWriteCounter) UpdateGlobalState(ctx context.Context, state *models.GlobalState) error {
-	c.mu.Lock()
-	c.updateGlobalStateCalls++
-	c.mu.Unlock()
-	return c.Storage.UpdateGlobalState(ctx, state)
-}
-
-func (c *promotionWriteCounter) UpdateSliceMetadata(ctx context.Context, sliceID string, metadata *models.SliceMetadata) error {
-	if sliceID == "root" {
-		c.mu.Lock()
-		c.updateRootMetadataCalls++
-		c.mu.Unlock()
-	}
-	return c.Storage.UpdateSliceMetadata(ctx, sliceID, metadata)
-}
-
-func TestRootPromotionQueueBatchesSameSlice(t *testing.T) {
+func TestMergeEventPathHeadProjectionReadsRootWithoutProjectionWorker(t *testing.T) {
 	ctx := context.Background()
 	base := storage.NewInMemoryStorage()
 	if err := base.InitializeRootSlice(ctx); err != nil {
 		t.Fatalf("failed to initialize root slice: %v", err)
 	}
 
-	countingStorage := &promotionWriteCounter{
-		Storage:      base,
-		rootAddCalls: make(map[string]int),
-	}
-	srv := newSliceServiceServer(countingStorage)
-	srv.promotionBatchWindow = 50 * time.Millisecond
-
-	now := time.Now()
-	jobs := []struct {
-		commitHash string
-		files      []string
-	}{
-		{commitHash: "commit-1", files: []string{"a.txt", "a.txt"}},
-		{commitHash: "commit-2", files: []string{"a.txt", "b.txt"}},
-		{commitHash: "commit-3", files: []string{"b.txt", "c.txt"}},
-	}
-	for i, job := range jobs {
-		if err := srv.enqueueRootPromotion(ctx, "slice-batch", job.commitHash, job.files, now.Add(time.Duration(i)*time.Second), nil); err != nil {
-			t.Fatalf("enqueueRootPromotion(%s) failed: %v", job.commitHash, err)
-		}
-	}
-
-	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := srv.waitForQueuedPromotions(waitCtx); err != nil {
-		t.Fatalf("timed out waiting for promotion queue: %v", err)
-	}
-
-	if got := countingStorage.updateGlobalStateCalls; got != 1 {
-		t.Fatalf("expected one global state write for batched promotion, got %d", got)
-	}
-	if got := countingStorage.updateRootMetadataCalls; got != 1 {
-		t.Fatalf("expected one root metadata write for batched promotion, got %d", got)
-	}
-	for _, fileID := range []string{"a.txt", "b.txt", "c.txt"} {
-		if got := countingStorage.rootAddCalls[fileID]; got != 1 {
-			t.Fatalf("expected one root ownership write for %s, got %d", fileID, got)
-		}
-	}
-
-	state, err := base.GetGlobalState(ctx)
-	if err != nil {
-		t.Fatalf("failed to load global state: %v", err)
-	}
-	if got, want := state.GlobalCommitHash, "commit-3"; got != want {
-		t.Fatalf("expected head commit %q, got %q", want, got)
-	}
-	if got, want := len(state.History), len(jobs); got != want {
-		t.Fatalf("expected %d history entries, got %d", want, got)
-	}
-	if got, want := state.History[0].CommitHash, "commit-3"; got != want {
-		t.Fatalf("expected newest history commit %q, got %q", want, got)
-	}
-}
-
-func TestRootPromotionUsesPromotionStorage(t *testing.T) {
-	ctx := context.Background()
-	base := storage.NewInMemoryStorage()
-	if err := base.InitializeRootSlice(ctx); err != nil {
-		t.Fatalf("failed to initialize root slice: %v", err)
-	}
-
-	foregroundStorage := &promotionWriteCounter{
-		Storage:      base,
-		rootAddCalls: make(map[string]int),
-	}
-	promotionStorage := &promotionWriteCounter{
-		Storage:      base,
-		rootAddCalls: make(map[string]int),
-	}
-	srv := newSliceServiceServerWithPromotionStorage(foregroundStorage, promotionStorage)
-
-	if err := srv.promoteSlice(ctx, "slice-promotion-pool", "commit-promotion-pool", []string{"pool.txt"}, time.Now()); err != nil {
-		t.Fatalf("promoteSlice failed: %v", err)
-	}
-
-	if got := foregroundStorage.updateGlobalStateCalls; got != 0 {
-		t.Fatalf("expected foreground storage to avoid global state writes, got %d", got)
-	}
-	if got := foregroundStorage.updateRootMetadataCalls; got != 0 {
-		t.Fatalf("expected foreground storage to avoid root metadata writes, got %d", got)
-	}
-	if got := foregroundStorage.rootAddCalls["pool.txt"]; got != 0 {
-		t.Fatalf("expected foreground storage to avoid root file writes, got %d", got)
-	}
-	if got := promotionStorage.updateGlobalStateCalls; got != 1 {
-		t.Fatalf("expected promotion storage to update global state once, got %d", got)
-	}
-	if got := promotionStorage.updateRootMetadataCalls; got != 1 {
-		t.Fatalf("expected promotion storage to update root metadata once, got %d", got)
-	}
-	if got := promotionStorage.rootAddCalls["pool.txt"]; got != 1 {
-		t.Fatalf("expected promotion storage to add root file once, got %d", got)
-	}
-}
-
-func TestHomePromotionIgnoresStaleHomeSourceJobs(t *testing.T) {
-	ctx := context.Background()
-	st := storage.NewInMemoryStorage()
-	if err := st.InitializeRootSlice(ctx); err != nil {
-		t.Fatalf("failed to initialize root slice: %v", err)
-	}
-
-	username := "tester"
-	homeSlice, err := homeslice.EnsureUserHomeSlice(ctx, st, username)
-	if err != nil {
-		t.Fatalf("failed to ensure home slice: %v", err)
-	}
-
-	oldCommit := "home-old"
-	newCommit := "home-new"
-	oldTime := time.Now().Add(-2 * time.Minute)
-	newTime := time.Now().Add(-time.Minute)
-	if err := st.AddSliceCommit(ctx, homeSlice.ID, &models.Commit{CommitHash: oldCommit, Timestamp: oldTime, Message: "old home write"}); err != nil {
-		t.Fatalf("failed to add old home commit: %v", err)
-	}
-	if err := st.AddSliceCommit(ctx, homeSlice.ID, &models.Commit{CommitHash: newCommit, ParentHash: oldCommit, Timestamp: newTime, Message: "new home write"}); err != nil {
-		t.Fatalf("failed to add new home commit: %v", err)
-	}
-	if err := st.UpdateSliceMetadata(ctx, homeSlice.ID, &models.SliceMetadata{
-		SliceID:            homeSlice.ID,
-		HeadCommitHash:     newCommit,
-		ModifiedFiles:      []string{"tester/current.txt"},
-		ModifiedFilesCount: 1,
-		LastModified:       newTime,
-	}); err != nil {
-		t.Fatalf("failed to seed home metadata: %v", err)
-	}
-
-	sourceSliceID := "slice-home-promotion-source"
-	filePath := "tester/promoted.txt"
-	if err := st.CreateSlice(ctx, &models.Slice{
-		ID:        sourceSliceID,
-		Name:      sourceSliceID,
-		Owners:    []string{username},
-		CreatedBy: username,
-	}); err != nil {
-		t.Fatalf("failed to create source slice: %v", err)
-	}
-	manifestHash := mustWriteSliceManifest(t, ctx, st, sourceSliceID, filePath, []byte("promoted\n"))
-	if err := st.AddEntry(ctx, &models.DirectoryEntry{
-		ID:       common.GenerateEntryID(sourceSliceID, filePath),
-		Path:     filePath,
-		Type:     "file",
-		ParentID: sourceSliceID,
-		Hash:     manifestHash,
-		Size:     int64(len("promoted\n")),
-	}); err != nil {
-		t.Fatalf("failed to add source entry: %v", err)
-	}
-	if err := st.AddFileToSlice(ctx, filePath, sourceSliceID); err != nil {
-		t.Fatalf("failed to index source file: %v", err)
-	}
-
-	sourceCommit := "source-promoted"
-	srv := newSliceServiceServer(st)
-	if err := srv.promoteHomeGroup(ctx, username, []rootpromote.Job{
-		{SliceID: homeSlice.ID, CommitHash: oldCommit, Files: []string{"tester/old.txt"}, CommitTime: oldTime},
-		{SliceID: sourceSliceID, CommitHash: sourceCommit, Files: []string{filePath}, CommitTime: oldTime.Add(30 * time.Second)},
-	}); err != nil {
-		t.Fatalf("promoteHomeGroup failed: %v", err)
-	}
-
-	promotedCommit, err := st.GetCommitByHash(ctx, homeSlice.ID, sourceCommit)
-	if err != nil {
-		t.Fatalf("expected promoted home commit: %v", err)
-	}
-	if promotedCommit.ParentHash != newCommit {
-		t.Fatalf("expected promoted commit parent to preserve newest home head %s, got %s", newCommit, promotedCommit.ParentHash)
-	}
-	meta, err := st.GetSliceMetadata(ctx, homeSlice.ID)
-	if err != nil {
-		t.Fatalf("failed to load home metadata: %v", err)
-	}
-	if meta.HeadCommitHash != sourceCommit {
-		t.Fatalf("expected non-home promotion to advance head to %s, got %s", sourceCommit, meta.HeadCommitHash)
-	}
-
-	if err := srv.promoteHomeGroup(ctx, username, []rootpromote.Job{
-		{SliceID: homeSlice.ID, CommitHash: oldCommit, Files: []string{"tester/old.txt"}, CommitTime: oldTime},
-	}); err != nil {
-		t.Fatalf("home-only promoteHomeGroup failed: %v", err)
-	}
-	meta, err = st.GetSliceMetadata(ctx, homeSlice.ID)
-	if err != nil {
-		t.Fatalf("failed to reload home metadata: %v", err)
-	}
-	if meta.HeadCommitHash != sourceCommit {
-		t.Fatalf("expected stale home-source promotion to preserve head %s, got %s", sourceCommit, meta.HeadCommitHash)
-	}
-}
-
-func TestDurablePromotionWorkerPromotesMergeEventAndAdvancesOffset(t *testing.T) {
-	ctx := context.Background()
-	base := storage.NewInMemoryStorage()
-	if err := base.InitializeRootSlice(ctx); err != nil {
-		t.Fatalf("failed to initialize root slice: %v", err)
-	}
-
-	filePath := "docs/durable-worker.txt"
+	filePath := "tester/docs/durable-worker.txt"
 	source := &models.Slice{ID: "slice-durable-worker", Name: "slice-durable-worker", Owners: []string{"tester"}, CreatedBy: "tester"}
 	if err := base.CreateSlice(ctx, source); err != nil {
 		t.Fatalf("failed to create source slice: %v", err)
@@ -5690,7 +5441,7 @@ func TestDurablePromotionWorkerPromotesMergeEventAndAdvancesOffset(t *testing.T)
 		SourceSliceID:    source.ID,
 		SourceCommitHash: "commit-durable-worker",
 		Author:           "tester",
-		Message:          "durable promotion worker",
+		Message:          "durable projection worker",
 		TouchedPaths:     []string{filePath},
 		PathUpdates: []*models.MergePathUpdate{{
 			Path:             filePath,
@@ -5701,68 +5452,23 @@ func TestDurablePromotionWorkerPromotesMergeEventAndAdvancesOffset(t *testing.T)
 		}},
 		CreatedAt: time.Now(),
 	}
-	if err := base.AppendMergeEvent(ctx, event); err != nil {
-		t.Fatalf("failed to append merge event: %v", err)
-	}
-
-	srv := newSliceServiceServer(base)
-	statusResp, err := srv.GetProjectionStatus(ctx, &slicev1.GetProjectionStatusRequest{
-		ProjectionName: durablePromotionProjectionName,
-		ShardId:        event.ShardID,
-		MergeSeq:       event.MergeSeq,
-	})
-	if err != nil {
-		t.Fatalf("GetProjectionStatus before promotion failed: %v", err)
-	}
-	if statusResp.GetState() != slicev1.ProjectionState_PROJECTION_STATE_PENDING {
-		t.Fatalf("expected projection pending before durable worker, got %v", statusResp.GetState())
-	}
-	processed, err := srv.processDurablePromotionOnce(ctx, DurablePromotionConfig{ShardCount: 1, BatchSize: 10})
-	if err != nil {
-		t.Fatalf("processDurablePromotionOnce failed: %v", err)
-	}
-	if !processed {
-		t.Fatalf("expected durable promotion worker to process one batch")
+	if err := base.AppendMergeEventWithPathHeadCAS(ctx, event); err != nil {
+		t.Fatalf("failed to append merge event with path head projection: %v", err)
 	}
 
 	rootSlice, err := base.GetRootSlice(ctx)
 	if err != nil {
 		t.Fatalf("failed to load root slice: %v", err)
 	}
-	if !containsString(rootSlice.Files, filePath) {
-		t.Fatalf("expected durable worker to promote %q into root files, got %#v", filePath, rootSlice.Files)
+	if containsString(rootSlice.Files, filePath) {
+		t.Fatalf("expected root files to remain projection-only, got %#v", rootSlice.Files)
 	}
-	promoted, err := storage.ReadSliceFileContent(ctx, base, "root", filePath)
+	projted, err := storage.ReadSliceFileContent(ctx, base, "root", filePath)
 	if err != nil {
-		t.Fatalf("failed to read promoted root file: %v", err)
+		t.Fatalf("failed to read projected root file: %v", err)
 	}
-	if string(promoted.Content) != string(content) {
-		t.Fatalf("promoted content mismatch: got %q want %q", promoted.Content, content)
-	}
-	offset, err := base.GetProjectionOffset(ctx, durablePromotionProjectionName, event.ShardID)
-	if err != nil {
-		t.Fatalf("failed to load projection offset: %v", err)
-	}
-	if offset.MergeSeq != event.MergeSeq {
-		t.Fatalf("expected projection offset %d, got %d", event.MergeSeq, offset.MergeSeq)
-	}
-	statusResp, err = srv.GetProjectionStatus(ctx, &slicev1.GetProjectionStatusRequest{
-		ProjectionName: durablePromotionProjectionName,
-		ShardId:        event.ShardID,
-		MergeSeq:       event.MergeSeq,
-	})
-	if err != nil {
-		t.Fatalf("GetProjectionStatus after promotion failed: %v", err)
-	}
-	if statusResp.GetState() != slicev1.ProjectionState_PROJECTION_STATE_CAUGHT_UP || statusResp.GetAppliedSeq() != event.MergeSeq {
-		t.Fatalf("expected projection caught up after durable worker, got %#v", statusResp)
-	}
-	processed, err = srv.processDurablePromotionOnce(ctx, DurablePromotionConfig{ShardCount: 1, BatchSize: 10})
-	if err != nil {
-		t.Fatalf("processDurablePromotionOnce second run failed: %v", err)
-	}
-	if processed {
-		t.Fatalf("expected no second batch after offset advanced")
+	if string(projted.Content) != string(content) || projted.Hash != manifestHash {
+		t.Fatalf("projected content mismatch: got hash=%q content=%q", projted.Hash, projted.Content)
 	}
 }
 
@@ -5853,7 +5559,7 @@ func TestDurableHistoryProjectionWorkerProcessesMergeEvents(t *testing.T) {
 
 	srv := newSliceServiceServer(base)
 	for i := 0; i < 2; i++ {
-		processed, err := srv.processDurableHistoryProjectionOnce(ctx, DurablePromotionConfig{ShardCount: 1, BatchSize: 1})
+		processed, err := srv.processDurableHistoryProjectionOnce(ctx, DurableProjectionConfig{ShardCount: 1, BatchSize: 1})
 		if err != nil {
 			t.Fatalf("processDurableHistoryProjectionOnce %d failed: %v", i, err)
 		}
@@ -5958,7 +5664,7 @@ func TestHistoryProjectionKeepsExistingSourceCommitSnapshot(t *testing.T) {
 	}
 }
 
-func TestMergeChangesetDurablePromotionFlagSkipsInProcessQueue(t *testing.T) {
+func TestMergeChangesetDurableProjectionFlagSkipsInProcessHistoryProjection(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	base := storage.NewInMemoryStorage()
 	if err := base.InitializeRootSlice(ctx); err != nil {
@@ -5995,7 +5701,7 @@ func TestMergeChangesetDurablePromotionFlagSkipsInProcessQueue(t *testing.T) {
 	}
 
 	srv := newSliceServiceServer(base)
-	srv.durablePromotion = true
+	srv.durableProjection = true
 	mustCreateChangesetSnapshot(t, ctx, srv, cs)
 	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
 	if err != nil {
@@ -6009,68 +5715,51 @@ func TestMergeChangesetDurablePromotionFlagSkipsInProcessQueue(t *testing.T) {
 		t.Fatalf("failed to load root slice: %v", err)
 	}
 	if containsString(rootSlice.Files, filePath) {
-		t.Fatalf("expected root materialization to wait for durable promotion worker")
+		t.Fatalf("expected root files to stay projection-only, got %#v", rootSlice.Files)
+	}
+	projected, err := storage.ReadSliceFileContent(ctx, base, "root", filePath)
+	if err != nil {
+		t.Fatalf("failed to read projected root file: %v", err)
+	}
+	if string(projected.Content) != string(content) || projected.Hash != manifestHash {
+		t.Fatalf("projected root content mismatch: hash=%q content=%q", projected.Hash, projected.Content)
 	}
 
 	event, err := base.GetMergeEventByChangeset(ctx, cs.ID)
 	if err != nil {
-		t.Fatalf("expected merge event for durable promotion: %v", err)
+		t.Fatalf("expected merge event for durable projection: %v", err)
 	}
-	processed, err := srv.processDurablePromotionOnce(ctx, DurablePromotionConfig{})
+	statusResp, err := srv.GetProjectionStatus(ctx, &slicev1.GetProjectionStatusRequest{
+		ProjectionName: historyProjectionName,
+		ShardId:        event.ShardID,
+		MergeSeq:       event.MergeSeq,
+	})
 	if err != nil {
-		t.Fatalf("processDurablePromotionOnce failed: %v", err)
+		t.Fatalf("GetProjectionStatus before history worker failed: %v", err)
+	}
+	if statusResp.GetState() != slicev1.ProjectionState_PROJECTION_STATE_PENDING {
+		t.Fatalf("expected history projection pending before durable worker, got %v", statusResp.GetState())
+	}
+	processed, err := srv.processDurableHistoryProjectionOnce(ctx, DurableProjectionConfig{})
+	if err != nil {
+		t.Fatalf("processDurableHistoryProjectionOnce failed: %v", err)
 	}
 	if !processed {
-		t.Fatalf("expected durable promotion worker to process merge event")
+		t.Fatalf("expected durable history projection worker to process merge event")
 	}
-	offset, err := base.GetProjectionOffset(ctx, durablePromotionProjectionName, event.ShardID)
+	offset, err := base.GetProjectionOffset(ctx, historyProjectionName, event.ShardID)
 	if err != nil {
 		t.Fatalf("failed to load projection offset: %v", err)
 	}
 	if offset.MergeSeq != event.MergeSeq {
 		t.Fatalf("expected projection offset %d, got %d", event.MergeSeq, offset.MergeSeq)
 	}
-	rootSlice, err = base.GetRootSlice(ctx)
+	changes, err := base.GetCommitChanges(ctx, resp.GetNewCommitHash())
 	if err != nil {
-		t.Fatalf("failed to load root slice after durable promotion: %v", err)
+		t.Fatalf("GetCommitChanges failed: %v", err)
 	}
-	if !containsString(rootSlice.Files, filePath) {
-		t.Fatalf("expected durable worker to promote %q into root files, got %#v", filePath, rootSlice.Files)
-	}
-}
-
-func TestRootPromotionShardKeyUsesHomeScope(t *testing.T) {
-	tests := []struct {
-		name    string
-		sliceID string
-		files   []string
-		want    string
-	}{
-		{
-			name:    "home slice id",
-			sliceID: homeslice.IDForUsername("alice"),
-			files:   []string{"alice/src/main.go"},
-			want:    "home:alice",
-		},
-		{
-			name:    "single home root from files",
-			sliceID: "sl-feature",
-			files:   []string{"alice/src/main.go", "alice/README.md"},
-			want:    "home:alice",
-		},
-		{
-			name:    "mixed roots fall back to slice",
-			sliceID: "sl-feature",
-			files:   []string{"alice/src/main.go", "bob/README.md"},
-			want:    "slice:sl-feature",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := rootPromotionShardKey(tt.sliceID, tt.files); got != tt.want {
-				t.Fatalf("rootPromotionShardKey() = %q, want %q", got, tt.want)
-			}
-		})
+	if len(changes) != 1 || changes[0].Path != filePath || changes[0].NewHash != manifestHash {
+		t.Fatalf("expected projected commit change, got %#v", changes)
 	}
 }
 
@@ -6324,8 +6013,8 @@ func TestMergeRevertChangesetAppliesRevertedContent(t *testing.T) {
 
 	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := srv.waitForQueuedPromotions(waitCtx); err != nil {
-		t.Fatalf("timed out waiting for root promotion queue: %v", err)
+	if err := srv.waitForQueuedProjections(waitCtx); err != nil {
+		t.Fatalf("timed out waiting for root projection queue: %v", err)
 	}
 
 	fileAfterMerge, err := storage.ReadSliceFileContent(ctx, st, slice.ID, filePath)
@@ -6438,8 +6127,8 @@ func TestMergeRevertChangesetBypassesCrossSliceConflictChecks(t *testing.T) {
 
 	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := srv.waitForQueuedPromotions(waitCtx); err != nil {
-		t.Fatalf("timed out waiting for root promotion queue: %v", err)
+	if err := srv.waitForQueuedProjections(waitCtx); err != nil {
+		t.Fatalf("timed out waiting for root projection queue: %v", err)
 	}
 
 	fileAfterMerge, err := storage.ReadSliceFileContent(ctx, st, ownerSlice.ID, filePath)
@@ -6536,8 +6225,8 @@ func TestMergeRevertChangesetBackfillsMissingOldHash(t *testing.T) {
 
 	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := srv.waitForQueuedPromotions(waitCtx); err != nil {
-		t.Fatalf("timed out waiting for root promotion queue: %v", err)
+	if err := srv.waitForQueuedProjections(waitCtx); err != nil {
+		t.Fatalf("timed out waiting for root projection queue: %v", err)
 	}
 
 	fileAfterMerge, err := storage.ReadSliceFileContent(ctx, st, slice.ID, filePath)

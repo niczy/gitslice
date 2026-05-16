@@ -36,22 +36,25 @@ import (
 )
 
 var (
-	benchGRPCAddr         string
-	benchGRPCConn         *grpc.ClientConn
-	benchServer           *grpc.Server
-	benchStorage          storage.Storage
-	benchPromotionStorage storage.Storage
+	benchGRPCAddr          string
+	benchGRPCConn          *grpc.ClientConn
+	benchServer            *grpc.Server
+	benchStorage           storage.Storage
+	benchProjectionStorage storage.Storage
 
 	benchSliceClient slicev1.SliceServiceClient
 	benchFileClient  filev1.FileServiceClient
 	benchAdminClient adminv1.AdminServiceClient
 
-	benchPromotionWaiter promotionWaiter
+	benchProjectionWaiter projectionWaiter
 )
 
-type promotionWaiter interface {
-	WaitForQueuedPromotions(ctx context.Context) error
+type projectionWaiter interface {
+	WaitForQueuedProjections(ctx context.Context) error
 }
+
+const benchmarkAdminUsername = "benchmark-admin"
+const benchmarkAdminEmail = "benchmark-admin@example.com"
 
 // TestMain initialises an in-process gRPC server backed by the selected
 // benchmark storage, wires up shared clients, runs all tests, then shuts
@@ -60,16 +63,23 @@ func TestMain(m *testing.M) {
 	flag.Parse()
 
 	ctx := context.Background()
-	st, promotionSt, cleanup, err := newBenchmarkStorage(ctx)
+	st, projectionSt, cleanup, err := newBenchmarkStorage(ctx)
 	if err != nil {
 		fmt.Printf("Failed to initialize benchmark storage: %v\n", err)
 		os.Exit(1)
 	}
 	benchStorage = st
-	benchPromotionStorage = promotionSt
+	benchProjectionStorage = projectionSt
 
 	if err = common.EnsureRootSliceInitialized(ctx, benchStorage); err != nil {
 		fmt.Printf("Failed to initialize root slice: %v\n", err)
+		if cleanup != nil {
+			cleanup()
+		}
+		os.Exit(1)
+	}
+	if err = ensureBenchmarkAdmin(ctx, benchStorage); err != nil {
+		fmt.Printf("Failed to initialize benchmark admin user: %v\n", err)
 		if cleanup != nil {
 			cleanup()
 		}
@@ -83,7 +93,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	benchGRPCAddr, benchServer, err = startBenchGRPCServer(benchStorage, benchPromotionStorage)
+	benchGRPCAddr, benchServer, err = startBenchGRPCServer(benchStorage, benchProjectionStorage)
 	if err != nil {
 		fmt.Printf("Failed to start gRPC server: %v\n", err)
 		if cleanup != nil {
@@ -108,10 +118,10 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
-	if benchPromotionWaiter != nil {
+	if benchProjectionWaiter != nil {
 		waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if err := benchPromotionWaiter.WaitForQueuedPromotions(waitCtx); err != nil {
-			fmt.Printf("Warning: timed out waiting for queued promotions: %v\n", err)
+		if err := benchProjectionWaiter.WaitForQueuedProjections(waitCtx); err != nil {
+			fmt.Printf("Warning: timed out waiting for queued projections: %v\n", err)
 		}
 		cancel()
 	}
@@ -121,6 +131,23 @@ func TestMain(m *testing.M) {
 		cleanup()
 	}
 	os.Exit(code)
+}
+
+func ensureBenchmarkAdmin(ctx context.Context, st storage.Storage) error {
+	admins := strings.TrimSpace(os.Getenv("ADMIN_USER_EMAILS"))
+	if admins == "" {
+		os.Setenv("ADMIN_USER_EMAILS", benchmarkAdminEmail)
+	} else if !strings.Contains(strings.ToLower(admins), benchmarkAdminEmail) {
+		os.Setenv("ADMIN_USER_EMAILS", admins+","+benchmarkAdminEmail)
+	}
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     benchmarkAdminUsername,
+		PrimaryEmail: benchmarkAdminEmail,
+		RootPath:     benchmarkAdminUsername,
+	}); err != nil && err != storage.ErrEntryExists {
+		return err
+	}
+	return nil
 }
 
 func newBenchmarkStorage(ctx context.Context) (storage.Storage, storage.Storage, func(), error) {
@@ -150,23 +177,23 @@ func newBenchmarkStorage(ctx context.Context) (storage.Storage, storage.Storage,
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		promotionSt := storage.Storage(st)
-		promotionOptions, ok, err := benchmarkPostgresPromotionOptions()
+		projectionSt := storage.Storage(st)
+		projectionOptions, ok, err := benchmarkPostgresProjectionOptions()
 		if err != nil {
 			_ = st.Close()
 			return nil, nil, nil, err
 		}
 		if ok {
-			promo, err := storage.NewPostgresNativeStorageWithOptions(ctx, dsn, objectStore, namespace, promotionOptions)
+			proj, err := storage.NewPostgresNativeStorageWithOptions(ctx, dsn, objectStore, namespace, projectionOptions)
 			if err != nil {
 				_ = st.Close()
 				return nil, nil, nil, err
 			}
-			promotionSt = promo
+			projectionSt = proj
 		}
-		return st, promotionSt, func() {
-			if promotionSt != st {
-				if closer, ok := promotionSt.(interface{ Close() error }); ok {
+		return st, projectionSt, func() {
+			if projectionSt != st {
+				if closer, ok := projectionSt.(interface{ Close() error }); ok {
 					_ = closer.Close()
 				}
 			}
@@ -191,15 +218,15 @@ func benchmarkPostgresOptions() (storage.PostgresNativeStorageOptions, error) {
 	return options, nil
 }
 
-func benchmarkPostgresPromotionOptions() (storage.PostgresNativeStorageOptions, bool, error) {
+func benchmarkPostgresProjectionOptions() (storage.PostgresNativeStorageOptions, bool, error) {
 	var options storage.PostgresNativeStorageOptions
-	rawMaxConns := strings.TrimSpace(os.Getenv("BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS"))
+	rawMaxConns := strings.TrimSpace(os.Getenv("BENCHMARK_POSTGRES_PROJECTION_MAX_CONNS"))
 	if rawMaxConns == "" {
 		return options, false, nil
 	}
 	maxConns, err := strconv.Atoi(rawMaxConns)
 	if err != nil || maxConns <= 0 {
-		return options, false, fmt.Errorf("BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS must be a positive integer, got %q", rawMaxConns)
+		return options, false, fmt.Errorf("BENCHMARK_POSTGRES_PROJECTION_MAX_CONNS must be a positive integer, got %q", rawMaxConns)
 	}
 	options.MaxConns = int32(maxConns)
 	return options, true, nil
@@ -313,18 +340,18 @@ func shouldUseAcceptanceOnlyProjectionMode() bool {
 	return re.MatchString("TestMergeAcceptanceThroughput")
 }
 
-func startBenchGRPCServer(st storage.Storage, promotionSt storage.Storage) (string, *grpc.Server, error) {
+func startBenchGRPCServer(st storage.Storage, projectionSt storage.Storage) (string, *grpc.Server, error) {
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", nil, err
 	}
 
 	srv := grpc.NewServer()
-	sliceServer := sliceservice.NewInternalServiceWithPromotionStorage(st, promotionSt)
+	sliceServer := sliceservice.NewInternalServiceWithProjectionStorage(st, projectionSt)
 	if shouldUseAcceptanceOnlyProjectionMode() {
 		sliceServer.EnableDurableProjectionModeForTesting()
 	}
-	benchPromotionWaiter = sliceServer
+	benchProjectionWaiter = sliceServer
 	slicev1.RegisterSliceServiceServer(srv, sliceServer)
 	fileservice.RegisterGRPCServer(srv, st)
 	adminservice.RegisterGRPCServer(srv, st)
@@ -335,13 +362,14 @@ func startBenchGRPCServer(st storage.Storage, promotionSt storage.Storage) (stri
 
 // userCtx returns a context carrying the default benchmark authorization header.
 // BENCHMARK_HOME_SHARDS can spread sessions across multiple home roots when
-// measuring home-scoped promotion throughput.
+// measuring home-scoped projection throughput.
 func userCtx(parent context.Context) context.Context {
 	return userCtxForIndex(parent, 0)
 }
 
 func userCtxForIndex(parent context.Context, i int) context.Context {
-	return metadata.AppendToOutgoingContext(parent, "authorization", "User "+benchmarkUsername(i))
+	_ = i
+	return metadata.AppendToOutgoingContext(parent, "authorization", "User "+benchmarkAdminUsername)
 }
 
 func benchmarkUsername(i int) string {

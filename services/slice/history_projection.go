@@ -21,7 +21,7 @@ type HistoryProjectionBackfillResult struct {
 }
 
 func (s *sliceServiceServer) enqueueHistoryProjection(ctx context.Context, event *models.MergeEvent) {
-	if event == nil || s.durablePromotion {
+	if event == nil || s.durableProjection {
 		return
 	}
 	cloned := cloneHistoryMergeEvent(event)
@@ -53,7 +53,7 @@ func (s *sliceServiceServer) waitForQueuedHistoryProjections(ctx context.Context
 	}
 }
 
-func (s *sliceServiceServer) runDurableHistoryProjectionWorker(ctx context.Context, cfg DurablePromotionConfig, workerID int) {
+func (s *sliceServiceServer) runDurableHistoryProjectionWorker(ctx context.Context, cfg DurableProjectionConfig, workerID int) {
 	for {
 		processed, err := s.processDurableHistoryProjectionOnce(ctx, cfg)
 		if err != nil {
@@ -72,14 +72,14 @@ func (s *sliceServiceServer) runDurableHistoryProjectionWorker(ctx context.Conte
 	}
 }
 
-func (s *sliceServiceServer) processDurableHistoryProjectionOnce(ctx context.Context, cfg DurablePromotionConfig) (bool, error) {
+func (s *sliceServiceServer) processDurableHistoryProjectionOnce(ctx context.Context, cfg DurableProjectionConfig) (bool, error) {
 	processed, _, err := s.processDurableHistoryProjectionBatch(ctx, cfg)
 	return processed, err
 }
 
-func (s *sliceServiceServer) processDurableHistoryProjectionBatch(ctx context.Context, cfg DurablePromotionConfig) (bool, int, error) {
+func (s *sliceServiceServer) processDurableHistoryProjectionBatch(ctx context.Context, cfg DurableProjectionConfig) (bool, int, error) {
 	cfg = cfg.normalized()
-	processor, ok := s.promotionStore().(storage.MergeEventProjectionBatchProcessor)
+	processor, ok := s.projectionStore().(storage.MergeEventProjectionBatchProcessor)
 	if !ok {
 		return false, 0, nil
 	}
@@ -91,7 +91,7 @@ func (s *sliceServiceServer) processDurableHistoryProjectionBatch(ctx context.Co
 	return processed, eventCount, err
 }
 
-func (s *sliceServiceServer) BackfillHistoryProjection(ctx context.Context, cfg DurablePromotionConfig, maxBatches int) (HistoryProjectionBackfillResult, error) {
+func (s *sliceServiceServer) BackfillHistoryProjection(ctx context.Context, cfg DurableProjectionConfig, maxBatches int) (HistoryProjectionBackfillResult, error) {
 	var result HistoryProjectionBackfillResult
 	for maxBatches <= 0 || result.Batches < maxBatches {
 		processed, events, err := s.processDurableHistoryProjectionBatch(ctx, cfg)
@@ -111,7 +111,7 @@ func (s *sliceServiceServer) BackfillHistoryProjection(ctx context.Context, cfg 
 }
 
 func (s *sliceServiceServer) projectMergeEventHistoryBatch(ctx context.Context, events []*models.MergeEvent) error {
-	st := s.promotionStore()
+	st := s.projectionStore()
 	for _, event := range events {
 		if err := s.projectMergeEventHistory(ctx, st, event); err != nil {
 			return err
@@ -321,7 +321,7 @@ func addFileChangesIdempotently(ctx context.Context, st storage.Storage, changes
 }
 
 func (s *sliceServiceServer) updateHistoryProjectionOffsets(ctx context.Context, events []*models.MergeEvent) error {
-	eventStore, ok := s.promotionStore().(storage.MergeEventStore)
+	eventStore, ok := s.projectionStore().(storage.MergeEventStore)
 	if !ok {
 		return nil
 	}

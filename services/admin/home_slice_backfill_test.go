@@ -19,7 +19,7 @@ func mustWriteSliceManifest(tb testing.TB, ctx context.Context, st storage.Stora
 	return manifest.Hash
 }
 
-func TestBackfillHomeSlicesCopiesExistingRootSubtree(t *testing.T) {
+func TestBackfillHomeSlicesUsesPathHeadRootView(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
 	svc := newAdminServiceServer(st)
@@ -47,24 +47,33 @@ func TestBackfillHomeSlicesCopiesExistingRootSubtree(t *testing.T) {
 		t.Fatalf("EnsureRootSliceInitialized failed: %v", err)
 	}
 
-	rootSlice, err := st.GetRootSlice(ctx)
-	if err != nil {
-		t.Fatalf("GetRootSlice failed: %v", err)
-	}
 	const filePath = "legacyuser/readme.md"
-	hash := mustWriteSliceManifest(t, ctx, st, rootSlice.ID, filePath, []byte("legacy"))
+	source := &models.Slice{ID: "source-legacyuser", Name: "source-legacyuser", Owners: []string{"legacyuser"}, CreatedBy: "legacyuser"}
+	if err := st.CreateSlice(ctx, source); err != nil {
+		t.Fatalf("CreateSlice(source) failed: %v", err)
+	}
+	hash := mustWriteSliceManifest(t, ctx, st, source.ID, filePath, []byte("legacy"))
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
-		ID:       common.GenerateEntryID(rootSlice.ID, filePath),
+		ID:       common.GenerateEntryID(source.ID, filePath),
 		Path:     filePath,
 		Type:     "file",
-		ParentID: rootSlice.ID,
+		ParentID: source.ID,
 		Size:     int64(len("legacy")),
 		Hash:     hash,
 	}); err != nil {
 		t.Fatalf("AddEntry failed: %v", err)
 	}
-	if err := st.AddFileToSlice(ctx, filePath, rootSlice.ID); err != nil {
-		t.Fatalf("AddFileToSlice failed: %v", err)
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:           "legacyuser",
+		Path:             filePath,
+		EntryType:        "file",
+		PathVersion:      1,
+		SourceSliceID:    source.ID,
+		SourceCommitHash: "source-commit",
+		ManifestHash:     hash,
+		ContentHash:      hash,
+	}}); err != nil {
+		t.Fatalf("UpsertHomePathHeads failed: %v", err)
 	}
 
 	adminCtx := withClerkAdminSession(t, ctx, "user_admin", "admin@example.com")
@@ -74,14 +83,14 @@ func TestBackfillHomeSlicesCopiesExistingRootSubtree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BackfillHomeSlices failed: %v", err)
 	}
-	if resp.GetProcessed() != 1 || resp.GetCreated() != 1 || resp.GetSeeded() != 1 {
+	if resp.GetProcessed() != 1 || resp.GetCreated() != 1 || resp.GetSeeded() != 0 {
 		t.Fatalf("unexpected response counts: %#v", resp)
 	}
 	if len(resp.GetResults()) != 1 {
 		t.Fatalf("expected one result, got %#v", resp)
 	}
 	result := resp.GetResults()[0]
-	if result.GetHomeSliceId() != "home_legacyuser" || result.GetFilesCopied() != 1 {
+	if result.GetHomeSliceId() != "home_legacyuser" || result.GetFilesCopied() != 0 {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 

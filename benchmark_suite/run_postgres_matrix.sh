@@ -127,17 +127,17 @@ write_csv_row \
   "merge_p50_ms" \
   "merge_p95_ms" \
   "merge_p99_ms" \
-  "promotion_drain_sec" \
+  "projection_drain_sec" \
   "fg_pool_max_acquired" \
   "fg_pool_acquire_count" \
   "fg_pool_empty_acquire_count" \
   "fg_pool_empty_acquire_wait" \
   "fg_pool_acquire_duration" \
   "fg_pool_canceled_acquire_count" \
-  "promotion_pool_max_acquired" \
-  "promotion_pool_acquire_count" \
-  "promotion_pool_empty_acquire_count" \
-  "promotion_pool_empty_acquire_wait" \
+  "projection_pool_max_acquired" \
+  "projection_pool_acquire_count" \
+  "projection_pool_empty_acquire_count" \
+  "projection_pool_empty_acquire_wait" \
   "log_path"
 
 echo "Writing benchmark matrix output to $output_dir"
@@ -156,7 +156,7 @@ for home_shards in $home_shards_list; do
         BENCHMARK_USERS="$users" \
         BENCHMARK_WORKERS="$workers" \
         BENCHMARK_POSTGRES_MAX_CONNS="$max_conns" \
-        BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS="${BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS:-}" \
+        BENCHMARK_POSTGRES_PROJECTION_MAX_CONNS="${BENCHMARK_POSTGRES_PROJECTION_MAX_CONNS:-}" \
         BENCHMARK_HOME_SHARDS="$home_shards" \
         go test -v -timeout "$timeout" ./benchmark_suite -run TestSimulate100kUsers -count=1 2>&1 | tee "$log_path"
       exit_code=${PIPESTATUS[0]}
@@ -186,17 +186,17 @@ for home_shards in $home_shards_list; do
       merge_p95="$(extract_section_percentile "MergeChangeset latency" "P95" "$log_path")"
       merge_p99="$(extract_section_percentile "MergeChangeset latency" "P99" "$log_path")"
 
-      promotion_drain_sec="$(extract_sed 's/.*Promotion drain elapsed:[[:space:]]*([0-9.]+) s.*/\1/p' "$log_path")"
+      projection_drain_sec="$(extract_sed 's/.*Projection drain elapsed:[[:space:]]*([0-9.]+) s.*/\1/p' "$log_path")"
       fg_pool_max_acquired="$(extract_pool_key "Foreground workload Postgres pool observed max" "acquired" "$log_path")"
       fg_pool_acquire_count="$(extract_pool_key "Foreground workload Postgres pool cumulative delta" "acquire_count" "$log_path")"
       fg_pool_empty_acquire_count="$(extract_pool_key "Foreground workload Postgres pool cumulative delta" "empty_acquire_count" "$log_path")"
       fg_pool_empty_acquire_wait="$(extract_pool_key "Foreground workload Postgres pool cumulative delta" "empty_acquire_wait" "$log_path")"
       fg_pool_acquire_duration="$(extract_pool_key "Foreground workload Postgres pool cumulative delta" "acquire_duration" "$log_path")"
       fg_pool_canceled_acquire_count="$(extract_pool_key "Foreground workload Postgres pool cumulative delta" "canceled_acquire_count" "$log_path")"
-      promotion_pool_max_acquired="$(extract_pool_key "Promotion drain Postgres pool observed max" "acquired" "$log_path")"
-      promotion_pool_acquire_count="$(extract_pool_key "Promotion drain Postgres pool cumulative delta" "acquire_count" "$log_path")"
-      promotion_pool_empty_acquire_count="$(extract_pool_key "Promotion drain Postgres pool cumulative delta" "empty_acquire_count" "$log_path")"
-      promotion_pool_empty_acquire_wait="$(extract_pool_key "Promotion drain Postgres pool cumulative delta" "empty_acquire_wait" "$log_path")"
+      projection_pool_max_acquired="$(extract_pool_key "Projection drain Postgres pool observed max" "acquired" "$log_path")"
+      projection_pool_acquire_count="$(extract_pool_key "Projection drain Postgres pool cumulative delta" "acquire_count" "$log_path")"
+      projection_pool_empty_acquire_count="$(extract_pool_key "Projection drain Postgres pool cumulative delta" "empty_acquire_count" "$log_path")"
+      projection_pool_empty_acquire_wait="$(extract_pool_key "Projection drain Postgres pool cumulative delta" "empty_acquire_wait" "$log_path")"
 
       write_csv_row \
         "$started_at" \
@@ -223,17 +223,17 @@ for home_shards in $home_shards_list; do
         "$merge_p50" \
         "$merge_p95" \
         "$merge_p99" \
-        "$promotion_drain_sec" \
+        "$projection_drain_sec" \
         "$fg_pool_max_acquired" \
         "$fg_pool_acquire_count" \
         "$fg_pool_empty_acquire_count" \
         "$fg_pool_empty_acquire_wait" \
         "$fg_pool_acquire_duration" \
         "$fg_pool_canceled_acquire_count" \
-        "$promotion_pool_max_acquired" \
-        "$promotion_pool_acquire_count" \
-        "$promotion_pool_empty_acquire_count" \
-        "$promotion_pool_empty_acquire_wait" \
+        "$projection_pool_max_acquired" \
+        "$projection_pool_acquire_count" \
+        "$projection_pool_empty_acquire_count" \
+        "$projection_pool_empty_acquire_wait" \
         "$log_path"
     done
   done

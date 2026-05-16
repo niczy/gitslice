@@ -41,7 +41,7 @@ func main() {
 	logPostgresRuntimeConfig(cfg)
 
 	ctx := context.Background()
-	st, promotionSt, closeStorage, err := initStorage(ctx, cfg)
+	st, projectionSt, closeStorage, err := initStorage(ctx, cfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize storage backend: %v", err)
 	}
@@ -58,15 +58,15 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer()
-	sliceservice.RegisterGRPCServerWithPromotionStorageAndDurablePromotion(grpcServer, st, promotionSt, sliceservice.DurablePromotionConfig{
-		Enabled:      cfg.MergeEventPromotionEnabled,
-		WorkerCount:  cfg.MergeEventPromotionWorkers,
-		ShardCount:   cfg.MergeEventPromotionShardCount,
-		BatchSize:    cfg.MergeEventPromotionBatchSize,
-		PollInterval: cfg.MergeEventPromotionPollInterval,
+	sliceservice.RegisterGRPCServerWithProjectionStorageAndDurableProjection(grpcServer, st, projectionSt, sliceservice.DurableProjectionConfig{
+		Enabled:      cfg.MergeEventProjectionEnabled,
+		WorkerCount:  cfg.MergeEventProjectionWorkers,
+		ShardCount:   cfg.MergeEventProjectionShardCount,
+		BatchSize:    cfg.MergeEventProjectionBatchSize,
+		PollInterval: cfg.MergeEventProjectionPollInterval,
 	})
 	fileservice.RegisterGRPCServer(grpcServer, st)
-	filesystemservice.RegisterGRPCServerWithPromotionStorage(grpcServer, st, promotionSt)
+	filesystemservice.RegisterGRPCServerWithProjectionStorage(grpcServer, st, projectionSt)
 	adminservice.RegisterGRPCServer(grpcServer, st)
 	accountservice.RegisterGRPCServer(grpcServer, st)
 	ciservice.RegisterGRPCServer(grpcServer, st)
@@ -138,7 +138,7 @@ func main() {
 	agentSessionsAPI := httpapi.NewAgentSessionsAPI(st, agentSessionService)
 	httpMux.Handle("/ws/sessions/", http.HandlerFunc(agentSessionsAPI.HandleWS))
 	httpMux.Handle("/ws/agent-runners", http.HandlerFunc(agentSessionsAPI.HandleRunnerUpdates))
-	httpMux.Handle("/git/", gitlayer.NewHandlerWithPromotionStorage(st, promotionSt, ""))
+	httpMux.Handle("/git/", gitlayer.NewHandlerWithProjectionStorage(st, projectionSt, ""))
 	// Apply slice-path compatibility at the root gateway handler so /v1/slices and
 	// /v1/slices/ both work without ServeMux issuing slash redirects.
 	httpMux.Handle("/", gateway.WithNoBodyWriteGuard(gateway.WithCORS(gateway.SlicePathCompatHandler(gatewayMux))))
@@ -217,24 +217,24 @@ func initStorage(ctx context.Context, cfg *config.Config) (storage.Storage, stor
 			closeObjectStore()
 			return nil, nil, nil, err
 		}
-		promotionSt := storage.Storage(st)
-		if cfg.PostgresPromotionMaxConns > 0 {
-			promo, err := storage.NewPostgresNativeStorageWithOptions(ctx, cfg.PostgresDSN, objectStore, "core", storage.PostgresNativeStorageOptions{
-				MaxConns:        cfg.PostgresPromotionMaxConns,
+		projectionSt := storage.Storage(st)
+		if cfg.PostgresProjectionMaxConns > 0 {
+			proj, err := storage.NewPostgresNativeStorageWithOptions(ctx, cfg.PostgresDSN, objectStore, "core", storage.PostgresNativeStorageOptions{
+				MaxConns:        cfg.PostgresProjectionMaxConns,
 				MaxConnLifetime: cfg.PostgresMaxConnLifetime,
 			})
 			if err != nil {
 				_ = st.Close()
 				closeObjectStore()
-				return nil, nil, nil, fmt.Errorf("initialize promotion postgres storage: %w", err)
+				return nil, nil, nil, fmt.Errorf("initialize projection postgres storage: %w", err)
 			}
-			promotionSt = promo
-			log.Printf("Using separate PostgreSQL promotion pool max_conns=%d", cfg.PostgresPromotionMaxConns)
+			projectionSt = proj
+			log.Printf("Using separate PostgreSQL projection pool max_conns=%d", cfg.PostgresProjectionMaxConns)
 		}
 		log.Printf("Using native PostgreSQL storage")
-		return st, promotionSt, func() {
-			if promotionSt != st {
-				if closer, ok := promotionSt.(interface{ Close() error }); ok {
+		return st, projectionSt, func() {
+			if projectionSt != st {
+				if closer, ok := projectionSt.(interface{ Close() error }); ok {
 					_ = closer.Close()
 				}
 			}
@@ -267,22 +267,22 @@ func logPostgresRuntimeConfig(cfg *config.Config) {
 	if cfg.PostgresMaxConnLifetime > 0 {
 		maxConnLifetime = cfg.PostgresMaxConnLifetime.String()
 	}
-	promotionMaxConns := "shared"
-	if cfg.PostgresPromotionMaxConns > 0 {
-		promotionMaxConns = fmt.Sprintf("%d", cfg.PostgresPromotionMaxConns)
+	projectionMaxConns := "shared"
+	if cfg.PostgresProjectionMaxConns > 0 {
+		projectionMaxConns = fmt.Sprintf("%d", cfg.PostgresProjectionMaxConns)
 	}
 	log.Printf(
-		"Postgres runtime target host=%s database=%s remote=%t tls=%t max_conns=%s min_conns=%s promotion_max_conns=%s durable_promotion=%t durable_promotion_workers=%d durable_promotion_batch=%d max_conn_lifetime=%s deploy_env=%s",
+		"Postgres runtime target host=%s database=%s remote=%t tls=%t max_conns=%s min_conns=%s projection_max_conns=%s durable_projection=%t durable_projection_workers=%d durable_projection_batch=%d max_conn_lifetime=%s deploy_env=%s",
 		summary.Host,
 		summary.Database,
 		summary.Remote,
 		summary.UsesTLS,
 		maxConns,
 		minConns,
-		promotionMaxConns,
-		cfg.MergeEventPromotionEnabled,
-		cfg.MergeEventPromotionWorkers,
-		cfg.MergeEventPromotionBatchSize,
+		projectionMaxConns,
+		cfg.MergeEventProjectionEnabled,
+		cfg.MergeEventProjectionWorkers,
+		cfg.MergeEventProjectionBatchSize,
 		maxConnLifetime,
 		strings.TrimSpace(cfg.DeployEnv),
 	)

@@ -22,7 +22,6 @@ import (
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
-	"github.com/niczy/gitslice/internal/rootpromote"
 	"github.com/niczy/gitslice/internal/searchindex"
 	"github.com/niczy/gitslice/internal/storage"
 	commonv1 "github.com/niczy/gitslice/proto/common"
@@ -36,11 +35,6 @@ import (
 type filesystemServiceServer struct {
 	filesystemv1.UnimplementedFilesystemServiceServer
 	storage                 storage.Storage
-	promotionStorage        storage.Storage
-	promotionQueueMu        sync.Mutex
-	promotionQueue          *rootpromote.Queue
-	promotionBatchWindow    time.Duration
-	promotionBatchMaxSize   int
 	searchIndexQueueMu      sync.Mutex
 	searchIndexQueue        *workspaceSearchIndexQueue
 	searchIndexBatchWindow  time.Duration
@@ -52,6 +46,8 @@ type filesystemServiceServer struct {
 const (
 	defaultFilesystemStreamChunkSize = 256 * 1024
 	maxFilesystemStreamChunkSize     = 1024 * 1024
+	defaultFilesystemBatchWindow     = 100 * time.Millisecond
+	defaultFilesystemBatchMaxSize    = 256
 	filesystemUploadWriteConcurrency = 32
 	filesystemInlineChangeDiffLimit  = 100
 	filesystemUploadPlanConcurrency  = 32
@@ -228,30 +224,21 @@ type fileSliceBatchAdder interface {
 }
 
 func newFilesystemServiceServer(st storage.Storage) *filesystemServiceServer {
-	return newFilesystemServiceServerWithPromotionStorage(st, st)
+	return newFilesystemServiceServerWithProjectionStorage(st, st)
 }
 
-func newFilesystemServiceServerWithPromotionStorage(st storage.Storage, promotionSt storage.Storage) *filesystemServiceServer {
-	if promotionSt == nil {
-		promotionSt = st
+func newFilesystemServiceServerWithProjectionStorage(st storage.Storage, projectionSt storage.Storage) *filesystemServiceServer {
+	if projectionSt == nil {
+		projectionSt = st
 	}
+	_ = projectionSt
 	return &filesystemServiceServer{
 		storage:                 st,
-		promotionStorage:        promotionSt,
-		promotionBatchWindow:    rootpromote.DefaultBatchWindow,
-		promotionBatchMaxSize:   rootpromote.DefaultBatchMaxSize,
-		searchIndexBatchWindow:  rootpromote.DefaultBatchWindow,
-		searchIndexBatchMaxSize: rootpromote.DefaultBatchMaxSize,
+		searchIndexBatchWindow:  defaultFilesystemBatchWindow,
+		searchIndexBatchMaxSize: defaultFilesystemBatchMaxSize,
 		searchIndexBuildTimeout: defaultWorkspaceSearchIndexTimeout,
 		searchArtifactCache:     newSliceSearchArtifactCache(filesystemSearchArtifactCacheMax),
 	}
-}
-
-func (s *filesystemServiceServer) promotionStore() storage.Storage {
-	if s.promotionStorage != nil {
-		return s.promotionStorage
-	}
-	return s.storage
 }
 
 // RegisterGRPCServer registers the filesystem service handlers on an existing gRPC server.
@@ -259,10 +246,10 @@ func RegisterGRPCServer(srv *grpc.Server, st storage.Storage) {
 	filesystemv1.RegisterFilesystemServiceServer(srv, newFilesystemServiceServer(st))
 }
 
-// RegisterGRPCServerWithPromotionStorage registers the filesystem service with
-// a separate storage backend for async promotion workers.
-func RegisterGRPCServerWithPromotionStorage(srv *grpc.Server, st storage.Storage, promotionSt storage.Storage) {
-	filesystemv1.RegisterFilesystemServiceServer(srv, newFilesystemServiceServerWithPromotionStorage(st, promotionSt))
+// RegisterGRPCServerWithProjectionStorage registers the filesystem service with
+// a separate storage backend for async projection workers.
+func RegisterGRPCServerWithProjectionStorage(srv *grpc.Server, st storage.Storage, projectionSt storage.Storage) {
+	filesystemv1.RegisterFilesystemServiceServer(srv, newFilesystemServiceServerWithProjectionStorage(st, projectionSt))
 }
 
 // NewService constructs the filesystem service implementation for use without gRPC.
@@ -2868,7 +2855,7 @@ func (s *filesystemServiceServer) getWorkspaceFileManifestHash(ctx context.Conte
 }
 
 func (s *filesystemServiceServer) getWorkspaceFileManifestHashes(ctx context.Context, workspaceID string, paths []string) (map[string]string, error) {
-	normalized := normalizePromotionPaths(paths)
+	normalized := normalizeMutationPaths(paths)
 	result := make(map[string]string, len(normalized))
 	if len(normalized) == 0 {
 		return result, nil
@@ -2909,7 +2896,7 @@ func supportsFileManifestHashBatch(store storage.Storage) bool {
 }
 
 func (s *filesystemServiceServer) getExistingWorkspaceEntryPaths(ctx context.Context, workspaceID string, paths []string) (map[string]bool, bool, error) {
-	normalized := normalizePromotionPaths(paths)
+	normalized := normalizeMutationPaths(paths)
 	result := make(map[string]bool, len(normalized))
 	if len(normalized) == 0 {
 		return result, true, nil
@@ -3149,7 +3136,7 @@ func writeWorkspaceFileManifestWithStorage(ctx context.Context, store storage.St
 }
 
 func addFilesToWorkspaceIndex(ctx context.Context, store storage.Storage, workspaceID string, paths []string) error {
-	normalized := normalizePromotionPaths(paths)
+	normalized := normalizeMutationPaths(paths)
 	if len(normalized) == 0 {
 		return nil
 	}
@@ -4454,16 +4441,16 @@ func (s *filesystemServiceServer) finalizeWorkspaceMutation(ctx context.Context,
 	if !homeMode {
 		return commitHash, nil
 	}
-	modified := normalizePromotionPaths(modifiedPaths)
+	modified := normalizeMutationPaths(modifiedPaths)
 	if len(modified) == 0 {
 		currentPaths, _, err := s.workspaceStats(ctx, workspace.ID)
 		if err != nil {
-			return "", status.Error(codes.Internal, fmt.Sprintf("failed to collect workspace paths for promotion: %v", err))
+			return "", status.Error(codes.Internal, fmt.Sprintf("failed to collect workspace paths for projection: %v", err))
 		}
-		modified = normalizePromotionPaths(currentPaths)
+		modified = normalizeMutationPaths(currentPaths)
 	}
-	if err := s.enqueueHomeSlicePromotion(ctx, workspace.ID, commitHash, modified, commitTime); err != nil {
-		return "", status.Error(codes.Internal, fmt.Sprintf("failed to enqueue root promotion: %v", err))
+	if err := storage.UpdateHomePathHeadsFromSlicePaths(ctx, s.storage, workspace.ID, commitHash, commitTime, modified); err != nil {
+		return "", status.Error(codes.Internal, fmt.Sprintf("failed to update home path heads: %v", err))
 	}
 	return commitHash, nil
 }
@@ -4502,7 +4489,7 @@ func (s *filesystemServiceServer) commitWorkspaceMutation(ctx context.Context, w
 			}
 		}
 	}
-	changedPaths := normalizePromotionPaths(modifiedPaths)
+	changedPaths := normalizeMutationPaths(modifiedPaths)
 	if len(changedPaths) == 0 {
 		files, err = s.collectWorkspaceSnapshotFiles(ctx, workspace.ID)
 		if err != nil {
@@ -4718,7 +4705,7 @@ func detectFilesystemRenames(message string, modifiedPaths []string, previousFil
 		return nil
 	}
 
-	normalized := normalizePromotionPaths(modifiedPaths)
+	normalized := normalizeMutationPaths(modifiedPaths)
 	if len(normalized) != 2 {
 		return nil
 	}

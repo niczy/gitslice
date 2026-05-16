@@ -200,11 +200,6 @@ func fileChangeCopyRows(changes []*models.FileChangeRecord) [][]any {
 	return rows
 }
 
-type postgresRootPromotionFile struct {
-	Manifest   *models.FileManifest
-	BlockCount int
-}
-
 type postgresEntryContribution struct {
 	Type string
 	Size int64
@@ -245,7 +240,7 @@ func appendGlobalCommitsTx(ctx context.Context, exec execable, commits []*models
 }
 
 func replaceGlobalCommitsTx(ctx context.Context, exec execable, commits []*models.GlobalCommit) error {
-	// UpdateGlobalState has replacement semantics; root promotion uses the
+	// UpdateGlobalState has replacement semantics; root projection uses the
 	// append-only path directly when preserving the durable timeline matters.
 	if _, err := exec.Exec(ctx, `DELETE FROM global_commits`); err != nil {
 		return err
@@ -840,6 +835,7 @@ func (s *PostgresNativeStorage) Reset(ctx context.Context) error {
 			file_manifests,
 			commit_snapshots,
 			content_commit_dirs,
+			path_head_children,
 			directory_entries,
 			slice_commits,
 			home_path_heads,
@@ -1508,7 +1504,31 @@ func (s *postgresNativeTxView) GetFileManifestHashes(ctx context.Context, sliceI
 		}
 		result[filePath] = strings.TrimSpace(hash)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	_, root, view, err := postgresPathHeadViewMode(ctx, s.tx, sliceID)
+	if err != nil {
+		return nil, err
+	}
+	if view {
+		for _, filePath := range cleanedPaths {
+			if _, ok := result[filePath]; ok && !root {
+				continue
+			}
+			manifest, pathHeadView, err := s.PostgresNativeStorage.getPathHeadFileManifest(ctx, s.tx, sliceID, filePath)
+			if err != nil {
+				if errors.Is(err, ErrEntryNotFound) {
+					continue
+				}
+				return nil, err
+			}
+			if pathHeadView && manifest != nil {
+				result[filePath] = strings.TrimSpace(manifest.Hash)
+			}
+		}
+	}
+	return result, nil
 }
 
 func (s *postgresNativeTxView) DeleteFileManifest(ctx context.Context, sliceID, filePath string) error {
@@ -3301,6 +3321,14 @@ func (s *PostgresNativeStorage) getFileManifest(ctx context.Context, q queryable
 	if sliceID == "" || filePath == "" {
 		return nil, ErrInvalidInput
 	}
+	if _, root, view, err := postgresPathHeadViewMode(ctx, q, sliceID); err != nil {
+		return nil, err
+	} else if root && view {
+		manifest, pathHeadView, manifestErr := s.getPathHeadFileManifest(ctx, q, sliceID, filePath)
+		if manifestErr == nil || (pathHeadView && !errors.Is(manifestErr, ErrEntryNotFound)) {
+			return manifest, manifestErr
+		}
+	}
 
 	var hash string
 	var totalSize int64
@@ -3325,6 +3353,10 @@ func (s *PostgresNativeStorage) getFileManifest(ctx context.Context, q queryable
 		}
 	} else if err != pgx.ErrNoRows {
 		return nil, err
+	}
+
+	if manifest, pathHeadView, manifestErr := s.getPathHeadFileManifest(ctx, q, sliceID, filePath); manifestErr == nil || (pathHeadView && !errors.Is(manifestErr, ErrEntryNotFound)) {
+		return manifest, manifestErr
 	}
 
 	// Legacy fallback for namespaces written before manifests became hash-addressed.
@@ -3374,286 +3406,31 @@ func (s *PostgresNativeStorage) GetFileManifestHashes(ctx context.Context, slice
 		}
 		result[filePath] = strings.TrimSpace(hash)
 	}
-	return result, rows.Err()
-}
-
-func (s *PostgresNativeStorage) PromoteFilesToRoot(ctx context.Context, rootSliceID string, jobs []RootPromotionJob) error {
-	return s.PromoteFilesToSlice(ctx, rootSliceID, jobs)
-}
-
-func (s *PostgresNativeStorage) PromoteFilesToSlice(ctx context.Context, targetSliceID string, jobs []RootPromotionJob) error {
-	ctx = ensureCtx(ctx)
-	targetSliceID = strings.TrimSpace(targetSliceID)
-	if targetSliceID == "" {
-		return ErrInvalidInput
-	}
-	if len(jobs) == 0 {
-		return nil
-	}
-
-	type promotionRequest struct {
-		sourceSliceID string
-		filePath      string
-		ordinal       int32
-	}
-
-	requests := make([]promotionRequest, 0)
-	sourceSliceIDs := make([]string, 0)
-	sourcePaths := make([]string, 0)
-	ordinals := make([]int32, 0)
-	var ordinal int32
-	for _, job := range jobs {
-		sourceSliceID := strings.TrimSpace(job.SliceID)
-		if sourceSliceID == "" {
-			continue
-		}
-		jobPaths := normalizeRelativePaths(job.Files)
-		if len(jobPaths) == 0 {
-			continue
-		}
-		for _, filePath := range jobPaths {
-			requests = append(requests, promotionRequest{
-				sourceSliceID: sourceSliceID,
-				filePath:      filePath,
-				ordinal:       ordinal,
-			})
-			sourceSliceIDs = append(sourceSliceIDs, sourceSliceID)
-			sourcePaths = append(sourcePaths, filePath)
-			ordinals = append(ordinals, ordinal)
-			ordinal++
-		}
-	}
-	if len(requests) == 0 {
-		return nil
-	}
-
-	selected := make(map[string]postgresRootPromotionFile)
-	selectedOrdinal := make(map[string]int32)
-	rows, err := s.pool.Query(ctx, `
-		WITH requested AS (
-			SELECT source_slice_id, path, ordinal
-			FROM unnest($1::text[], $2::text[], $3::int[]) AS r(source_slice_id, path, ordinal)
-		),
-		ranked AS (
-			SELECT r.path, r.ordinal, fm.hash, fm.total_size, fm.block_count,
-			       COALESCE(de.is_executable, false) AS is_executable,
-			       COALESCE(de.symlink_target, '') AS symlink_target
-			FROM requested r
-			JOIN file_manifests fm
-			  ON fm.slice_id = r.source_slice_id AND fm.path = r.path
-			LEFT JOIN directory_entries de
-			  ON de.slice_id = fm.slice_id AND de.path = fm.path
-		),
-		latest AS (
-			SELECT path, ordinal, hash, total_size, block_count, is_executable, symlink_target,
-			       ROW_NUMBER() OVER (PARTITION BY path ORDER BY ordinal DESC) AS rn
-			FROM ranked
-		)
-		SELECT path, ordinal, hash, total_size, block_count, is_executable, symlink_target
-		FROM latest
-		WHERE rn = 1
-	`, sourceSliceIDs, sourcePaths, ordinals)
-	if err != nil {
-		return fmt.Errorf("failed to load source manifest refs: %w", err)
-	}
-	for rows.Next() {
-		var filePath, hash, symlinkTarget string
-		var totalSize int64
-		var blockCount int
-		var requestOrdinal int32
-		var executable bool
-		if err := rows.Scan(&filePath, &requestOrdinal, &hash, &totalSize, &blockCount, &executable, &symlinkTarget); err != nil {
-			rows.Close()
-			return err
-		}
-		filePath = cleanRelativePath(filePath)
-		if filePath == "" || strings.TrimSpace(hash) == "" {
-			continue
-		}
-		selected[filePath] = postgresRootPromotionFile{
-			Manifest: &models.FileManifest{
-				Path:          filePath,
-				Hash:          strings.TrimSpace(hash),
-				TotalSize:     totalSize,
-				Executable:    executable,
-				SymlinkTarget: symlinkTarget,
-			},
-			BlockCount: blockCount,
-		}
-		selectedOrdinal[filePath] = requestOrdinal
-	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
+		return nil, err
 	}
-	rows.Close()
-
-	for _, request := range requests {
-		if existingOrdinal, ok := selectedOrdinal[request.filePath]; ok && existingOrdinal >= request.ordinal {
-			continue
-		}
-		manifest, err := s.GetFileManifest(ctx, request.sourceSliceID, request.filePath)
-		if err != nil {
-			if err == ErrEntryNotFound {
+	_, root, view, err := postgresPathHeadViewMode(ctx, s.pool, sliceID)
+	if err != nil {
+		return nil, err
+	}
+	if view {
+		for _, filePath := range cleanedPaths {
+			if _, ok := result[filePath]; ok && !root {
 				continue
 			}
-			return fmt.Errorf("failed to load source manifest for %s in %s: %w", request.filePath, request.sourceSliceID, err)
-		}
-		manifest.Path = request.filePath
-		selected[request.filePath] = postgresRootPromotionFile{
-			Manifest:   cloneManifest(manifest),
-			BlockCount: len(manifest.Blocks),
-		}
-		selectedOrdinal[request.filePath] = request.ordinal
-	}
-	if len(selected) == 0 {
-		return nil
-	}
-
-	paths := make([]string, 0, len(selected))
-	for filePath := range selected {
-		paths = append(paths, filePath)
-	}
-	sort.Strings(paths)
-
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
-	var isRoot bool
-	if err := tx.QueryRow(ctx, `SELECT is_root FROM slices WHERE id = $1`, targetSliceID).Scan(&isRoot); err != nil {
-		if err == pgx.ErrNoRows {
-			return ErrSliceNotFound
-		}
-		return err
-	}
-
-	lockKeys := make([]string, 0, len(paths))
-	for _, filePath := range paths {
-		lockKeys = append(lockKeys, targetSliceID+":"+filePath)
-	}
-	if _, err := tx.Exec(ctx, `
-		SELECT pg_advisory_xact_lock(hashtextextended(lock_key, 0))
-		FROM unnest($1::text[]) AS lock_key
-		ORDER BY lock_key
-	`, lockKeys); err != nil {
-		return err
-	}
-
-	if err := s.materializeDirectoryTreeTx(ctx, tx, targetSliceID, paths, false); err != nil {
-		return err
-	}
-
-	oldByPath := make(map[string]postgresEntryContribution, len(paths))
-	rows, err = tx.Query(ctx, `
-		SELECT path, type, size
-		FROM directory_entries
-		WHERE slice_id = $1 AND path = ANY($2)
-	`, targetSliceID, paths)
-	if err != nil {
-		return err
-	}
-	for rows.Next() {
-		var filePath, typ string
-		var size int64
-		if err := rows.Scan(&filePath, &typ, &size); err != nil {
-			rows.Close()
-			return err
-		}
-		oldByPath[filePath] = postgresEntryContribution{Type: typ, Size: size}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
-
-	ids := make([]string, 0, len(paths))
-	parentIDs := make([]string, 0, len(paths))
-	sizes := make([]int64, 0, len(paths))
-	hashes := make([]string, 0, len(paths))
-	blockCounts := make([]int, 0, len(paths))
-	executables := make([]bool, 0, len(paths))
-	symlinkTargets := make([]string, 0, len(paths))
-	manifestByPath := make(map[string]*models.FileManifest, len(paths))
-	for _, filePath := range paths {
-		manifest := selected[filePath].Manifest
-		if manifest == nil {
-			continue
-		}
-		ids = append(ids, nativeEntryID(targetSliceID, filePath))
-		parentIDs = append(parentIDs, nativeParentID(targetSliceID, filePath))
-		sizes = append(sizes, manifest.TotalSize)
-		hashes = append(hashes, strings.TrimSpace(manifest.Hash))
-		blockCounts = append(blockCounts, selected[filePath].BlockCount)
-		executables = append(executables, manifest.Executable)
-		symlinkTargets = append(symlinkTargets, manifest.SymlinkTarget)
-		manifestByPath[filePath] = manifest
-	}
-	if len(ids) == 0 {
-		return tx.Commit(ctx)
-	}
-
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO file_manifests (slice_id, path, hash, total_size, block_count)
-		SELECT $1, path, hash, total_size, block_count
-		FROM unnest($2::text[], $3::text[], $4::bigint[], $5::int[])
-			AS rows(path, hash, total_size, block_count)
-		ON CONFLICT (slice_id, path) DO UPDATE SET
-			hash = EXCLUDED.hash,
-			total_size = EXCLUDED.total_size,
-			block_count = EXCLUDED.block_count,
-			updated_at = NOW()
-	`, targetSliceID, paths, hashes, sizes, blockCounts); err != nil {
-		return err
-	}
-
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO directory_entries (id, slice_id, path, type, parent_id, content, size, is_executable, symlink_target)
-		SELECT id, $1, path, 'file', parent_id, NULL, size, is_executable, symlink_target
-		FROM unnest($2::text[], $3::text[], $4::text[], $5::bigint[], $6::bool[], $7::text[])
-			AS rows(id, path, parent_id, size, is_executable, symlink_target)
-		ON CONFLICT (slice_id, path) DO UPDATE SET
-			type = 'file',
-			parent_id = EXCLUDED.parent_id,
-			content = NULL,
-			size = EXCLUDED.size,
-			is_executable = EXCLUDED.is_executable,
-			symlink_target = EXCLUDED.symlink_target,
-			updated_at = NOW()
-	`, targetSliceID, ids, paths, parentIDs, sizes, executables, symlinkTargets); err != nil {
-		return err
-	}
-
-	if !isRoot {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO file_slice_index (file_id, slice_id)
-			SELECT file_id, $2
-			FROM unnest($1::text[]) AS file_id
-			ON CONFLICT DO NOTHING
-		`, paths, targetSliceID); err != nil {
-			return err
+			manifest, pathHeadView, err := s.getPathHeadFileManifest(ctx, s.pool, sliceID, filePath)
+			if err != nil {
+				if errors.Is(err, ErrEntryNotFound) {
+					continue
+				}
+				return nil, err
+			}
+			if pathHeadView && manifest != nil {
+				result[filePath] = strings.TrimSpace(manifest.Hash)
+			}
 		}
 	}
-
-	deltaPaths, deltas := aggregateImmediateParentDeltas(paths, oldByPath, manifestByPath)
-	if len(deltaPaths) > 0 {
-		if _, err := tx.Exec(ctx, `
-			UPDATE directory_entries AS de
-			SET size = GREATEST(0, de.size + rows.delta),
-				updated_at = NOW()
-			FROM unnest($2::text[], $3::bigint[]) AS rows(path, delta)
-			WHERE de.slice_id = $1
-			  AND de.type = 'directory'
-			  AND de.path = rows.path
-		`, targetSliceID, deltaPaths, deltas); err != nil {
-			return err
-		}
-	}
-
-	return tx.Commit(ctx)
+	return result, nil
 }
 
 func (s *PostgresNativeStorage) DeleteFileManifest(ctx context.Context, sliceID, filePath string) error {
@@ -3864,6 +3641,17 @@ func (s *PostgresNativeStorage) GetEntry(ctx context.Context, entryID string) (*
 
 func (s *PostgresNativeStorage) GetEntryByPath(ctx context.Context, sliceID, path string) (*models.DirectoryEntry, error) {
 	ctx = ensureCtx(ctx)
+	sliceID = strings.TrimSpace(sliceID)
+	path = cleanRelativePath(path)
+
+	if _, root, view, err := postgresPathHeadViewMode(ctx, s.pool, sliceID); err != nil {
+		return nil, err
+	} else if root && view {
+		entry, pathHeadView, entryErr := s.getPathHeadEntry(ctx, s.pool, sliceID, path)
+		if entryErr == nil || (pathHeadView && !errors.Is(entryErr, ErrEntryNotFound)) {
+			return entry, entryErr
+		}
+	}
 
 	var e models.DirectoryEntry
 	err := s.pool.QueryRow(ctx, `
@@ -3879,6 +3667,9 @@ func (s *PostgresNativeStorage) GetEntryByPath(ctx context.Context, sliceID, pat
 	`, sliceID, path).Scan(&e.ID, &e.Path, &e.Type, &e.ParentID, &e.Content, &e.Size, &e.Executable, &e.SymlinkTarget, &e.Hash)
 	if err != nil {
 		if err == pgx.ErrNoRows {
+			if entry, pathHeadView, entryErr := s.getPathHeadEntry(ctx, s.pool, sliceID, path); pathHeadView || entryErr != nil {
+				return entry, entryErr
+			}
 			return nil, ErrEntryNotFound
 		}
 		return nil, err
@@ -3923,6 +3714,10 @@ func (s *PostgresNativeStorage) ListEntriesByPathPrefixes(ctx context.Context, s
 	if len(cleanedPrefixes) == 0 {
 		return nil, nil
 	}
+	homeID, root, pathHeadView, err := postgresPathHeadViewMode(ctx, s.pool, strings.TrimSpace(sliceID))
+	if err != nil {
+		return nil, err
+	}
 	likePatterns := make([]string, 0, len(cleanedPrefixes))
 	for _, prefix := range cleanedPrefixes {
 		likePatterns = append(likePatterns, postgresLikeDescendantPattern(prefix))
@@ -3945,20 +3740,75 @@ func (s *PostgresNativeStorage) ListEntriesByPathPrefixes(ctx context.Context, s
 	defer rows.Close()
 
 	result := make([]*models.DirectoryEntry, 0)
-	seen := make(map[string]struct{})
+	indexByPath := make(map[string]int)
+	addEntry := func(entry *models.DirectoryEntry, replace bool) {
+		if entry == nil {
+			return
+		}
+		entryPath := cleanRelativePath(entry.Path)
+		if entryPath == "" {
+			return
+		}
+		if idx, ok := indexByPath[entryPath]; ok {
+			if replace {
+				result[idx] = entry
+			}
+			return
+		}
+		indexByPath[entryPath] = len(result)
+		result = append(result, entry)
+	}
 	for rows.Next() {
 		var e models.DirectoryEntry
 		if err := rows.Scan(&e.ID, &e.Path, &e.Type, &e.ParentID, &e.Content, &e.Size, &e.Executable, &e.SymlinkTarget, &e.Hash); err != nil {
 			return nil, err
 		}
-		key := e.ID + "\x00" + e.Path
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		result = append(result, &e)
+		addEntry(&e, false)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if pathHeadView {
+		pathHeadRows, err := s.pool.Query(ctx, `
+			SELECT h.path, COALESCE(NULLIF(h.entry_type, ''), 'file'), h.manifest_hash
+			FROM home_path_heads h
+			JOIN unnest($3::text[], $4::text[]) AS prefix(path_prefix, descendant_pattern)
+				ON h.path = prefix.path_prefix OR h.path LIKE prefix.descendant_pattern ESCAPE '\'
+			WHERE h.deleted = false
+			  AND ($1::boolean OR h.home_id = $2)
+			ORDER BY h.path
+		`, root, homeID, cleanedPrefixes, likePatterns)
+		if err != nil {
+			return nil, err
+		}
+		defer pathHeadRows.Close()
+		for pathHeadRows.Next() {
+			var entryPath, entryType, manifestHash string
+			if err := pathHeadRows.Scan(&entryPath, &entryType, &manifestHash); err != nil {
+				return nil, err
+			}
+			entryType = normalizeHomePathHeadEntryType(entryType)
+			var manifest *models.FileManifest
+			if entryType == homePathHeadEntryTypeFile && strings.TrimSpace(manifestHash) != "" {
+				manifest, err = s.GetVersionedFileManifest(ctx, strings.TrimSpace(manifestHash))
+				if err != nil && !errors.Is(err, ErrEntryNotFound) {
+					return nil, err
+				}
+			}
+			addEntry(pathHeadViewEntry(strings.TrimSpace(sliceID), entryPath, entryType, manifestHash, manifest), root)
+		}
+		if err := pathHeadRows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Path == result[j].Path {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].Path < result[j].Path
+	})
+	return result, nil
 }
 
 func postgresLikeDescendantPattern(prefix string) string {
@@ -3976,6 +3826,13 @@ func postgresLikeDescendantPattern(prefix string) string {
 
 func (s *PostgresNativeStorage) ListEntries(ctx context.Context, sliceID, parentID string) ([]*models.DirectoryEntry, error) {
 	ctx = ensureCtx(ctx)
+	sliceID = strings.TrimSpace(sliceID)
+
+	if entries, view, parentExists, err := s.listPathHeadEntries(ctx, s.pool, sliceID, parentID); err != nil {
+		return nil, err
+	} else if view && (len(entries) > 0 || parentExists) {
+		return entries, nil
+	}
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, path, type, parent_id, content, size, is_executable, symlink_target,
@@ -4162,68 +4019,6 @@ func (s *PostgresNativeStorage) UpdateGlobalState(ctx context.Context, state *mo
 		ON CONFLICT (id) DO UPDATE SET global_commit_hash = $1, updated_at = $2, state_json = $3
 	`, state.GlobalCommitHash, state.Timestamp, stateJSON); err != nil {
 		return err
-	}
-	return tx.Commit(ctx)
-}
-
-func (s *PostgresNativeStorage) UpdateRootPromotionState(ctx context.Context, rootSliceID string, latestCommitHash string, latestTime time.Time, latestFiles []string, commits []*models.GlobalCommit) error {
-	ctx = ensureCtx(ctx)
-	rootSliceID = strings.TrimSpace(rootSliceID)
-	latestCommitHash = strings.TrimSpace(latestCommitHash)
-	if rootSliceID == "" || latestCommitHash == "" {
-		return ErrInvalidInput
-	}
-
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO global_state (id, global_commit_hash, updated_at, state_json)
-		VALUES (true, $1, $2, $3)
-		ON CONFLICT (id) DO NOTHING
-	`, latestCommitHash, latestTime, globalStateJSONWithoutHistory()); err != nil {
-		return err
-	}
-	if err := appendGlobalCommitsTx(ctx, tx, commits); err != nil {
-		return err
-	}
-	initialCommitHash := ids.GenerateInitialCommitID(ids.RootSliceID)
-	if _, err := tx.Exec(ctx, `
-		UPDATE global_state
-		SET global_commit_hash = $1,
-			updated_at = $2,
-			state_json = $3
-		WHERE id = true
-		  AND (global_commit_hash = '' OR global_commit_hash = $4 OR updated_at <= $2)
-	`, latestCommitHash, latestTime, globalStateJSONWithoutHistory(), initialCommitHash); err != nil {
-		return err
-	}
-
-	cleanedFiles := normalizeRelativePaths(latestFiles)
-	modifiedJSON, _ := json.Marshal(cleanedFiles)
-	tag, err := tx.Exec(ctx, `
-		UPDATE slice_metadata
-		SET head_commit_hash = $1,
-			modified_files = $2,
-			last_modified = $3,
-			modified_files_count = $4
-		WHERE slice_id = $5
-		  AND (head_commit_hash = '' OR head_commit_hash = $6 OR last_modified <= $3)
-	`, latestCommitHash, modifiedJSON, latestTime, len(cleanedFiles), rootSliceID, initialCommitHash)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		var exists bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM slice_metadata WHERE slice_id = $1)`, rootSliceID).Scan(&exists); err != nil {
-			return err
-		}
-		if !exists {
-			return ErrSliceNotFound
-		}
 	}
 	return tx.Commit(ctx)
 }

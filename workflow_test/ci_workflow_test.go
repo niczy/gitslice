@@ -121,7 +121,7 @@ func writeRemoteFileFromString(t *testing.T, remotePath, content string) {
 	output := runCLIOrFail(t, "", "fs", "write", remotePath, "-f", tmp)
 	commitHash := extractFilesystemCommitHash(output)
 	waitForRemoteHomeHead(t, remotePath, commitHash)
-	waitForRemoteHomePromotion(t, remotePath)
+	waitForRemoteHomeProjection(t, remotePath)
 }
 
 func waitForRemoteHomeHead(t *testing.T, remotePath, commitHash string) {
@@ -147,7 +147,7 @@ func waitForRemoteHomeHead(t *testing.T, remotePath, commitHash string) {
 	}
 }
 
-func waitForRemoteHomePromotion(t *testing.T, remotePath string) {
+func waitForRemoteHomeProjection(t *testing.T, remotePath string) {
 	t.Helper()
 	if testStorage == nil {
 		return
@@ -160,7 +160,7 @@ func waitForRemoteHomePromotion(t *testing.T, remotePath string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := waitForMergedChangesetMessage(ctx, testStorage, homeID, "write "+remotePath, 3*time.Second, 25*time.Millisecond); err != nil {
-		t.Fatalf("expected home promotion for %s: %v", remotePath, err)
+		t.Fatalf("expected home projection for %s: %v", remotePath, err)
 	}
 }
 

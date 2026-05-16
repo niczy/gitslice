@@ -12,9 +12,11 @@ import (
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
 
-// TestConflictDetection verifies that when two slices both try to merge a
+// TestConflictDetection verifies that when two folder views both try to merge a
 // changeset touching the same file, exactly one succeeds and the other receives
-// MERGE_STATUS_CONFLICT.
+// MERGE_STATUS_STALE_BASE. With path-head authority, the second writer must
+// rebase on the latest tracked-folder head rather than relying on the removed
+// root ownership projection.
 func TestConflictDetection(t *testing.T) {
 	ctx := userCtx(context.Background())
 	ts := time.Now().UnixNano()
@@ -69,36 +71,18 @@ func TestConflictDetection(t *testing.T) {
 		t.Fatalf("expected A to merge with SUCCESS, got %v", mergeA.Status)
 	}
 
-	// Merge B – must conflict because A already owns the file.
+	// Merge B – must be rejected because A advanced the tracked folder head.
 	mergeB, err := benchSliceClient.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{
 		ChangesetId: csB.ChangesetId,
 	})
 	if err != nil {
 		t.Fatalf("MergeChangeset(B): %v", err)
 	}
-	if mergeB.Status != slicev1.MergeStatus_MERGE_STATUS_CONFLICT {
-		t.Fatalf("expected B to fail with CONFLICT, got %v", mergeB.Status)
+	if mergeB.Status != slicev1.MergeStatus_MERGE_STATUS_STALE_BASE {
+		t.Fatalf("expected B to fail with STALE_BASE, got %v", mergeB.Status)
 	}
-
-	// Conflict details must reference the shared file and slice A.
-	if len(mergeB.Conflicts) == 0 {
-		t.Fatal("expected at least one conflict record, got none")
-	}
-	found := false
-	for _, c := range mergeB.Conflicts {
-		if c.FileId == sharedFile {
-			found = true
-			for _, cid := range c.ConflictingSliceIds {
-				if cid == sliceA {
-					// Correct: A is listed as the conflicting owner.
-					goto done
-				}
-			}
-		}
-	}
-done:
-	if !found {
-		t.Errorf("conflict record did not reference shared file %q owned by %q", sharedFile, sliceA)
+	if mergeB.Message == "" {
+		t.Fatal("expected stale-base response to include a message")
 	}
 }
 
@@ -124,8 +108,8 @@ func TestConflictResolution(t *testing.T) {
 			ID:        sid,
 			Name:      sid,
 			Files:     []string{sharedFile},
-			Owners:    []string{"bench-worker"},
-			CreatedBy: "bench-worker",
+			Owners:    []string{benchmarkAdminUsername},
+			CreatedBy: benchmarkAdminUsername,
 		}); err != nil {
 			t.Fatalf("CreateSlice(%s): %v", sid, err)
 		}
@@ -195,8 +179,8 @@ func TestConflictResolution(t *testing.T) {
 }
 
 // TestConflictDetectionUnderLoad creates many slices that all claim a single
-// shared file, then merges all changesets concurrently.  Exactly one should
-// succeed; the rest should report CONFLICT.
+// shared file, then merges all changesets concurrently. Exactly one should
+// succeed; the rest should be rejected by tracked-folder stale-base checks.
 func TestConflictDetectionUnderLoad(t *testing.T) {
 	const numSlices = 20
 	ctx := userCtx(context.Background())
@@ -265,6 +249,7 @@ func TestConflictDetectionUnderLoad(t *testing.T) {
 
 	successCount := 0
 	conflictCount := 0
+	staleBaseCount := 0
 	locked := make([]result, 0)
 	errorCount := 0
 	for r := range results {
@@ -278,6 +263,8 @@ func TestConflictDetectionUnderLoad(t *testing.T) {
 			successCount++
 		case slicev1.MergeStatus_MERGE_STATUS_CONFLICT:
 			conflictCount++
+		case slicev1.MergeStatus_MERGE_STATUS_STALE_BASE:
+			staleBaseCount++
 		case slicev1.MergeStatus_MERGE_STATUS_LOCKED:
 			locked = append(locked, r)
 		default:
@@ -300,14 +287,16 @@ func TestConflictDetectionUnderLoad(t *testing.T) {
 			successCount++
 		case slicev1.MergeStatus_MERGE_STATUS_CONFLICT:
 			conflictCount++
+		case slicev1.MergeStatus_MERGE_STATUS_STALE_BASE:
+			staleBaseCount++
 		default:
 			t.Logf("retry merge %d unexpected status: %v", r.idx, resp.GetStatus())
 			errorCount++
 		}
 	}
 
-	t.Logf("Hot-file concurrent merge results: success=%d conflict=%d locked=%d error=%d",
-		successCount, conflictCount, len(locked), errorCount)
+	t.Logf("Hot-file concurrent merge results: success=%d conflict=%d stale_base=%d locked=%d error=%d",
+		successCount, conflictCount, staleBaseCount, len(locked), errorCount)
 
 	if errorCount > 0 {
 		t.Errorf("unexpected errors during concurrent hot-file merges: %d", errorCount)
@@ -315,8 +304,9 @@ func TestConflictDetectionUnderLoad(t *testing.T) {
 	if successCount != 1 {
 		t.Errorf("expected exactly 1 successful merge for hot file, got %d", successCount)
 	}
-	if conflictCount != numSlices-1 {
-		t.Errorf("expected %d conflicts, got %d", numSlices-1, conflictCount)
+	if conflictCount+staleBaseCount != numSlices-1 {
+		t.Errorf("expected %d rejected merges, got conflicts=%d stale_base=%d",
+			numSlices-1, conflictCount, staleBaseCount)
 	}
 }
 
@@ -335,5 +325,8 @@ func seedBenchmarkSliceFileState(t *testing.T, ctx context.Context, sliceID, fil
 		Hash:     manifest.Hash,
 	}); err != nil {
 		t.Fatalf("AddEntry(%s, %s): %v", sliceID, filePath, err)
+	}
+	if err := benchStorage.AddFileToSlice(ctx, filePath, sliceID); err != nil {
+		t.Fatalf("AddFileToSlice(%s, %s): %v", sliceID, filePath, err)
 	}
 }

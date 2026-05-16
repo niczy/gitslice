@@ -12,6 +12,11 @@ import (
 
 const homePathHeadSlicePrefix = "home_"
 
+const (
+	homePathHeadEntryTypeFile      = "file"
+	homePathHeadEntryTypeDirectory = "directory"
+)
+
 func normalizeHomePathHeadHomeID(homeID string) string {
 	return strings.TrimSpace(homeID)
 }
@@ -63,6 +68,7 @@ func normalizeHomePathHead(head *models.HomePathHead) (*models.HomePathHead, err
 	normalized := *head
 	normalized.HomeID = normalizeHomePathHeadHomeID(normalized.HomeID)
 	normalized.Path = cleanRelativePath(normalized.Path)
+	normalized.EntryType = normalizeHomePathHeadEntryType(normalized.EntryType)
 	normalized.ContentHash = strings.TrimSpace(normalized.ContentHash)
 	normalized.ManifestHash = strings.TrimSpace(normalized.ManifestHash)
 	normalized.SourceSliceID = strings.TrimSpace(normalized.SourceSliceID)
@@ -76,16 +82,39 @@ func normalizeHomePathHead(head *models.HomePathHead) (*models.HomePathHead, err
 	if normalized.LastMergeSeq < 0 {
 		return nil, ErrInvalidInput
 	}
-	if normalized.ManifestHash == "" {
-		normalized.ManifestHash = normalized.ContentHash
-	}
-	if normalized.ContentHash == "" {
-		normalized.ContentHash = normalized.ManifestHash
+	if normalized.EntryType == homePathHeadEntryTypeFile {
+		if normalized.ManifestHash == "" {
+			normalized.ManifestHash = normalized.ContentHash
+		}
+		if normalized.ContentHash == "" {
+			normalized.ContentHash = normalized.ManifestHash
+		}
+	} else {
+		normalized.ContentHash = ""
+		normalized.ManifestHash = ""
 	}
 	if normalized.UpdatedAt.IsZero() {
 		normalized.UpdatedAt = time.Now()
 	}
 	return &normalized, nil
+}
+
+func normalizeHomePathHeadEntryType(entryType string) string {
+	switch strings.ToLower(strings.TrimSpace(entryType)) {
+	case homePathHeadEntryTypeDirectory:
+		return homePathHeadEntryTypeDirectory
+	default:
+		return homePathHeadEntryTypeFile
+	}
+}
+
+func homePathHeadHomeIDFromSliceID(sliceID string) (string, bool) {
+	sliceID = strings.TrimSpace(sliceID)
+	if !strings.HasPrefix(sliceID, homePathHeadSlicePrefix) {
+		return "", false
+	}
+	homeID := strings.TrimSpace(strings.TrimPrefix(sliceID, homePathHeadSlicePrefix))
+	return homeID, homeID != ""
 }
 
 func normalizeHomePathHeadPaths(paths []string) []string {
@@ -104,6 +133,115 @@ func normalizeHomePathHeadPaths(paths []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// UpdateHomePathHeadsFromSlicePaths projects direct writes to a home slice into
+// the path-head view used by root/home reads. It is intentionally scoped to
+// home slices; normal custom slices write path heads through merge events.
+func UpdateHomePathHeadsFromSlicePaths(ctx context.Context, st Storage, sliceID, commitHash string, commitTime time.Time, paths []string) error {
+	heads, ok := st.(HomePathHeadStore)
+	if !ok {
+		return nil
+	}
+	homeID, ok := homePathHeadHomeIDFromSliceID(sliceID)
+	if !ok {
+		return nil
+	}
+	cleanedPaths := normalizeHomePathHeadPaths(paths)
+	if len(cleanedPaths) == 0 {
+		return nil
+	}
+	existing, err := heads.GetHomePathHeads(ctx, homeID, cleanedPaths)
+	if err != nil {
+		return err
+	}
+	materializedEntries := map[string]bool(nil)
+	if lister, ok := st.(interface {
+		GetExistingEntriesByPaths(context.Context, string, []string) (map[string]bool, error)
+	}); ok {
+		materializedEntries, err = lister.GetExistingEntriesByPaths(ctx, sliceID, cleanedPaths)
+		if err != nil {
+			return err
+		}
+	}
+	if commitTime.IsZero() {
+		commitTime = time.Now()
+	}
+	lastMergeSeq := commitTime.UnixNano()
+	if lastMergeSeq < 0 {
+		lastMergeSeq = 0
+	}
+
+	projected := make([]*models.HomePathHead, 0, len(cleanedPaths))
+	for _, filePath := range cleanedPaths {
+		current := existing[filePath]
+		pathVersion := homePathHeadCurrentVersion(current) + 1
+		if pathVersion <= 0 {
+			pathVersion = 1
+		}
+
+		if materializedEntries != nil && !materializedEntries[filePath] {
+			projected = append(projected, &models.HomePathHead{
+				HomeID:           homeID,
+				Path:             filePath,
+				EntryType:        homePathHeadEntryTypeFile,
+				PathVersion:      pathVersion,
+				SourceSliceID:    strings.TrimSpace(sliceID),
+				SourceCommitHash: strings.TrimSpace(commitHash),
+				LastMergeSeq:     lastMergeSeq,
+				Deleted:          true,
+				UpdatedAt:        commitTime,
+			})
+			continue
+		}
+
+		entry, entryErr := st.GetEntryByPath(ctx, sliceID, filePath)
+		switch {
+		case entryErr == nil && entry != nil && strings.TrimSpace(entry.Type) == homePathHeadEntryTypeDirectory:
+			projected = append(projected, &models.HomePathHead{
+				HomeID:           homeID,
+				Path:             filePath,
+				EntryType:        homePathHeadEntryTypeDirectory,
+				PathVersion:      pathVersion,
+				SourceSliceID:    strings.TrimSpace(sliceID),
+				SourceCommitHash: strings.TrimSpace(commitHash),
+				LastMergeSeq:     lastMergeSeq,
+				UpdatedAt:        commitTime,
+			})
+		case entryErr == nil && entry != nil:
+			manifest, err := st.GetFileManifest(ctx, sliceID, filePath)
+			if err != nil {
+				return err
+			}
+			projected = append(projected, &models.HomePathHead{
+				HomeID:           homeID,
+				Path:             filePath,
+				EntryType:        homePathHeadEntryTypeFile,
+				PathVersion:      pathVersion,
+				ContentHash:      strings.TrimSpace(manifest.Hash),
+				ManifestHash:     strings.TrimSpace(manifest.Hash),
+				SourceSliceID:    strings.TrimSpace(sliceID),
+				SourceCommitHash: strings.TrimSpace(commitHash),
+				LastMergeSeq:     lastMergeSeq,
+				UpdatedAt:        commitTime,
+			})
+		case errors.Is(entryErr, ErrEntryNotFound):
+			projected = append(projected, &models.HomePathHead{
+				HomeID:           homeID,
+				Path:             filePath,
+				EntryType:        homePathHeadEntryTypeFile,
+				PathVersion:      pathVersion,
+				SourceSliceID:    strings.TrimSpace(sliceID),
+				SourceCommitHash: strings.TrimSpace(commitHash),
+				LastMergeSeq:     lastMergeSeq,
+				Deleted:          true,
+				UpdatedAt:        commitTime,
+			})
+		default:
+			return entryErr
+		}
+	}
+	return heads.UpsertHomePathHeads(ctx, projected)
 }
 
 func homePathHeadsFromMergeEvent(event *models.MergeEvent) ([]*models.HomePathHead, error) {
@@ -131,6 +269,7 @@ func homePathHeadsFromMergeEvent(event *models.MergeEvent) ([]*models.HomePathHe
 		head, err := normalizeHomePathHead(&models.HomePathHead{
 			HomeID:           normalized.HomeID,
 			Path:             path,
+			EntryType:        homePathHeadEntryTypeFile,
 			PathVersion:      update.NewVersion,
 			ContentHash:      update.ContentHash,
 			ManifestHash:     update.ManifestHash,
@@ -195,22 +334,21 @@ func collectMaterializedHomePathHeads(ctx context.Context, st Storage, homeID st
 				if entryPath == "" {
 					continue
 				}
-				manifestHash := strings.TrimSpace(entry.Hash)
-				if manifestHash == "" {
-					manifest, err := st.GetFileManifest(ctx, sourceSliceID, entryPath)
-					if err != nil {
-						if errors.Is(err, ErrEntryNotFound) {
-							continue
-						}
-						return nil, sourceSliceID, err
+				manifest, err := st.GetFileManifest(ctx, sourceSliceID, entryPath)
+				if err != nil {
+					if errors.Is(err, ErrEntryNotFound) {
+						continue
 					}
-					if manifest != nil {
-						manifestHash = strings.TrimSpace(manifest.Hash)
-					}
+					return nil, sourceSliceID, err
+				}
+				manifestHash := ""
+				if manifest != nil {
+					manifestHash = strings.TrimSpace(manifest.Hash)
 				}
 				head, err := normalizeHomePathHead(&models.HomePathHead{
 					HomeID:           homeID,
 					Path:             entryPath,
+					EntryType:        homePathHeadEntryTypeFile,
 					PathVersion:      1,
 					ContentHash:      manifestHash,
 					ManifestHash:     manifestHash,

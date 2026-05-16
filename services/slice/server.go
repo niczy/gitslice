@@ -22,7 +22,6 @@ import (
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
-	"github.com/niczy/gitslice/internal/rootpromote"
 	"github.com/niczy/gitslice/internal/searchindex"
 	"github.com/niczy/gitslice/internal/sliceconfig"
 	"github.com/niczy/gitslice/internal/storage"
@@ -38,17 +37,12 @@ import (
 
 type sliceServiceServer struct {
 	slicev1.UnimplementedSliceServiceServer
-	storage               storage.Storage
-	promotionStorage      storage.Storage
-	rootSliceMu           sync.RWMutex
-	rootSliceID           string
-	promotionQueueMu      sync.Mutex
-	promotionQueue        *rootpromote.Queue
-	promotionBatchWindow  time.Duration
-	promotionBatchMaxSize int
-	promotionWorkerCount  int
-	historyProjectionWG   sync.WaitGroup
-	durablePromotion      bool
+	storage             storage.Storage
+	projectionStorage   storage.Storage
+	rootSliceMu         sync.RWMutex
+	rootSliceID         string
+	historyProjectionWG sync.WaitGroup
+	durableProjection   bool
 }
 
 func (s *sliceServiceServer) requireUsername(ctx context.Context) (string, error) {
@@ -95,36 +89,32 @@ func (s *sliceServiceServer) loadAuthorizedChangeset(ctx context.Context, change
 }
 
 const (
-	defaultPromotionBatchWindow  = 50 * time.Millisecond
-	defaultPromotionBatchMaxSize = 512
-	defaultPromotionWorkerCount  = 2
-	revertChangesetHashPrefix    = common.ChangesetVersionIDPrefix + "revert~"
-	revertAllChangesToken        = "*"
-	checkoutManifestChunkSize    = 256
-	maxReviewPatchableChanges    = 100
-	maxChangesetListReviewPaths  = 500
-	agentArtifactLinkLimit       = 20
+	defaultProjectionBatchMaxSize = 512
+	revertChangesetHashPrefix     = common.ChangesetVersionIDPrefix + "revert~"
+	revertAllChangesToken         = "*"
+	checkoutManifestChunkSize     = 256
+	maxReviewPatchableChanges     = 100
+	maxChangesetListReviewPaths   = 500
+	agentArtifactLinkLimit        = 20
 )
 
 func newSliceServiceServer(st storage.Storage) *sliceServiceServer {
-	return newSliceServiceServerWithPromotionStorage(st, st)
+	return newSliceServiceServerWithProjectionStorage(st, st)
 }
 
-func newSliceServiceServerWithPromotionStorage(st storage.Storage, promotionSt storage.Storage) *sliceServiceServer {
-	if promotionSt == nil {
-		promotionSt = st
+func newSliceServiceServerWithProjectionStorage(st storage.Storage, projectionSt storage.Storage) *sliceServiceServer {
+	if projectionSt == nil {
+		projectionSt = st
 	}
 	return &sliceServiceServer{
-		storage:               st,
-		promotionStorage:      promotionSt,
-		promotionBatchWindow:  defaultPromotionBatchWindow,
-		promotionBatchMaxSize: defaultPromotionBatchMaxSize,
+		storage:           st,
+		projectionStorage: projectionSt,
 	}
 }
 
-func (s *sliceServiceServer) promotionStore() storage.Storage {
-	if s.promotionStorage != nil {
-		return s.promotionStorage
+func (s *sliceServiceServer) projectionStore() storage.Storage {
+	if s.projectionStorage != nil {
+		return s.projectionStorage
 	}
 	return s.storage
 }
@@ -134,17 +124,17 @@ func RegisterGRPCServer(srv *grpc.Server, st storage.Storage) {
 	slicev1.RegisterSliceServiceServer(srv, newSliceServiceServer(st))
 }
 
-// RegisterGRPCServerWithPromotionStorage registers the slice service with a
-// separate storage backend for async promotion workers.
-func RegisterGRPCServerWithPromotionStorage(srv *grpc.Server, st storage.Storage, promotionSt storage.Storage) {
-	slicev1.RegisterSliceServiceServer(srv, newSliceServiceServerWithPromotionStorage(st, promotionSt))
+// RegisterGRPCServerWithProjectionStorage registers the slice service with a
+// separate storage backend for async projection workers.
+func RegisterGRPCServerWithProjectionStorage(srv *grpc.Server, st storage.Storage, projectionSt storage.Storage) {
+	slicev1.RegisterSliceServiceServer(srv, newSliceServiceServerWithProjectionStorage(st, projectionSt))
 }
 
-// RegisterGRPCServerWithPromotionStorageAndDurablePromotion registers the slice
-// service and optionally starts merge-event-backed promotion workers.
-func RegisterGRPCServerWithPromotionStorageAndDurablePromotion(srv *grpc.Server, st storage.Storage, promotionSt storage.Storage, cfg DurablePromotionConfig) {
-	service := newSliceServiceServerWithPromotionStorage(st, promotionSt)
-	service.StartDurablePromotionWorkers(context.Background(), cfg)
+// RegisterGRPCServerWithProjectionStorageAndDurableProjection registers the slice
+// service and optionally starts merge-event-backed projection workers.
+func RegisterGRPCServerWithProjectionStorageAndDurableProjection(srv *grpc.Server, st storage.Storage, projectionSt storage.Storage, cfg DurableProjectionConfig) {
+	service := newSliceServiceServerWithProjectionStorage(st, projectionSt)
+	service.StartDurableProjectionWorkers(context.Background(), cfg)
 	slicev1.RegisterSliceServiceServer(srv, service)
 }
 
@@ -165,10 +155,10 @@ func NewInternalService(st storage.Storage) *sliceServiceServer {
 	return newSliceServiceServer(st)
 }
 
-// NewInternalServiceWithPromotionStorage constructs the concrete slice service
-// with a separate storage backend for async promotion workers.
-func NewInternalServiceWithPromotionStorage(st storage.Storage, promotionSt storage.Storage) *sliceServiceServer {
-	return newSliceServiceServerWithPromotionStorage(st, promotionSt)
+// NewInternalServiceWithProjectionStorage constructs the concrete slice service
+// with a separate storage backend for async projection workers.
+func NewInternalServiceWithProjectionStorage(st storage.Storage, projectionSt storage.Storage) *sliceServiceServer {
+	return newSliceServiceServerWithProjectionStorage(st, projectionSt)
 }
 
 func modelVisibilityToProto(v models.Visibility) commonv1.Visibility {
@@ -1842,9 +1832,9 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 	now := time.Now()
 	cs.MergedAt = &now
 
-	var promotionCommitHash string
-	var promotionParentHash string
-	var promotionCommitTime time.Time
+	var projectionCommitHash string
+	var projectionParentHash string
+	var projectionCommitTime time.Time
 	var acceptedMergeEvent *models.MergeEvent
 	eventPathHeadSnapshot := pathHeadSnapshot
 	if !pathHeadAuthority {
@@ -1868,24 +1858,24 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 			return nil
 		}
 
-		promotionCommitHash = newCommit
-		promotionCommitTime = now
+		projectionCommitHash = newCommit
+		projectionCommitTime = now
 		if useCurrentHead {
-			promotionCommitHash = strings.TrimSpace(metadata.HeadCommitHash)
-			if promotionCommitHash == "" {
+			projectionCommitHash = strings.TrimSpace(metadata.HeadCommitHash)
+			if projectionCommitHash == "" {
 				return status.Error(codes.FailedPrecondition, "slice head is empty")
 			}
-			existingCommit, commitErr := st.GetCommitByHash(ctx, cs.SliceID, promotionCommitHash)
+			existingCommit, commitErr := st.GetCommitByHash(ctx, cs.SliceID, projectionCommitHash)
 			if commitErr != nil {
 				return status.Error(codes.Internal, fmt.Sprintf("failed to load slice head commit: %v", commitErr))
 			}
 			if existingCommit != nil && !existingCommit.Timestamp.IsZero() {
-				promotionCommitTime = existingCommit.Timestamp
+				projectionCommitTime = existingCommit.Timestamp
 			}
 			if existingCommit != nil {
-				promotionParentHash = existingCommit.ParentHash
+				projectionParentHash = existingCommit.ParentHash
 			}
-			event, err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, promotionCommitHash, promotionParentHash, modifiedFiles, promotionCommitTime, eventPathHeadSnapshot, pathHeadAuthority, opts.gate)
+			event, err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, projectionCommitHash, projectionParentHash, modifiedFiles, projectionCommitTime, eventPathHeadSnapshot, pathHeadAuthority, opts.gate)
 			if err != nil {
 				return fmt.Errorf("failed to append merge event: %w", err)
 			}
@@ -1894,7 +1884,7 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		}
 
 		parentHash := metadata.HeadCommitHash
-		promotionParentHash = parentHash
+		projectionParentHash = parentHash
 		metadata.HeadCommitHash = newCommit
 		metadata.ModifiedFiles = modifiedFiles
 		metadata.ModifiedFilesCount = len(modifiedFiles)
@@ -1933,25 +1923,10 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		s.enqueueHistoryProjection(ctx, acceptedMergeEvent)
 	}
 
-	promotionStartedAt := time.Now()
-	if promotionCommitHash != "" {
-		var promotionErr error
-		if s.durablePromotion && !changesetTouchesConfig(modifiedFiles) {
-			// Durable promotion workers consume the merge event appended above.
-		} else if changesetTouchesConfig(modifiedFiles) {
-			promotionErr = s.enqueueRootPromotionAndWait(ctx, cs.SliceID, promotionCommitHash, modifiedFiles, promotionCommitTime, acceptedMergeEvent)
-		} else {
-			promotionErr = s.enqueueRootPromotion(ctx, cs.SliceID, promotionCommitHash, modifiedFiles, promotionCommitTime, acceptedMergeEvent)
-		}
-		if promotionErr != nil {
-			profile.markPromotion(time.Since(promotionStartedAt))
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to enqueue merged changeset promotion: %v", promotionErr))
-		}
-		if useCurrentHead {
-			newCommit = promotionCommitHash
-		}
+	if useCurrentHead && projectionCommitHash != "" {
+		newCommit = projectionCommitHash
 	}
-	profile.markPromotion(time.Since(promotionStartedAt))
+	profile.markProjection(0)
 	if username := homeslice.UsernameFromSliceID(cs.SliceID); username != "" {
 		if err := ciservice.UpdateManifestIndexForHome(ctx, s.storage, username); err != nil {
 			log.Printf("Warning: failed to update CI manifest index for home %s: %v", username, err)
@@ -2031,14 +2006,7 @@ func (s *sliceServiceServer) tryMergeChangesetByIDFastPath(ctx context.Context, 
 	profile.modifiedFiles = len(result.Event.TouchedPaths)
 
 	s.enqueueHistoryProjection(ctx, result.Event)
-	promotionStartedAt := time.Now()
-	if s.durablePromotion {
-		// Durable promotion workers consume the accepted merge event.
-	} else if err := s.enqueueRootPromotion(ctx, result.Changeset.SliceID, newCommit, result.Event.TouchedPaths, now, result.Event); err != nil {
-		profile.markPromotion(time.Since(promotionStartedAt))
-		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to enqueue merged changeset promotion: %v", err))
-	}
-	profile.markPromotion(time.Since(promotionStartedAt))
+	profile.markProjection(0)
 	if username := homeslice.UsernameFromSliceID(result.Changeset.SliceID); username != "" {
 		if err := ciservice.UpdateManifestIndexForHome(ctx, s.storage, username); err != nil {
 			log.Printf("Warning: failed to update CI manifest index for home %s: %v", username, err)
@@ -2111,14 +2079,7 @@ func (s *sliceServiceServer) tryMergeChangesetFastPath(ctx context.Context, cs *
 	cs.MergedAt = &now
 	s.enqueueHistoryProjection(ctx, result.Event)
 
-	promotionStartedAt := time.Now()
-	if s.durablePromotion {
-		// Durable promotion workers consume the accepted merge event.
-	} else if err := s.enqueueRootPromotion(ctx, cs.SliceID, newCommit, modifiedFiles, now, result.Event); err != nil {
-		profile.markPromotion(time.Since(promotionStartedAt))
-		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to enqueue merged changeset promotion: %v", err))
-	}
-	profile.markPromotion(time.Since(promotionStartedAt))
+	profile.markProjection(0)
 	if username := homeslice.UsernameFromSliceID(cs.SliceID); username != "" {
 		if err := ciservice.UpdateManifestIndexForHome(ctx, s.storage, username); err != nil {
 			log.Printf("Warning: failed to update CI manifest index for home %s: %v", username, err)
@@ -2354,7 +2315,7 @@ func mergeEventHomeID(sourceSlice *models.Slice, cs *models.Changeset, modifiedF
 			return username
 		}
 	}
-	if homeRoot := commonHomeRootFromFiles(modifiedFiles); homeRoot != "" {
+	if homeRoot := commonTopLevelPathFromFiles(modifiedFiles); homeRoot != "" {
 		return homeRoot
 	}
 	if sourceSlice != nil {
@@ -2371,6 +2332,28 @@ func mergeEventHomeID(sourceSlice *models.Slice, cs *models.Changeset, modifiedF
 		return strings.TrimSpace(cs.SliceID)
 	}
 	return "global"
+}
+
+func commonTopLevelPathFromFiles(files []string) string {
+	root := ""
+	for _, file := range files {
+		clean := strings.Trim(path.Clean(strings.TrimSpace(file)), "/")
+		if clean == "" || clean == "." {
+			continue
+		}
+		parts := strings.Split(clean, "/")
+		if parts[0] == "" {
+			continue
+		}
+		if root == "" {
+			root = parts[0]
+			continue
+		}
+		if root != parts[0] {
+			return ""
+		}
+	}
+	return root
 }
 
 func mergeEventShardID(homeID string) int32 {
@@ -5533,621 +5516,6 @@ func folderSelectionExists(parentSlice *models.Slice, entries []*models.Director
 	return false, exactFile
 }
 
-func (s *sliceServiceServer) enqueueRootPromotion(ctx context.Context, sliceID, commitHash string, files []string, commitTime time.Time, event *models.MergeEvent) error {
-	return s.rootPromotionQueue().Enqueue(ctx, rootPromotionJob(sliceID, commitHash, files, commitTime, event))
-}
-
-func (s *sliceServiceServer) enqueueRootPromotionAndWait(ctx context.Context, sliceID, commitHash string, files []string, commitTime time.Time, event *models.MergeEvent) error {
-	return s.rootPromotionQueue().EnqueueAndWait(ctx, rootPromotionJob(sliceID, commitHash, files, commitTime, event))
-}
-
-func rootPromotionJob(sliceID, commitHash string, files []string, commitTime time.Time, event *models.MergeEvent) rootpromote.Job {
-	job := rootpromote.Job{
-		SliceID:    sliceID,
-		CommitHash: commitHash,
-		Files:      append([]string(nil), files...),
-		CommitTime: commitTime,
-		ShardKey:   rootPromotionShardKey(sliceID, files),
-	}
-	if event != nil {
-		job.ProjectionShardID = event.ShardID
-		job.ProjectionMergeSeq = event.MergeSeq
-	}
-	return job
-}
-
-func (s *sliceServiceServer) promoteSlice(ctx context.Context, sliceID, commitHash string, files []string, commitTime time.Time) error {
-	return s.promoteSliceBatch(ctx, []rootpromote.Job{rootPromotionJob(sliceID, commitHash, files, commitTime, nil)})
-}
-
-func rootPromotionShardKey(sliceID string, files []string) string {
-	sliceID = strings.TrimSpace(sliceID)
-	if username := homeslice.UsernameFromSliceID(sliceID); username != "" {
-		return "home:" + username
-	}
-	if homeRoot := commonHomeRootFromFiles(files); homeRoot != "" {
-		return "home:" + homeRoot
-	}
-	if sliceID != "" {
-		return "slice:" + sliceID
-	}
-	return "global"
-}
-
-func commonHomeRootFromFiles(files []string) string {
-	var root string
-	for _, rawPath := range normalizeModifiedFiles(files) {
-		cleaned := common.CleanRelativePath(rawPath)
-		if cleaned == "" {
-			continue
-		}
-		part, _, _ := strings.Cut(cleaned, "/")
-		if part == "" {
-			continue
-		}
-		if root == "" {
-			root = part
-			continue
-		}
-		if root != part {
-			return ""
-		}
-	}
-	return root
-}
-
-func (s *sliceServiceServer) promoteSliceBatch(ctx context.Context, batch []rootpromote.Job) error {
-	if len(batch) == 0 {
-		return nil
-	}
-	st := s.promotionStore()
-
-	if promoted, err := s.promoteSliceBatchToHomeViews(ctx, batch); err != nil {
-		return err
-	} else if promoted {
-		return s.updateRootPromotionProjectionOffsets(ctx, batch)
-	}
-
-	if _, ok := st.(rootPromotionFilePromoter); !ok || hasHomePromotionJob(batch) {
-		if err := s.promoteSliceBatchWithGlobalLock(ctx, batch); err != nil {
-			return err
-		}
-		return s.updateRootPromotionProjectionOffsets(ctx, batch)
-	}
-
-	start := time.Now()
-	rootSliceID, err := s.getRootSliceIDWithStorage(ctx, st)
-	if err != nil {
-		return err
-	}
-
-	fileStart := time.Now()
-	if err := st.(rootPromotionFilePromoter).PromoteFilesToRoot(ctx, rootSliceID, storageRootPromotionJobs(batch)); err != nil {
-		return err
-	}
-	fileDuration := time.Since(fileStart)
-
-	stateStart := time.Now()
-	latest := latestPromotionJob(batch)
-	if err := s.updateRootPromotionState(ctx, rootSliceID, latest, promotionGlobalCommits(batch)); err != nil {
-		return err
-	}
-	stateDuration := time.Since(stateStart)
-	totalDuration := time.Since(start)
-	if totalDuration > 250*time.Millisecond || len(batch) > 1 {
-		log.Printf("root promotion batch jobs=%d files=%d file_sync=%s state_update=%s total=%s", len(batch), len(collectUniquePromotionFiles(batch)), fileDuration, stateDuration, totalDuration)
-	}
-	return s.updateRootPromotionProjectionOffsets(ctx, batch)
-}
-
-func (s *sliceServiceServer) updateRootPromotionProjectionOffsets(ctx context.Context, batch []rootpromote.Job) error {
-	eventStore, ok := s.promotionStore().(storage.MergeEventStore)
-	if !ok {
-		return nil
-	}
-	latestByShard := make(map[int32]int64)
-	for _, job := range batch {
-		if job.ProjectionMergeSeq <= 0 || job.ProjectionShardID < 0 {
-			continue
-		}
-		if job.ProjectionMergeSeq > latestByShard[job.ProjectionShardID] {
-			latestByShard[job.ProjectionShardID] = job.ProjectionMergeSeq
-		}
-	}
-	for shardID, seq := range latestByShard {
-		if err := eventStore.UpdateProjectionOffset(ctx, &models.ProjectionOffset{
-			ProjectionName: durablePromotionProjectionName,
-			ShardID:        shardID,
-			MergeSeq:       seq,
-			UpdatedAt:      time.Now(),
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *sliceServiceServer) promoteSliceBatchToHomeViews(ctx context.Context, batch []rootpromote.Job) (bool, error) {
-	groups := make(map[string][]rootpromote.Job)
-	for _, job := range batch {
-		username, ok, err := s.promotionHomeUsername(ctx, job)
-		if err != nil {
-			return false, err
-		}
-		if !ok {
-			return false, nil
-		}
-		groups[username] = append(groups[username], job)
-	}
-	if len(groups) == 0 {
-		return false, nil
-	}
-
-	start := time.Now()
-	rootSliceID, err := s.getRootSliceIDWithStorage(ctx, s.promotionStore())
-	if err != nil {
-		return false, err
-	}
-
-	fileStart := time.Now()
-	if err := s.promoteHomeGroups(ctx, groups); err != nil {
-		return false, err
-	}
-	fileDuration := time.Since(fileStart)
-
-	stateStart := time.Now()
-	latest := latestPromotionJob(batch)
-	if err := s.updateRootPromotionState(ctx, rootSliceID, latest, promotionGlobalCommits(batch)); err != nil {
-		return false, err
-	}
-	stateDuration := time.Since(stateStart)
-	totalDuration := time.Since(start)
-	if totalDuration > 250*time.Millisecond || len(batch) > 1 {
-		log.Printf("home promotion batch homes=%d jobs=%d files=%d home_sync=%s state_update=%s total=%s", len(groups), len(batch), len(collectUniquePromotionFilesIncludingHome(batch)), fileDuration, stateDuration, totalDuration)
-	}
-	return true, nil
-}
-
-func (s *sliceServiceServer) promoteHomeGroups(ctx context.Context, groups map[string][]rootpromote.Job) error {
-	if len(groups) == 0 {
-		return nil
-	}
-	usernames := make([]string, 0, len(groups))
-	for username := range groups {
-		usernames = append(usernames, username)
-	}
-	sort.Strings(usernames)
-
-	parallelism := len(usernames)
-	if parallelism > 8 {
-		parallelism = 8
-	}
-	sem := make(chan struct{}, parallelism)
-	errCh := make(chan error, len(usernames))
-	var wg sync.WaitGroup
-
-	for _, username := range usernames {
-		username := username
-		jobs := append([]rootpromote.Job(nil), groups[username]...)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			if err := s.promoteHomeGroup(ctx, username, jobs); err != nil {
-				errCh <- err
-			}
-		}()
-	}
-	wg.Wait()
-	close(errCh)
-	for err := range errCh {
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *sliceServiceServer) promoteHomeGroup(ctx context.Context, username string, jobs []rootpromote.Job) error {
-	st := s.promotionStore()
-	homeSlice, err := homeslice.EnsureUserHomeSlice(ctx, st, username)
-	if err != nil {
-		return fmt.Errorf("failed to ensure home slice for %s: %w", username, err)
-	}
-	copyJobs := nonHomeSourcePromotionJobs(homeSlice.ID, jobs)
-	if len(copyJobs) > 0 {
-		if promoter, ok := st.(sliceFilePromoter); ok {
-			if err := promoter.PromoteFilesToSlice(ctx, homeSlice.ID, storageRootPromotionJobs(copyJobs)); err != nil {
-				return fmt.Errorf("failed to publish files into home slice %s: %w", homeSlice.ID, err)
-			}
-		} else {
-			for _, job := range copyJobs {
-				if err := s.syncPromotionJobToSlice(ctx, homeSlice.ID, job); err != nil {
-					return err
-				}
-			}
-			if err := addFilesToSlice(ctx, st, collectUniquePromotionFiles(copyJobs), homeSlice.ID); err != nil {
-				return fmt.Errorf("failed to add promoted files to home slice: %w", err)
-			}
-		}
-	}
-	if len(copyJobs) == 0 {
-		return nil
-	}
-	return s.updateHomePromotionState(ctx, homeSlice.ID, copyJobs)
-}
-
-func (s *sliceServiceServer) promotionHomeUsername(ctx context.Context, job rootpromote.Job) (string, bool, error) {
-	st := s.promotionStore()
-	if username := homeslice.UsernameFromSliceID(job.SliceID); username != "" {
-		return username, true, nil
-	}
-	homeRoot := commonHomeRootFromFiles(job.Files)
-	if homeRoot == "" {
-		return "", false, nil
-	}
-	if user, err := st.GetUser(ctx, homeRoot); err == nil && user != nil {
-		rootPath := strings.TrimPrefix(strings.TrimSpace(user.RootPath), "/")
-		if rootPath == "" {
-			rootPath = homeslice.RelativeRootPath(user.Username)
-		}
-		if common.CleanRelativePath(rootPath) == homeRoot {
-			return user.Username, true, nil
-		}
-	}
-	sourceSlice, err := st.GetSlice(ctx, strings.TrimSpace(job.SliceID))
-	if err != nil {
-		if errors.Is(err, storage.ErrSliceNotFound) {
-			return "", false, nil
-		}
-		return "", false, err
-	}
-	if sliceOwnedByUsername(sourceSlice, homeRoot) {
-		return homeRoot, true, nil
-	}
-	return "", false, nil
-}
-
-func sliceOwnedByUsername(slice *models.Slice, username string) bool {
-	username = strings.TrimSpace(username)
-	if slice == nil || username == "" {
-		return false
-	}
-	if strings.TrimSpace(slice.CreatedBy) == username {
-		return true
-	}
-	for _, owner := range slice.Owners {
-		if strings.TrimSpace(owner) == username {
-			return true
-		}
-	}
-	return false
-}
-
-func nonHomeSourcePromotionJobs(homeSliceID string, jobs []rootpromote.Job) []rootpromote.Job {
-	homeSliceID = strings.TrimSpace(homeSliceID)
-	result := make([]rootpromote.Job, 0, len(jobs))
-	for _, job := range jobs {
-		sourceSliceID := strings.TrimSpace(job.SliceID)
-		if sourceSliceID == "" || sourceSliceID == homeSliceID || homeslice.IsHomeSliceID(sourceSliceID) {
-			continue
-		}
-		result = append(result, job)
-	}
-	return result
-}
-
-func (s *sliceServiceServer) updateHomePromotionState(ctx context.Context, homeSliceID string, jobs []rootpromote.Job) error {
-	homeSliceID = strings.TrimSpace(homeSliceID)
-	if homeSliceID == "" || len(jobs) == 0 {
-		return nil
-	}
-	st := s.promotionStore()
-	metadata, err := st.GetSliceMetadata(ctx, homeSliceID)
-	if err != nil {
-		return fmt.Errorf("failed to load home metadata: %w", err)
-	}
-
-	ordered := append([]rootpromote.Job(nil), jobs...)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		left, right := ordered[i], ordered[j]
-		if !left.CommitTime.Equal(right.CommitTime) {
-			return left.CommitTime.Before(right.CommitTime)
-		}
-		return strings.TrimSpace(left.CommitHash) < strings.TrimSpace(right.CommitHash)
-	})
-
-	parentHash := strings.TrimSpace(metadata.HeadCommitHash)
-	for _, job := range ordered {
-		commitHash := strings.TrimSpace(job.CommitHash)
-		if commitHash == "" {
-			continue
-		}
-		if strings.TrimSpace(job.SliceID) != homeSliceID {
-			commitTime := job.CommitTime
-			if commitTime.IsZero() {
-				commitTime = time.Now()
-			}
-			if err := st.AddSliceCommit(ctx, homeSliceID, &models.Commit{
-				CommitHash: commitHash,
-				ParentHash: parentHash,
-				Timestamp:  commitTime,
-				Message:    "publish changeset to home",
-			}); err != nil {
-				return fmt.Errorf("failed to add home commit: %w", err)
-			}
-		}
-		parentHash = commitHash
-	}
-
-	latest := latestPromotionJob(jobs)
-	if strings.TrimSpace(latest.CommitHash) != "" {
-		metadata.HeadCommitHash = strings.TrimSpace(latest.CommitHash)
-	}
-	latestFiles := collectUniquePromotionFilesIncludingHome(jobs)
-	metadata.ModifiedFiles = latestFiles
-	metadata.ModifiedFilesCount = len(latestFiles)
-	if latest.CommitTime.IsZero() {
-		metadata.LastModified = time.Now()
-	} else {
-		metadata.LastModified = latest.CommitTime
-	}
-	if err := st.UpdateSliceMetadata(ctx, homeSliceID, metadata); err != nil {
-		return fmt.Errorf("failed to update home metadata: %w", err)
-	}
-	if username := homeslice.UsernameFromSliceID(homeSliceID); username != "" {
-		if err := ciservice.UpdateManifestIndexForHome(ctx, st, username); err != nil {
-			log.Printf("Warning: failed to update CI manifest index for home %s: %v", username, err)
-		}
-	}
-	return nil
-}
-
-func (s *sliceServiceServer) promoteSliceBatchWithGlobalLock(ctx context.Context, batch []rootpromote.Job) error {
-	st := s.promotionStore()
-	return rootpromote.WithGlobalLock(func() error {
-		rootSliceID, err := s.getRootSliceIDWithStorage(ctx, st)
-		if err != nil {
-			return err
-		}
-
-		rootMetadata, err := st.GetSliceMetadata(ctx, rootSliceID)
-		if err != nil {
-			return fmt.Errorf("failed to load root metadata: %w", err)
-		}
-
-		for _, job := range latestHomeSlicePromotionJobs(batch) {
-			if _, err := homeslice.SyncHomeSliceToRoot(ctx, st, job.SliceID); err != nil {
-				return fmt.Errorf("failed to sync %s into root: %w", job.SliceID, err)
-			}
-		}
-
-		for _, job := range batch {
-			if homeslice.IsHomeSliceID(job.SliceID) {
-				continue
-			}
-			if err := s.syncPromotionJobToRoot(ctx, rootSliceID, job); err != nil {
-				return err
-			}
-		}
-
-		if err := addFilesToSlice(ctx, st, collectUniquePromotionFiles(batch), rootSliceID); err != nil {
-			return fmt.Errorf("failed to add promoted files to root slice: %w", err)
-		}
-
-		latest := batch[len(batch)-1]
-		if err := updateRootPromotionStateFallback(ctx, st, rootSliceID, rootMetadata, latest, promotionGlobalCommits(batch)); err != nil {
-			return err
-		}
-
-		return nil
-	})
-}
-
-func (s *sliceServiceServer) updateRootPromotionState(ctx context.Context, rootSliceID string, latest rootpromote.Job, history []*models.GlobalCommit) error {
-	st := s.promotionStore()
-	if updater, ok := st.(rootPromotionStateUpdater); ok {
-		latestFiles := normalizeModifiedFiles(latest.Files)
-		return updater.UpdateRootPromotionState(ctx, rootSliceID, latest.CommitHash, latest.CommitTime, latestFiles, history)
-	}
-	return rootpromote.WithGlobalLock(func() error {
-		rootMetadata, err := st.GetSliceMetadata(ctx, rootSliceID)
-		if err != nil {
-			return fmt.Errorf("failed to load root metadata: %w", err)
-		}
-		return updateRootPromotionStateFallback(ctx, st, rootSliceID, rootMetadata, latest, history)
-	})
-}
-
-func updateRootPromotionStateFallback(ctx context.Context, st storage.Storage, rootSliceID string, rootMetadata *models.SliceMetadata, latest rootpromote.Job, history []*models.GlobalCommit) error {
-	state, err := st.GetGlobalState(ctx)
-	if err != nil && !errors.Is(err, storage.ErrInvalidInput) {
-		return fmt.Errorf("failed to load global state: %w", err)
-	}
-	if state == nil {
-		state = &models.GlobalState{}
-	}
-	state.GlobalCommitHash = latest.CommitHash
-	state.Timestamp = latest.CommitTime
-	state.History = append(history, state.History...)
-
-	if err := st.UpdateGlobalState(ctx, state); err != nil {
-		return fmt.Errorf("failed to update global state: %w", err)
-	}
-
-	rootMetadata.HeadCommitHash = state.GlobalCommitHash
-	latestFiles := normalizeModifiedFiles(latest.Files)
-	rootMetadata.ModifiedFiles = latestFiles
-	rootMetadata.ModifiedFilesCount = len(latestFiles)
-	rootMetadata.LastModified = state.Timestamp
-	if err := st.UpdateSliceMetadata(ctx, rootSliceID, rootMetadata); err != nil {
-		return fmt.Errorf("failed to update root metadata: %w", err)
-	}
-	return nil
-}
-
-func (s *sliceServiceServer) syncPromotionJobToRoot(ctx context.Context, rootSliceID string, job rootpromote.Job) error {
-	return s.syncPromotionJobToSlice(ctx, rootSliceID, job)
-}
-
-func (s *sliceServiceServer) syncPromotionJobToSlice(ctx context.Context, targetSliceID string, job rootpromote.Job) error {
-	st := s.promotionStore()
-	sliceID := strings.TrimSpace(job.SliceID)
-	targetSliceID = strings.TrimSpace(targetSliceID)
-	if sliceID == "" || targetSliceID == "" {
-		return nil
-	}
-	if _, err := st.GetSlice(ctx, sliceID); err != nil {
-		if errors.Is(err, storage.ErrSliceNotFound) {
-			return nil
-		}
-		return fmt.Errorf("failed to load promotion source slice %s: %w", sliceID, err)
-	}
-
-	for _, rawPath := range normalizeModifiedFiles(job.Files) {
-		filePath := cleanDiffPath(rawPath)
-		if filePath == "" {
-			continue
-		}
-
-		content, err := storage.ReadSliceFileContent(ctx, st, sliceID, filePath)
-		if err != nil {
-			if errors.Is(err, storage.ErrEntryNotFound) {
-				continue
-			}
-			return fmt.Errorf("failed to read promoted file %s from %s: %w", filePath, sliceID, err)
-		}
-
-		var executable bool
-		var symlinkTarget string
-		if entry, entryErr := st.GetEntryByPath(ctx, sliceID, filePath); entryErr == nil && entry != nil {
-			executable = entry.Executable
-			symlinkTarget = entry.SymlinkTarget
-		} else if entryErr != nil && !errors.Is(entryErr, storage.ErrEntryNotFound) {
-			return fmt.Errorf("failed to load promoted entry metadata for %s: %w", filePath, entryErr)
-		}
-
-		manifest, err := storage.WriteSliceFileManifestWithMetadata(ctx, st, targetSliceID, filePath, append([]byte(nil), content.Content...), executable, symlinkTarget)
-		if err != nil {
-			return fmt.Errorf("failed to write promoted manifest for %s in %s: %w", filePath, targetSliceID, err)
-		}
-		if err := st.AddEntry(ctx, &models.DirectoryEntry{
-			ID:            common.GenerateEntryID(targetSliceID, filePath),
-			Path:          filePath,
-			Type:          "file",
-			ParentID:      targetSliceID,
-			Size:          manifest.TotalSize,
-			Hash:          manifest.Hash,
-			Executable:    manifest.Executable,
-			SymlinkTarget: manifest.SymlinkTarget,
-		}); err != nil {
-			return fmt.Errorf("failed to materialize promoted entry for %s in %s: %w", filePath, targetSliceID, err)
-		}
-	}
-
-	return nil
-}
-
-func collectUniquePromotionFiles(batch []rootpromote.Job) []string {
-	if len(batch) == 0 {
-		return nil
-	}
-	dedup := make(map[string]struct{})
-	files := make([]string, 0)
-	for _, job := range batch {
-		if homeslice.IsHomeSliceID(job.SliceID) {
-			continue
-		}
-		for _, fileID := range normalizeModifiedFiles(job.Files) {
-			if _, exists := dedup[fileID]; exists {
-				continue
-			}
-			dedup[fileID] = struct{}{}
-			files = append(files, fileID)
-		}
-	}
-	return files
-}
-
-func collectUniquePromotionFilesIncludingHome(batch []rootpromote.Job) []string {
-	if len(batch) == 0 {
-		return nil
-	}
-	dedup := make(map[string]struct{})
-	files := make([]string, 0)
-	for _, job := range batch {
-		for _, fileID := range normalizeModifiedFiles(job.Files) {
-			if _, exists := dedup[fileID]; exists {
-				continue
-			}
-			dedup[fileID] = struct{}{}
-			files = append(files, fileID)
-		}
-	}
-	return files
-}
-
-func hasHomePromotionJob(batch []rootpromote.Job) bool {
-	for _, job := range batch {
-		if homeslice.IsHomeSliceID(job.SliceID) {
-			return true
-		}
-	}
-	return false
-}
-
-func storageRootPromotionJobs(batch []rootpromote.Job) []storage.RootPromotionJob {
-	if len(batch) == 0 {
-		return nil
-	}
-	jobs := make([]storage.RootPromotionJob, 0, len(batch))
-	for _, job := range batch {
-		if homeslice.IsHomeSliceID(job.SliceID) {
-			continue
-		}
-		jobs = append(jobs, storage.RootPromotionJob{
-			SliceID:    job.SliceID,
-			CommitHash: job.CommitHash,
-			Files:      append([]string(nil), job.Files...),
-			CommitTime: job.CommitTime,
-		})
-	}
-	return jobs
-}
-
-func promotionGlobalCommits(batch []rootpromote.Job) []*models.GlobalCommit {
-	if len(batch) == 0 {
-		return nil
-	}
-	history := make([]*models.GlobalCommit, 0, len(batch))
-	for i := len(batch) - 1; i >= 0; i-- {
-		job := batch[i]
-		if strings.TrimSpace(job.CommitHash) == "" {
-			continue
-		}
-		history = append(history, &models.GlobalCommit{
-			CommitHash:     job.CommitHash,
-			Timestamp:      job.CommitTime,
-			MergedSliceIDs: []string{job.SliceID},
-		})
-	}
-	return history
-}
-
-func latestPromotionJob(batch []rootpromote.Job) rootpromote.Job {
-	if len(batch) == 0 {
-		return rootpromote.Job{}
-	}
-	latest := batch[0]
-	for _, job := range batch[1:] {
-		if job.CommitTime.After(latest.CommitTime) || (job.CommitTime.Equal(latest.CommitTime) && strings.TrimSpace(job.CommitHash) > strings.TrimSpace(latest.CommitHash)) {
-			latest = job
-		}
-	}
-	return latest
-}
-
 func (s *sliceServiceServer) hydrateSliceEntryMetadataFromParent(ctx context.Context, slice, parentSlice *models.Slice, filePaths []string) error {
 	if slice == nil || parentSlice == nil {
 		return nil
@@ -6193,66 +5561,12 @@ func (s *sliceServiceServer) hydrateSliceEntryMetadataFromParent(ctx context.Con
 	return nil
 }
 
-func (s *sliceServiceServer) waitForQueuedPromotions(ctx context.Context) error {
-	if err := s.rootPromotionQueue().Wait(ctx); err != nil {
-		return err
-	}
+func (s *sliceServiceServer) waitForQueuedProjections(ctx context.Context) error {
 	return s.waitForQueuedHistoryProjections(ctx)
 }
 
-func (s *sliceServiceServer) WaitForQueuedPromotions(ctx context.Context) error {
-	return s.waitForQueuedPromotions(ctx)
-}
-
-func (s *sliceServiceServer) rootPromotionQueue() *rootpromote.Queue {
-	s.promotionQueueMu.Lock()
-	defer s.promotionQueueMu.Unlock()
-	if s.promotionQueue != nil {
-		return s.promotionQueue
-	}
-	workerCount := s.promotionWorkerCount
-	if workerCount <= 0 {
-		workerCount = 1
-		if _, ok := s.promotionStore().(rootPromotionFilePromoter); ok {
-			workerCount = defaultPromotionWorkerCount
-		}
-	}
-	s.promotionQueue = rootpromote.NewWithWorkers(s.promotionBatchWindow, s.promotionBatchMaxSize, workerCount, func(ctx context.Context, batch []rootpromote.Job) error {
-		if err := s.promoteSliceBatch(ctx, batch); err != nil {
-			sliceID := ""
-			if len(batch) > 0 {
-				sliceID = batch[0].SliceID
-			}
-			log.Printf("failed to promote %d queued commits for slice %s: %v", len(batch), sliceID, err)
-			return err
-		}
-		return nil
-	})
-	return s.promotionQueue
-}
-
-func latestHomeSlicePromotionJobs(batch []rootpromote.Job) []rootpromote.Job {
-	if len(batch) == 0 {
-		return nil
-	}
-	latestBySlice := make(map[string]rootpromote.Job, len(batch))
-	order := make([]string, 0, len(batch))
-	for _, job := range batch {
-		sliceID := strings.TrimSpace(job.SliceID)
-		if !homeslice.IsHomeSliceID(sliceID) {
-			continue
-		}
-		if _, seen := latestBySlice[sliceID]; !seen {
-			order = append(order, sliceID)
-		}
-		latestBySlice[sliceID] = job
-	}
-	sort.Strings(order)
-	result := make([]rootpromote.Job, 0, len(order))
-	for _, sliceID := range order {
-		result = append(result, latestBySlice[sliceID])
-	}
-	return result
+func (s *sliceServiceServer) WaitForQueuedProjections(ctx context.Context) error {
+	return s.waitForQueuedProjections(ctx)
 }
 
 func (s *sliceServiceServer) getRootSliceID(ctx context.Context) (string, error) {

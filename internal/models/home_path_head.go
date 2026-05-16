@@ -6,6 +6,7 @@ import "time"
 type HomePathHead struct {
 	HomeID           string
 	Path             string
+	EntryType        string
 	PathVersion      int64
 	ContentHash      string
 	ManifestHash     string

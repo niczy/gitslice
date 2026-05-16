@@ -15,12 +15,12 @@ func TestLoadConfigParsesPostgresPoolSettings(t *testing.T) {
 	t.Setenv("POSTGRES_MAX_CONNS", "25")
 	t.Setenv("POSTGRES_MIN_CONNS", "3")
 	t.Setenv("POSTGRES_MAX_CONN_LIFETIME", "45m")
-	t.Setenv("POSTGRES_PROMOTION_MAX_CONNS", "5")
-	t.Setenv("MERGE_EVENT_PROMOTION_ENABLED", "true")
-	t.Setenv("MERGE_EVENT_PROMOTION_WORKERS", "3")
-	t.Setenv("MERGE_EVENT_PROMOTION_BATCH_SIZE", "128")
-	t.Setenv("MERGE_EVENT_PROMOTION_SHARDS", "64")
-	t.Setenv("MERGE_EVENT_PROMOTION_POLL_INTERVAL", "2s")
+	t.Setenv("POSTGRES_PROJECTION_MAX_CONNS", "5")
+	t.Setenv("MERGE_EVENT_PROJECTION_ENABLED", "true")
+	t.Setenv("MERGE_EVENT_PROJECTION_WORKERS", "3")
+	t.Setenv("MERGE_EVENT_PROJECTION_BATCH_SIZE", "128")
+	t.Setenv("MERGE_EVENT_PROJECTION_SHARDS", "64")
+	t.Setenv("MERGE_EVENT_PROJECTION_POLL_INTERVAL", "2s")
 	t.Setenv("CLERK_WEBHOOK_SECRET", "whsec_clerk_test_123")
 
 	cfg, err := LoadConfig()
@@ -48,54 +48,54 @@ func TestLoadConfigParsesPostgresPoolSettings(t *testing.T) {
 	if cfg.PostgresMaxConnLifetime != 45*time.Minute {
 		t.Fatalf("expected max conn lifetime 45m, got %s", cfg.PostgresMaxConnLifetime)
 	}
-	if cfg.PostgresPromotionMaxConns != 5 {
-		t.Fatalf("expected promotion max conns 5, got %d", cfg.PostgresPromotionMaxConns)
+	if cfg.PostgresProjectionMaxConns != 5 {
+		t.Fatalf("expected projection max conns 5, got %d", cfg.PostgresProjectionMaxConns)
 	}
-	if !cfg.MergeEventPromotionEnabled {
-		t.Fatalf("expected merge event promotion flag to load")
+	if !cfg.MergeEventProjectionEnabled {
+		t.Fatalf("expected merge event projection flag to load")
 	}
-	if cfg.MergeEventPromotionWorkers != 3 {
-		t.Fatalf("expected merge event promotion workers 3, got %d", cfg.MergeEventPromotionWorkers)
+	if cfg.MergeEventProjectionWorkers != 3 {
+		t.Fatalf("expected merge event projection workers 3, got %d", cfg.MergeEventProjectionWorkers)
 	}
-	if cfg.MergeEventPromotionBatchSize != 128 {
-		t.Fatalf("expected merge event promotion batch size 128, got %d", cfg.MergeEventPromotionBatchSize)
+	if cfg.MergeEventProjectionBatchSize != 128 {
+		t.Fatalf("expected merge event projection batch size 128, got %d", cfg.MergeEventProjectionBatchSize)
 	}
-	if cfg.MergeEventPromotionShardCount != 64 {
-		t.Fatalf("expected merge event promotion shards 64, got %d", cfg.MergeEventPromotionShardCount)
+	if cfg.MergeEventProjectionShardCount != 64 {
+		t.Fatalf("expected merge event projection shards 64, got %d", cfg.MergeEventProjectionShardCount)
 	}
-	if cfg.MergeEventPromotionPollInterval != 2*time.Second {
-		t.Fatalf("expected merge event promotion poll interval 2s, got %s", cfg.MergeEventPromotionPollInterval)
+	if cfg.MergeEventProjectionPollInterval != 2*time.Second {
+		t.Fatalf("expected merge event projection poll interval 2s, got %s", cfg.MergeEventProjectionPollInterval)
 	}
 	if cfg.ClerkWebhookSecret != "whsec_clerk_test_123" {
 		t.Fatalf("unexpected Clerk webhook secret: %q", cfg.ClerkWebhookSecret)
 	}
 }
 
-func TestLoadConfigEnablesMergeEventPromotionByDefault(t *testing.T) {
-	t.Setenv("MERGE_EVENT_PROMOTION_ENABLED", "")
-	t.Setenv("MERGE_EVENT_PROMOTION_WORKERS", "")
-	t.Setenv("MERGE_EVENT_PROMOTION_BATCH_SIZE", "")
-	t.Setenv("MERGE_EVENT_PROMOTION_SHARDS", "")
-	t.Setenv("MERGE_EVENT_PROMOTION_POLL_INTERVAL", "")
+func TestLoadConfigEnablesMergeEventProjectionByDefault(t *testing.T) {
+	t.Setenv("MERGE_EVENT_PROJECTION_ENABLED", "")
+	t.Setenv("MERGE_EVENT_PROJECTION_WORKERS", "")
+	t.Setenv("MERGE_EVENT_PROJECTION_BATCH_SIZE", "")
+	t.Setenv("MERGE_EVENT_PROJECTION_SHARDS", "")
+	t.Setenv("MERGE_EVENT_PROJECTION_POLL_INTERVAL", "")
 
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	if !cfg.MergeEventPromotionEnabled {
-		t.Fatalf("expected merge event promotion to default to enabled")
+	if !cfg.MergeEventProjectionEnabled {
+		t.Fatalf("expected merge event projection to default to enabled")
 	}
-	if cfg.MergeEventPromotionWorkers != 1 {
-		t.Fatalf("expected default merge event promotion workers 1, got %d", cfg.MergeEventPromotionWorkers)
+	if cfg.MergeEventProjectionWorkers != 1 {
+		t.Fatalf("expected default merge event projection workers 1, got %d", cfg.MergeEventProjectionWorkers)
 	}
-	if cfg.MergeEventPromotionBatchSize != 256 {
-		t.Fatalf("expected default merge event promotion batch size 256, got %d", cfg.MergeEventPromotionBatchSize)
+	if cfg.MergeEventProjectionBatchSize != 256 {
+		t.Fatalf("expected default merge event projection batch size 256, got %d", cfg.MergeEventProjectionBatchSize)
 	}
-	if cfg.MergeEventPromotionShardCount != 1024 {
-		t.Fatalf("expected default merge event promotion shards 1024, got %d", cfg.MergeEventPromotionShardCount)
+	if cfg.MergeEventProjectionShardCount != 1024 {
+		t.Fatalf("expected default merge event projection shards 1024, got %d", cfg.MergeEventProjectionShardCount)
 	}
-	if cfg.MergeEventPromotionPollInterval != 250*time.Millisecond {
-		t.Fatalf("expected default merge event promotion poll interval 250ms, got %s", cfg.MergeEventPromotionPollInterval)
+	if cfg.MergeEventProjectionPollInterval != 250*time.Millisecond {
+		t.Fatalf("expected default merge event projection poll interval 250ms, got %s", cfg.MergeEventProjectionPollInterval)
 	}
 }
 
@@ -169,23 +169,23 @@ func TestValidateRejectsMinConnsAboveMax(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsDurablePromotionWithSinglePromotionConnection(t *testing.T) {
+func TestValidateRejectsDurableProjectionWithSingleProjectionConnection(t *testing.T) {
 	cfg := &Config{
-		StorageType:                     "postgres",
-		PostgresDSN:                     "postgres://user:pass@127.0.0.1:5432/gitslice?sslmode=disable",
-		ObjectStoreType:                 "filesystem",
-		ObjectStoreDir:                  "/tmp/objectstore",
-		PostgresMaxConns:                10,
-		PostgresPromotionMaxConns:       1,
-		MergeEventPromotionEnabled:      true,
-		MergeEventPromotionWorkers:      1,
-		MergeEventPromotionBatchSize:    64,
-		MergeEventPromotionShardCount:   1024,
-		MergeEventPromotionPollInterval: time.Second,
+		StorageType:                      "postgres",
+		PostgresDSN:                      "postgres://user:pass@127.0.0.1:5432/gitslice?sslmode=disable",
+		ObjectStoreType:                  "filesystem",
+		ObjectStoreDir:                   "/tmp/objectstore",
+		PostgresMaxConns:                 10,
+		PostgresProjectionMaxConns:       1,
+		MergeEventProjectionEnabled:      true,
+		MergeEventProjectionWorkers:      1,
+		MergeEventProjectionBatchSize:    64,
+		MergeEventProjectionShardCount:   1024,
+		MergeEventProjectionPollInterval: time.Second,
 	}
 
 	if err := cfg.Validate(); err == nil {
-		t.Fatalf("expected durable promotion single-connection validation failure")
+		t.Fatalf("expected durable projection single-connection validation failure")
 	}
 }
 

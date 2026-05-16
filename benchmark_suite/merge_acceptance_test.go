@@ -128,19 +128,19 @@ func TestMergeAcceptanceThroughput(t *testing.T) {
 	}
 	logBenchmarkPostgresPoolReport(t, "Merge acceptance", foregroundPoolReport, foregroundPoolStatsOK)
 
-	drainPoolObserver := startBenchmarkPromotionPostgresPoolObserver()
-	promotionDrainElapsed, promotionDrainObserved, promotionDrainErr := drainBenchmarkPromotions(30 * time.Second)
+	drainPoolObserver := startBenchmarkProjectionPostgresPoolObserver()
+	projectionDrainElapsed, projectionDrainObserved, projectionDrainErr := drainBenchmarkProjections(30 * time.Second)
 	drainPoolReport, drainPoolStatsOK := drainPoolObserver.stopAndReport()
-	if promotionDrainObserved {
-		if promotionDrainErr != nil {
-			t.Logf("Promotion drain elapsed: %.2f s (error: %v)", promotionDrainElapsed.Seconds(), promotionDrainErr)
+	if projectionDrainObserved {
+		if projectionDrainErr != nil {
+			t.Logf("Projection drain elapsed: %.2f s (error: %v)", projectionDrainElapsed.Seconds(), projectionDrainErr)
 		} else {
-			t.Logf("Promotion drain elapsed: %.2f s", promotionDrainElapsed.Seconds())
+			t.Logf("Projection drain elapsed: %.2f s", projectionDrainElapsed.Seconds())
 		}
 	} else {
-		t.Logf("Promotion drain elapsed: unavailable")
+		t.Logf("Projection drain elapsed: unavailable")
 	}
-	logBenchmarkPostgresPoolReport(t, "Promotion drain", drainPoolReport, drainPoolStatsOK)
+	logBenchmarkPostgresPoolReport(t, "Projection drain", drainPoolReport, drainPoolStatsOK)
 
 	if errorCount > 0 {
 		t.Errorf("INTEGRITY FAIL: %d merges encountered errors", errorCount)

@@ -62,7 +62,7 @@ End-to-end latency per user (ms):
 
 ...
 
-Promotion drain elapsed: 0.00 s
+Projection drain elapsed: 0.00 s
 
 Integrity OK: all 1000 sampled users passed
 ```
@@ -87,13 +87,13 @@ BENCHMARK_POSTGRES_DSN=postgres://... \
 BENCHMARK_USERS=5000 \
 BENCHMARK_WORKERS=128 \
 BENCHMARK_POSTGRES_MAX_CONNS=64 \
-BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS=4 \
+BENCHMARK_POSTGRES_PROJECTION_MAX_CONNS=4 \
 go test -v -timeout 600s ./benchmark_suite/ -run TestMergeAcceptanceThroughput
 ```
 
 Recent local Postgres results:
 
-| Users | Workers | Foreground conns | Promotion conns | Merge throughput | P50 | P95 | P99 |
+| Users | Workers | Foreground conns | Projection conns | Merge throughput | P50 | P95 | P99 |
 |---:|---:|---:|---:|---:|---:|---:|---:|
 | 5000 | 128 | 64 | 4 | `150.8 merges/sec` | `836.36ms` | `978.82ms` | `1303.74ms` |
 | 5000 | 192 | 88 | 4 | `153.5 merges/sec` | `1176.08ms` | `1744.71ms` | `2215.93ms` |
@@ -145,8 +145,8 @@ BENCHMARK_POSTGRES_DSN=postgres://... \
 ```
 
 The CSV includes throughput, successful merges, conflicts, errors,
-p50/p95/p99 latencies, foreground and promotion pool wait counters, and
-promotion drain time.
+p50/p95/p99 latencies, foreground and projection pool wait counters, and
+projection drain time.
 
 ### Recent benchmark run (2026-02-19)
 
@@ -184,11 +184,11 @@ Both values can be overridden via environment variables:
 | `BENCHMARK_STORAGE` | `memory` | Storage backend: `memory` or `postgres` |
 | `BENCHMARK_POSTGRES_DSN` | empty | Postgres DSN when `BENCHMARK_STORAGE=postgres`; falls back to `TEST_POSTGRES_DSN` |
 | `BENCHMARK_POSTGRES_MAX_CONNS` | pgx default | Postgres pool max connections for benchmark storage |
-| `BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS` | empty | Optional separate Postgres pool max connections for async promotion workers |
-| `BENCHMARK_HOME_SHARDS` | `1` | Spread users across N home roots for home-scoped promotion tests |
+| `BENCHMARK_POSTGRES_PROJECTION_MAX_CONNS` | empty | Optional separate Postgres pool max connections for async projection workers |
+| `BENCHMARK_HOME_SHARDS` | `1` | Spread users across N home roots for home-scoped projection tests |
 
 When using Postgres storage, `TestSimulate100kUsers` also logs pgx pool
-observability for the foreground workload and promotion-drain phase:
+observability for the foreground workload and projection-drain phase:
 
 - current acquired, idle, total, constructing, and max connections
 - observed max acquired, idle, total, and constructing connections

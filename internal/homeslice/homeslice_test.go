@@ -86,7 +86,7 @@ func TestEnsureUserHomeSliceIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestBackfillUserHomeSliceCopiesRootFilesOnce(t *testing.T) {
+func TestBackfillUserHomeSliceUsesPathHeadRootView(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
 
@@ -102,31 +102,40 @@ func TestBackfillUserHomeSliceCopiesRootFilesOnce(t *testing.T) {
 		t.Fatalf("CreateUser failed: %v", err)
 	}
 
-	rootSlice, err := st.GetRootSlice(ctx)
-	if err != nil {
-		t.Fatalf("GetRootSlice failed: %v", err)
-	}
 	const filePath = "legacyuser/readme.md"
-	hash := mustWriteSliceManifest(t, ctx, st, rootSlice.ID, filePath, []byte("legacy"))
+	source := &models.Slice{ID: "source-legacyuser", Name: "source-legacyuser", Owners: []string{"legacyuser"}, CreatedBy: "legacyuser"}
+	if err := st.CreateSlice(ctx, source); err != nil {
+		t.Fatalf("CreateSlice(source) failed: %v", err)
+	}
+	hash := mustWriteSliceManifest(t, ctx, st, source.ID, filePath, []byte("legacy"))
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
-		ID:       common.GenerateEntryID(rootSlice.ID, filePath),
+		ID:       common.GenerateEntryID(source.ID, filePath),
 		Path:     filePath,
 		Type:     "file",
-		ParentID: rootSlice.ID,
+		ParentID: source.ID,
 		Size:     int64(len("legacy")),
 		Hash:     hash,
 	}); err != nil {
 		t.Fatalf("AddEntry failed: %v", err)
 	}
-	if err := st.AddFileToSlice(ctx, filePath, rootSlice.ID); err != nil {
-		t.Fatalf("AddFileToSlice failed: %v", err)
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:           "legacyuser",
+		Path:             filePath,
+		EntryType:        "file",
+		PathVersion:      1,
+		SourceSliceID:    source.ID,
+		SourceCommitHash: "source-commit",
+		ManifestHash:     hash,
+		ContentHash:      hash,
+	}}); err != nil {
+		t.Fatalf("UpsertHomePathHeads failed: %v", err)
 	}
 
 	result, err := BackfillUserHomeSlice(ctx, st, "legacyuser")
 	if err != nil {
 		t.Fatalf("BackfillUserHomeSlice failed: %v", err)
 	}
-	if !result.Created || !result.Seeded || result.FilesCopied != 1 {
+	if !result.Created || result.Seeded || result.FilesCopied != 0 {
 		t.Fatalf("unexpected backfill result: %#v", result)
 	}
 
@@ -142,8 +151,8 @@ func TestBackfillUserHomeSliceCopiesRootFilesOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListSliceCommits failed: %v", err)
 	}
-	if len(commits) != 2 {
-		t.Fatalf("expected initial + backfill commits, got %d", len(commits))
+	if len(commits) != 1 {
+		t.Fatalf("expected only the initial commit when path-head view already exposes content, got %d", len(commits))
 	}
 
 	second, err := BackfillUserHomeSlice(ctx, st, "legacyuser")

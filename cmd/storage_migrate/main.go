@@ -421,8 +421,8 @@ func cmdBackfillHistoryProjection(args []string) {
 	defer native.Close()
 	defer closeObjectStore()
 
-	svc := sliceservice.NewInternalServiceWithPromotionStorage(native, native)
-	result, err := svc.BackfillHistoryProjection(ctx, sliceservice.DurablePromotionConfig{
+	svc := sliceservice.NewInternalServiceWithProjectionStorage(native, native)
+	result, err := svc.BackfillHistoryProjection(ctx, sliceservice.DurableProjectionConfig{
 		ShardCount: int32(*shards),
 		BatchSize:  *batchSize,
 	}, *maxBatches)

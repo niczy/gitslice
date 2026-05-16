@@ -37,15 +37,6 @@ const (
 	maxHomePathHeadListLimit     = 100000
 )
 
-// RootPromotionJob describes a slice commit whose changed files should be
-// published into the canonical tree for their path scope.
-type RootPromotionJob struct {
-	SliceID    string
-	CommitHash string
-	Files      []string
-	CommitTime time.Time
-}
-
 // ContentCommitScope identifies a backing content directory whose commits are
 // part of a mounted slice's reconstructable history.
 type ContentCommitScope struct {
