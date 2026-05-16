@@ -55,6 +55,7 @@ func (s *InMemoryStorage) AppendMergeEvent(ctx context.Context, event *models.Me
 	s.mergeEventsByShard[normalized.ShardID] = events
 	s.mergeEventsByChangeset[normalized.ChangesetID] = stored
 	s.mergeEventsByID[normalized.EventID] = stored
+	s.indexContentCommitDirsLocked(stored)
 	return nil
 }
 
@@ -112,7 +113,23 @@ func (s *InMemoryStorage) AppendMergeEventWithPathHeadCAS(ctx context.Context, e
 	s.mergeEventsByShard[normalized.ShardID] = events
 	s.mergeEventsByChangeset[normalized.ChangesetID] = stored
 	s.mergeEventsByID[normalized.EventID] = stored
+	s.indexContentCommitDirsLocked(stored)
 	return nil
+}
+
+func (s *InMemoryStorage) indexContentCommitDirsLocked(event *models.MergeEvent) {
+	for _, row := range contentCommitDirRowsFromMergeEvent(event) {
+		if row == nil {
+			continue
+		}
+		key := contentCommitDirKey(row.HomeID, row.DirPath, row.CommitHash)
+		rowCopy := *row
+		s.contentCommitDirs[key] = &rowCopy
+	}
+}
+
+func contentCommitDirKey(homeID, dirPath, commitHash string) string {
+	return strings.TrimSpace(homeID) + "\x00" + cleanRelativePath(dirPath) + "\x00" + strings.TrimSpace(commitHash)
 }
 
 func (s *InMemoryStorage) GetMergeEventByChangeset(ctx context.Context, changesetID string) (*models.MergeEvent, error) {

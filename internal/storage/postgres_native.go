@@ -839,6 +839,7 @@ func (s *PostgresNativeStorage) Reset(ctx context.Context) error {
 			global_state,
 			file_manifests,
 			commit_snapshots,
+			content_commit_dirs,
 			directory_entries,
 			slice_commits,
 			home_path_heads,

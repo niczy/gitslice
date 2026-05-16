@@ -46,6 +46,13 @@ type RootPromotionJob struct {
 	CommitTime time.Time
 }
 
+// ContentCommitScope identifies a backing content directory whose commits are
+// part of a mounted slice's reconstructable history.
+type ContentCommitScope struct {
+	HomeID  string
+	DirPath string
+}
+
 // MergeEventStore persists accepted merge facts and projection offsets.
 type MergeEventStore interface {
 	NextMergeEventSequence(ctx context.Context, shardID int32) (int64, error)
@@ -190,6 +197,7 @@ type Storage interface {
 	InitializeRootSlice(ctx context.Context) error
 	AddSliceCommit(ctx context.Context, sliceID string, commit *models.Commit) error
 	ListSliceCommits(ctx context.Context, sliceID string, limit int, fromCommitHash string) ([]*models.Commit, error)
+	ListSliceContentCommits(ctx context.Context, sliceID string, scopes []ContentCommitScope, limit int, fromCommitHash string) ([]*models.Commit, error)
 	GetCommitByHash(ctx context.Context, sliceID, commitHash string) (*models.Commit, error)
 
 	// File indexing
