@@ -65,6 +65,41 @@ func (c *contentReadGuardStorage) contentReadCalls() int {
 	return c.getFileAtCommitCall
 }
 
+type snapshotLookupCounterStorage struct {
+	*storage.InMemoryStorage
+	mu                sync.Mutex
+	getSnapshotCalls  int
+	listSnapshotCalls int
+	fileHashCalls     int
+}
+
+func (s *snapshotLookupCounterStorage) GetCommitSnapshot(ctx context.Context, commitHash string) (*models.CommitSnapshot, error) {
+	s.mu.Lock()
+	s.getSnapshotCalls++
+	s.mu.Unlock()
+	return s.InMemoryStorage.GetCommitSnapshot(ctx, commitHash)
+}
+
+func (s *snapshotLookupCounterStorage) ListFilesAtCommit(ctx context.Context, commitHash, pathPrefix string) ([]string, error) {
+	s.mu.Lock()
+	s.listSnapshotCalls++
+	s.mu.Unlock()
+	return s.InMemoryStorage.ListFilesAtCommit(ctx, commitHash, pathPrefix)
+}
+
+func (s *snapshotLookupCounterStorage) GetCommitSnapshotFileHash(ctx context.Context, commitHash, path string) (string, error) {
+	s.mu.Lock()
+	s.fileHashCalls++
+	s.mu.Unlock()
+	return s.InMemoryStorage.GetCommitSnapshotFileHash(ctx, commitHash, path)
+}
+
+func (s *snapshotLookupCounterStorage) counts() (getSnapshot, listSnapshot, fileHash int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.getSnapshotCalls, s.listSnapshotCalls, s.fileHashCalls
+}
+
 func authCtx() context.Context {
 	return metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 }
@@ -769,6 +804,61 @@ func TestCurrentHeadUsesCommitSnapshotForEntriesAndFiles(t *testing.T) {
 	}
 	if got := string(fileResp.GetFile().GetContent()); got != "print('hello')\n" {
 		t.Fatalf("unexpected file content %q", got)
+	}
+}
+
+func TestPinnedSnapshotGetFileUsesIndexedLookup(t *testing.T) {
+	ctx := authCtx()
+	st := &snapshotLookupCounterStorage{InMemoryStorage: storage.NewInMemoryStorage()}
+
+	slice := &models.Slice{ID: "indexed", Name: "indexed", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	const (
+		commitHash = "cmt_indexed_lookup"
+		filePath   = "tester/projects/fast.txt"
+	)
+	fileHash := mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, []byte("fast path\n"))
+	files := make(map[string]string, 2048)
+	for i := 0; i < 2048; i++ {
+		files[fmt.Sprintf("tester/projects/generated-%04d.txt", i)] = fmt.Sprintf("hash-%04d", i)
+	}
+	files[filePath] = fileHash
+
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: commitHash,
+		SliceID:    slice.ID,
+		Files:      files,
+		Timestamp:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("SaveCommitSnapshot failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	resp, err := svc.GetFile(ctx, &filev1.GetFileRequest{
+		Path: filePath,
+		Version: &filev1.GetFileRequest_SliceVersion{SliceVersion: &filev1.SliceVersion{
+			SliceId:   slice.ID,
+			SliceHash: commitHash,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("GetFile failed: %v", err)
+	}
+	if got := string(resp.GetFile().GetContent()); got != "fast path\n" {
+		t.Fatalf("unexpected file content %q", got)
+	}
+	getSnapshot, listSnapshot, fileHashLookups := st.counts()
+	if getSnapshot != 0 {
+		t.Fatalf("GetFile loaded full commit snapshots %d times", getSnapshot)
+	}
+	if listSnapshot != 0 {
+		t.Fatalf("GetFile listed commit snapshot paths %d times", listSnapshot)
+	}
+	if fileHashLookups == 0 {
+		t.Fatal("expected indexed commit snapshot file hash lookup")
 	}
 }
 
@@ -1755,6 +1845,56 @@ func BenchmarkGetCommitChangesDiffLoading(b *testing.B) {
 		}
 		if len(resp.Changes) != fileCount {
 			b.Fatalf("unexpected change count %d", len(resp.Changes))
+		}
+	}
+}
+
+func BenchmarkPinnedSnapshotGetFileIndexedLookup(b *testing.B) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	const (
+		commitHash = "cmt_indexed_bench"
+		filePath   = "tester/projects/fast.txt"
+		fileCount  = 10000
+	)
+	slice := &models.Slice{ID: "indexed-bench", Name: "indexed-bench", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		b.Fatalf("CreateSlice failed: %v", err)
+	}
+	fileHash := mustWriteSliceManifest(b, ctx, st, slice.ID, filePath, []byte("fast path\n"))
+	files := make(map[string]string, fileCount)
+	for i := 0; i < fileCount; i++ {
+		files[fmt.Sprintf("tester/projects/generated-%05d.txt", i)] = fmt.Sprintf("hash-%05d", i)
+	}
+	files[filePath] = fileHash
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: commitHash,
+		SliceID:    slice.ID,
+		Files:      files,
+		Timestamp:  time.Now().UTC(),
+	}); err != nil {
+		b.Fatalf("SaveCommitSnapshot failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	req := &filev1.GetFileRequest{
+		Path: filePath,
+		Version: &filev1.GetFileRequest_SliceVersion{SliceVersion: &filev1.SliceVersion{
+			SliceId:   slice.ID,
+			SliceHash: commitHash,
+		}},
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		resp, err := svc.GetFile(ctx, req)
+		if err != nil {
+			b.Fatalf("GetFile failed: %v", err)
+		}
+		if string(resp.GetFile().GetContent()) != "fast path\n" {
+			b.Fatal("unexpected content")
 		}
 	}
 }

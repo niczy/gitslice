@@ -2459,21 +2459,29 @@ func (s *InMemoryStorage) SaveCommitSnapshot(ctx context.Context, snapshot *mode
 	return nil
 }
 
-// GetFileAtCommit retrieves a file's content at a specific commit.
-func (s *InMemoryStorage) GetFileAtCommit(ctx context.Context, commitHash, path string) (*models.FileContent, error) {
+// GetCommitSnapshotFileHash returns the content hash for a file in a commit snapshot.
+func (s *InMemoryStorage) GetCommitSnapshotFileHash(ctx context.Context, commitHash, filePath string) (string, error) {
 	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	snapshot, exists := s.commitSnapshots[commitHash]
 	if !exists {
-		s.mu.RUnlock()
-		return nil, ErrCommitNotFound
+		return "", ErrCommitNotFound
 	}
 
-	contentHash, exists := snapshot.Files[path]
+	contentHash, exists := snapshot.Files[filePath]
 	if !exists {
-		s.mu.RUnlock()
-		return nil, ErrEntryNotFound
+		return "", ErrEntryNotFound
 	}
-	s.mu.RUnlock()
+	return contentHash, nil
+}
+
+// GetFileAtCommit retrieves a file's content at a specific commit.
+func (s *InMemoryStorage) GetFileAtCommit(ctx context.Context, commitHash, path string) (*models.FileContent, error) {
+	contentHash, err := s.GetCommitSnapshotFileHash(ctx, commitHash, path)
+	if err != nil {
+		return nil, err
+	}
 
 	content, err := ReadVersionedFileContent(ctx, s, contentHash)
 	if err != nil {
