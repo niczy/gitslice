@@ -56,6 +56,7 @@ type InMemoryStorage struct {
 	mergeEventsByID           map[string]*models.MergeEvent       // eventID -> event
 	projectionOffsets         map[string]*models.ProjectionOffset // projectionName:shardID -> offset
 	homePathHeads             map[string]*models.HomePathHead     // homeID:path -> head
+	contentCommitDirs         map[string]*contentCommitDirRow     // homeID:dirPath:commitHash -> projected commit
 
 	// CI
 	ciRuns             map[string]*CIRun         // runID -> run
@@ -155,6 +156,7 @@ func NewInMemoryStorage() *InMemoryStorage {
 		mergeEventsByID:                  make(map[string]*models.MergeEvent),
 		projectionOffsets:                make(map[string]*models.ProjectionOffset),
 		homePathHeads:                    make(map[string]*models.HomePathHead),
+		contentCommitDirs:                make(map[string]*contentCommitDirRow),
 		ciRuns:                           make(map[string]*CIRun),
 		ciRunManifests:                   make(map[string]*CIRunManifest),
 		ciRunManifestIDs:                 make(map[string][]string),
@@ -701,6 +703,88 @@ func (s *InMemoryStorage) ListSliceCommits(ctx context.Context, sliceID string, 
 	}
 
 	return copy, nil
+}
+
+func (s *InMemoryStorage) ListSliceContentCommits(ctx context.Context, sliceID string, scopes []ContentCommitScope, limit int, fromCommitHash string) ([]*models.Commit, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if _, exists := s.slices[sliceID]; !exists {
+		return nil, ErrSliceNotFound
+	}
+
+	limit = normalizeSliceCommitLimit(limit)
+	normalizedScopes := normalizeContentCommitScopes(scopes)
+	scopeSet := make(map[string]struct{}, len(normalizedScopes))
+	for _, scope := range normalizedScopes {
+		scopeSet[scope.HomeID+"\x00"+scope.DirPath] = struct{}{}
+	}
+
+	byHash := make(map[string]*models.Commit)
+	addCommit := func(commit *models.Commit) {
+		if commit == nil || strings.TrimSpace(commit.CommitHash) == "" {
+			return
+		}
+		commitCopy := *commit
+		commitCopy.CommitHash = strings.TrimSpace(commitCopy.CommitHash)
+		existing := byHash[commitCopy.CommitHash]
+		if existing == nil || existing.Timestamp.IsZero() || (!commitCopy.Timestamp.IsZero() && commitCopy.Timestamp.After(existing.Timestamp)) {
+			byHash[commitCopy.CommitHash] = &commitCopy
+		}
+	}
+
+	for _, commit := range s.sliceCommits[sliceID] {
+		addCommit(commit)
+	}
+	for _, row := range s.contentCommitDirs {
+		if row == nil {
+			continue
+		}
+		if _, ok := scopeSet[row.HomeID+"\x00"+row.DirPath]; !ok {
+			continue
+		}
+		addCommit(&models.Commit{
+			CommitHash: row.CommitHash,
+			ParentHash: row.ParentHash,
+			Timestamp:  row.CommittedAt,
+			Message:    row.Message,
+		})
+	}
+
+	commits := make([]*models.Commit, 0, len(byHash))
+	for _, commit := range byHash {
+		commitCopy := *commit
+		commits = append(commits, &commitCopy)
+	}
+	sort.SliceStable(commits, func(i, j int) bool {
+		if !commits[i].Timestamp.Equal(commits[j].Timestamp) {
+			return commits[i].Timestamp.After(commits[j].Timestamp)
+		}
+		return commits[i].CommitHash > commits[j].CommitHash
+	})
+
+	start := 0
+	if fromCommitHash = strings.TrimSpace(fromCommitHash); fromCommitHash != "" {
+		found := false
+		for i, commit := range commits {
+			if commit.CommitHash == fromCommitHash {
+				start = i + 1
+				found = true
+				break
+			}
+		}
+		if !found {
+			return []*models.Commit{}, nil
+		}
+	}
+	if start > len(commits) {
+		return []*models.Commit{}, nil
+	}
+	commits = commits[start:]
+	if len(commits) > limit {
+		commits = commits[:limit]
+	}
+	return commits, nil
 }
 
 func (s *InMemoryStorage) GetCommitByHash(ctx context.Context, sliceID, commitHash string) (*models.Commit, error) {

@@ -358,6 +358,45 @@ func (s *PostgresNativeStorage) AcceptChangesetMergeByID(ctx context.Context, ch
 			  AND c.update_count = r.path_count
 			RETURNING merge_seq
 		),
+		content_commit_dir_rows AS (
+			SELECT DISTINCT
+				r.home_id,
+				array_to_string((parts.path_parts)[1:g.idx], '/') AS dir_path,
+				r.commit_hash,
+				r.c_slice_id AS source_slice_id,
+				r.parent_hash,
+				r.c_message,
+				COALESCE(NULLIF(r.c_author, ''), r.username) AS author,
+				r.merged_at,
+				seq.merge_seq
+			FROM ready r
+			CROSS JOIN seq
+			CROSS JOIN counts c
+			JOIN updates u ON r.supported
+			CROSS JOIN LATERAL (SELECT string_to_array(u.path, '/') AS path_parts) AS parts
+			CROSS JOIN LATERAL generate_series(1, array_length(parts.path_parts, 1)) AS g(idx)
+			WHERE EXISTS (SELECT 1 FROM event_insert)
+			  AND c.applied_count = c.update_count
+			  AND c.update_count = r.path_count
+		),
+		content_commit_insert AS (
+			INSERT INTO content_commit_dirs (
+				home_id, dir_path, commit_hash, source_slice_id, parent_hash,
+				message, author, committed_at, merge_seq
+			)
+			SELECT home_id, dir_path, commit_hash, source_slice_id, parent_hash,
+			       c_message, author, merged_at, merge_seq
+			FROM content_commit_dir_rows
+			WHERE dir_path <> ''
+			ON CONFLICT (home_id, dir_path, commit_hash) DO UPDATE SET
+				source_slice_id = EXCLUDED.source_slice_id,
+				parent_hash = EXCLUDED.parent_hash,
+				message = EXCLUDED.message,
+				author = EXCLUDED.author,
+				committed_at = EXCLUDED.committed_at,
+				merge_seq = EXCLUDED.merge_seq
+			RETURNING 1
+		),
 		changeset_update AS (
 			UPDATE changesets c
 			SET modified_files = pp.touched_paths,
@@ -798,6 +837,43 @@ func acceptFastChangesetMergeStatement(ctx context.Context, q queryable, cs *mod
 			WHERE counts.applied_count = counts.update_count
 			RETURNING merge_seq
 		),
+		content_commit_dir_rows AS (
+			SELECT DISTINCT
+				$8 AS home_id,
+				array_to_string((parts.path_parts)[1:g.idx], '/') AS dir_path,
+				$12 AS commit_hash,
+				$11 AS source_slice_id,
+				$20 AS parent_hash,
+				$14 AS message,
+				$13 AS author,
+				$17 AS committed_at,
+				seq.merge_seq
+			FROM updates u
+			CROSS JOIN seq
+			CROSS JOIN counts
+			CROSS JOIN LATERAL (SELECT string_to_array(u.path, '/') AS path_parts) AS parts
+			CROSS JOIN LATERAL generate_series(1, array_length(parts.path_parts, 1)) AS g(idx)
+			WHERE EXISTS (SELECT 1 FROM event_insert)
+			  AND counts.applied_count = counts.update_count
+		),
+		content_commit_insert AS (
+			INSERT INTO content_commit_dirs (
+				home_id, dir_path, commit_hash, source_slice_id, parent_hash,
+				message, author, committed_at, merge_seq
+			)
+			SELECT home_id, dir_path, commit_hash, source_slice_id, parent_hash,
+			       message, author, committed_at, merge_seq
+			FROM content_commit_dir_rows
+			WHERE dir_path <> ''
+			ON CONFLICT (home_id, dir_path, commit_hash) DO UPDATE SET
+				source_slice_id = EXCLUDED.source_slice_id,
+				parent_hash = EXCLUDED.parent_hash,
+				message = EXCLUDED.message,
+				author = EXCLUDED.author,
+				committed_at = EXCLUDED.committed_at,
+				merge_seq = EXCLUDED.merge_seq
+			RETURNING 1
+		),
 		changeset_update AS (
 			UPDATE changesets
 			SET modified_files = $15::jsonb,
@@ -845,6 +921,7 @@ func acceptFastChangesetMergeStatement(ctx context.Context, q queryable, cs *mod
 		normalized.CreatedAt,
 		int(models.ChangesetStatusMerged),
 		len(normalized.TouchedPaths),
+		firstMergeEventParentHash(normalized),
 	).Scan(&mergeSeq, &appliedCount, &updateCount, &changesetRows, &metadataRows)
 	if err != nil {
 		if isUniqueViolation(err) {

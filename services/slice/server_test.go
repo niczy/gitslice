@@ -516,6 +516,211 @@ func TestGetSliceCommitsAllowsAnonymousPublicSlice(t *testing.T) {
 	}
 }
 
+func TestGetSliceCommitsIncludesOverlappingFolderCommits(t *testing.T) {
+	st := storage.NewInMemoryStorage()
+	ctx := adminAuthContextForUser(t, st, "tester")
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("InitializeRootSlice failed: %v", err)
+	}
+	home, err := homeslice.EnsureUserHomeSlice(ctx, st, "tester")
+	if err != nil {
+		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
+	}
+	root, err := st.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("GetRootSlice failed: %v", err)
+	}
+	now := time.Now().UTC()
+	sliceA := &models.Slice{
+		ID:          "slice-overlap-a",
+		Name:        "slice-overlap-a",
+		Owners:      []string{"tester"},
+		CreatedBy:   "tester",
+		ParentSlice: root.ID,
+		FolderMounts: []models.SliceFolderMount{
+			{SourcePath: "tester/X", Alias: "X"},
+			{SourcePath: "tester/Y", Alias: "Y"},
+		},
+	}
+	sliceB := &models.Slice{
+		ID:          "slice-overlap-b",
+		Name:        "slice-overlap-b",
+		Owners:      []string{"tester"},
+		CreatedBy:   "tester",
+		ParentSlice: root.ID,
+		FolderMounts: []models.SliceFolderMount{
+			{SourcePath: "tester/X", Alias: "X"},
+			{SourcePath: "tester/Z", Alias: "Z"},
+		},
+	}
+	if err := st.CreateSlice(ctx, sliceA); err != nil {
+		t.Fatalf("CreateSlice A failed: %v", err)
+	}
+	if err := st.CreateSlice(ctx, sliceB); err != nil {
+		t.Fatalf("CreateSlice B failed: %v", err)
+	}
+	if err := st.AddSliceCommit(ctx, sliceA.ID, &models.Commit{
+		CommitHash: "commit-a-initial",
+		Timestamp:  now.Add(-2 * time.Minute),
+		Message:    "create slice A from X and Y",
+	}); err != nil {
+		t.Fatalf("AddSliceCommit initial A failed: %v", err)
+	}
+	if err := st.AddSliceCommit(ctx, sliceB.ID, &models.Commit{
+		CommitHash: "commit-b-initial",
+		Timestamp:  now.Add(-2 * time.Minute),
+		Message:    "create slice B from X and Z",
+	}); err != nil {
+		t.Fatalf("AddSliceCommit initial B failed: %v", err)
+	}
+
+	sharedDisplayPath := "X/shared.txt"
+	sharedSourcePath := "tester/X/shared.txt"
+	newHash := mustWriteSliceManifest(t, ctx, st, home.ID, sharedSourcePath, []byte("slice A edit\n"))
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: "commit-a-x-change",
+		SliceID:    sliceA.ID,
+		Files:      map[string]string{sharedDisplayPath: newHash},
+		Timestamp:  now,
+	}); err != nil {
+		t.Fatalf("SaveCommitSnapshot A change failed: %v", err)
+	}
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: "commit-a-x-change",
+		SliceID:    home.ID,
+		Files:      map[string]string{sharedSourcePath: newHash},
+		Timestamp:  now,
+	}); err != nil {
+		t.Fatalf("SaveCommitSnapshot home change failed: %v", err)
+	}
+	if err := st.AddFileChange(ctx, &models.FileChangeRecord{
+		ID:         common.GenerateFileChangeID("commit-a-x-change", sharedDisplayPath),
+		SliceID:    sliceA.ID,
+		CommitHash: "commit-a-x-change",
+		Path:       sharedDisplayPath,
+		ChangeType: models.ChangeTypeModify,
+		NewHash:    newHash,
+		Author:     "tester",
+		Message:    "update shared folder X in slice A",
+		Timestamp:  now,
+	}); err != nil {
+		t.Fatalf("AddFileChange A shared path failed: %v", err)
+	}
+	if err := st.AddSliceCommit(ctx, sliceA.ID, &models.Commit{
+		CommitHash: "commit-a-x-change",
+		ParentHash: "commit-a-initial",
+		Timestamp:  now,
+		Message:    "update shared folder X in slice A",
+	}); err != nil {
+		t.Fatalf("AddSliceCommit A shared path failed: %v", err)
+	}
+	if err := st.AddSliceCommit(ctx, home.ID, &models.Commit{
+		CommitHash: "commit-a-x-change",
+		ParentHash: "commit-a-initial",
+		Timestamp:  now,
+		Message:    "update shared folder X in slice A",
+	}); err != nil {
+		t.Fatalf("AddSliceCommit home shared path failed: %v", err)
+	}
+	appendMergeEventForTest(t, ctx, st, "tester", "chg-a-x-change", sliceA.ID, "commit-a-x-change", "commit-a-initial", sharedSourcePath, now, "update shared folder X in slice A")
+
+	yCommitTime := now.Add(time.Minute)
+	yDisplayPath := "Y/only-a.txt"
+	ySourcePath := "tester/Y/only-a.txt"
+	yHash := mustWriteSliceManifest(t, ctx, st, home.ID, ySourcePath, []byte("slice A Y edit\n"))
+	if err := st.AddFileChange(ctx, &models.FileChangeRecord{
+		ID:         common.GenerateFileChangeID("commit-a-y-change", yDisplayPath),
+		SliceID:    sliceA.ID,
+		CommitHash: "commit-a-y-change",
+		Path:       yDisplayPath,
+		ChangeType: models.ChangeTypeModify,
+		NewHash:    yHash,
+		Author:     "tester",
+		Message:    "update folder Y in slice A",
+		Timestamp:  yCommitTime,
+	}); err != nil {
+		t.Fatalf("AddFileChange A Y path failed: %v", err)
+	}
+	if err := st.AddSliceCommit(ctx, sliceA.ID, &models.Commit{
+		CommitHash: "commit-a-y-change",
+		ParentHash: "commit-a-x-change",
+		Timestamp:  yCommitTime,
+		Message:    "update folder Y in slice A",
+	}); err != nil {
+		t.Fatalf("AddSliceCommit A Y path failed: %v", err)
+	}
+	if err := st.AddSliceCommit(ctx, home.ID, &models.Commit{
+		CommitHash: "commit-a-y-change",
+		ParentHash: "commit-a-x-change",
+		Timestamp:  yCommitTime,
+		Message:    "update folder Y in slice A",
+	}); err != nil {
+		t.Fatalf("AddSliceCommit home Y path failed: %v", err)
+	}
+	appendMergeEventForTest(t, ctx, st, "tester", "chg-a-y-change", sliceA.ID, "commit-a-y-change", "commit-a-x-change", ySourcePath, yCommitTime, "update folder Y in slice A")
+
+	svc := newSliceServiceServer(st)
+	aResp, err := svc.GetSliceCommits(ctx, &slicev1.CommitHistoryRequest{SliceId: sliceA.ID, Limit: 10})
+	if err != nil {
+		t.Fatalf("GetSliceCommits A failed: %v", err)
+	}
+	bResp, err := svc.GetSliceCommits(ctx, &slicev1.CommitHistoryRequest{SliceId: sliceB.ID, Limit: 10})
+	if err != nil {
+		t.Fatalf("GetSliceCommits B failed: %v", err)
+	}
+	if !commitHistoryContains(aResp.GetCommits(), "commit-a-x-change") {
+		t.Fatalf("slice A commit list should include its X change, got %#v", aResp.GetCommits())
+	}
+	if !commitHistoryContains(bResp.GetCommits(), "commit-a-x-change") {
+		t.Fatalf("slice B commit list should include slice A's X change because folder X is mounted, got %#v", bResp.GetCommits())
+	}
+	if commitHistoryContains(bResp.GetCommits(), "commit-a-y-change") {
+		t.Fatalf("slice B commit list should not include slice A's Y-only change, got %#v", bResp.GetCommits())
+	}
+}
+
+func commitHistoryContains(commits []*slicev1.CommitInfo, hash string) bool {
+	for _, commit := range commits {
+		if commit.GetCommitHash() == hash {
+			return true
+		}
+	}
+	return false
+}
+
+func appendMergeEventForTest(t *testing.T, ctx context.Context, st storage.MergeEventStore, homeID, changesetID, sourceSliceID, sourceCommitHash, parentCommitHash, filePath string, createdAt time.Time, message string) {
+	t.Helper()
+	shardID := mergeEventShardID(homeID)
+	seq, err := st.NextMergeEventSequence(ctx, shardID)
+	if err != nil {
+		t.Fatalf("NextMergeEventSequence failed: %v", err)
+	}
+	event := &models.MergeEvent{
+		HomeID:           homeID,
+		ShardID:          shardID,
+		MergeSeq:         seq,
+		EventID:          common.GenerateMergeEventID(),
+		ChangesetID:      changesetID,
+		SourceSliceID:    sourceSliceID,
+		SourceCommitHash: sourceCommitHash,
+		Author:           "tester",
+		Message:          message,
+		TouchedPaths:     []string{filePath},
+		PathUpdates: []*models.MergePathUpdate{{
+			Path:             filePath,
+			SourceSliceID:    sourceSliceID,
+			SourceCommitHash: sourceCommitHash,
+			ParentCommitHash: parentCommitHash,
+			NewVersion:       seq,
+			ManifestHash:     sourceCommitHash,
+		}},
+		CreatedAt: createdAt,
+	}
+	if err := st.AppendMergeEvent(ctx, event); err != nil {
+		t.Fatalf("AppendMergeEvent failed: %v", err)
+	}
+}
+
 func TestCheckoutSliceReturnsOnlyMissingBlocks(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()

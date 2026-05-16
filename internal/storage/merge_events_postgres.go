@@ -127,7 +127,7 @@ func appendMergeEvent(ctx context.Context, exec execable, event *models.MergeEve
 		}
 		return err
 	}
-	return nil
+	return insertContentCommitDirs(ctx, exec, normalized)
 }
 
 func appendMergeEventWithPathHeadCAS(ctx context.Context, exec execable, event *models.MergeEvent) error {

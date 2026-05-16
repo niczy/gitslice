@@ -4145,7 +4145,7 @@ func (s *sliceServiceServer) GetSliceCommits(ctx context.Context, req *slicev1.C
 		return nil, sliceReadAccessError(username)
 	}
 
-	commits, err := s.storage.ListSliceCommits(ctx, req.SliceId, int(req.Limit), req.FromCommitHash)
+	commits, err := s.listSliceCommitsForContent(ctx, slice, int(req.Limit), req.FromCommitHash)
 	if err != nil {
 		if err == storage.ErrSliceNotFound {
 			return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
@@ -4164,6 +4164,46 @@ func (s *sliceServiceServer) GetSliceCommits(ctx context.Context, req *slicev1.C
 	}
 
 	return response, nil
+}
+
+func (s *sliceServiceServer) listSliceCommitsForContent(ctx context.Context, slice *models.Slice, limit int, fromCommitHash string) ([]*models.Commit, error) {
+	if slice == nil {
+		return nil, storage.ErrSliceNotFound
+	}
+	if strings.TrimSpace(slice.ParentSlice) == "" || len(slice.FolderMounts) == 0 {
+		return s.storage.ListSliceCommits(ctx, slice.ID, limit, fromCommitHash)
+	}
+	return s.storage.ListSliceContentCommits(ctx, slice.ID, mountedCommitHistoryScopes(slice), limit, fromCommitHash)
+}
+
+func mountedCommitHistoryScopes(slice *models.Slice) []storage.ContentCommitScope {
+	seen := map[string]struct{}{}
+	scopes := make([]storage.ContentCommitScope, 0, len(slice.FolderMounts))
+	add := func(homeID, dirPath string) {
+		homeID = strings.TrimSpace(homeID)
+		dirPath = common.CleanRelativePath(dirPath)
+		if homeID == "" || dirPath == "" {
+			return
+		}
+		key := homeID + "\x00" + dirPath
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		scopes = append(scopes, storage.ContentCommitScope{HomeID: homeID, DirPath: dirPath})
+	}
+	for _, mount := range slice.FolderMounts {
+		sourcePath := common.CleanRelativePath(mount.SourcePath)
+		if sourcePath == "" {
+			continue
+		}
+		homeID, _, _ := strings.Cut(sourcePath, "/")
+		if homeID == "" {
+			homeID = sourcePath
+		}
+		add(homeID, sourcePath)
+	}
+	return scopes
 }
 
 func (s *sliceServiceServer) GetSliceState(ctx context.Context, req *slicev1.StateRequest) (*slicev1.StateResponse, error) {
