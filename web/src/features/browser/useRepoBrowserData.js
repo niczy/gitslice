@@ -125,6 +125,7 @@ export function useRepoBrowserData({
 
   const pendingFileRef = useRef(hasInitialSelectedFilePayload ? null : initialSelectedFilePath || null);
   const selectedFileRef = useRef(initialSelectedFilePath || null);
+  const skipNextSliceHashResetRef = useRef(false);
 
   const visibleEntryError = selectedFile ? '' : error;
   const selectedDirectoryPath = useMemo(() => {
@@ -218,6 +219,11 @@ export function useRepoBrowserData({
       hasMountedSliceRef.current = true;
       return;
     }
+    if (skipNextSliceHashResetRef.current) {
+      skipNextSliceHashResetRef.current = false;
+      treeEntriesScopeRef.current = treeEntriesScopeKey;
+      return;
+    }
     if (initialBrowserDataMatches && Array.isArray(initialBrowserData?.rootEntries)) {
       return;
     }
@@ -238,11 +244,17 @@ export function useRepoBrowserData({
     setFocusedEntry({ path: '', type: 'directory' });
   }, [initialBrowserData, initialBrowserDataMatches, resetAllDrafts, sliceHash, sliceId, treeEntriesScopeKey]);
 
+  const setResolvedSliceHash = useCallback((nextSliceHash) => {
+    skipNextSliceHashResetRef.current = true;
+    setSliceHash(nextSliceHash);
+  }, [setSliceHash]);
+
   const writeBrowserState = useRepoBrowserRouteWriter({
     buildRoutePath,
     sliceHash,
     sliceId,
   });
+  const canPinEntriesSliceHash = !((currentSlice?.folder_mounts || currentSlice?.folderMounts || []).length > 0);
 
   const { openFilePath } = useRepoBrowserFileLoader({
     buildEntriesUrl,
@@ -287,6 +299,7 @@ export function useRepoBrowserData({
   const { openDirectoryPath } = useRepoBrowserTreeLoader({
     buildEntriesUrl,
     buildFileUrl,
+    canPinEntriesSliceHash,
     canLoad,
     clearFilePreview,
     expandedPaths,
@@ -314,6 +327,7 @@ export function useRepoBrowserData({
     setPreviewFilePath,
     setSelectedFile,
     setSelectedFileSize,
+    setSliceHash: setResolvedSliceHash,
     setTreeEntries,
     sliceHash,
     sliceId,

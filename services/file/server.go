@@ -476,9 +476,10 @@ func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID str
 		return s.mountedBackingPaths(ctx, backingSliceID, slice.FolderMounts)
 	}
 
-	// Prefer commit snapshot paths when available. This avoids listing stale
-	// file IDs that may remain in legacy metadata after deletes.
-	if preferSnapshots && commitHash != "" {
+	// Prefer commit snapshot paths when available. This keeps current HEAD reads
+	// consistent with the materialized directory tree and avoids stale legacy file
+	// IDs after deletes.
+	if commitHash != "" {
 		snapshot, err := s.storage.GetCommitSnapshot(ctx, commitHash)
 		if err != nil {
 			log.Printf("WARN: snapshot lookup failed for commit %s: %v, falling back to file list", commitHash, err)
@@ -733,6 +734,7 @@ func (s *fileServiceServer) ListPublicEntries(ctx context.Context, req *filev1.L
 
 func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, resolvedCommit string, slice *models.Slice, requestPath string, limit int32, preferSnapshots bool) (*filev1.ListEntriesResponse, error) {
 	normalizedPath := cleanPath(requestPath)
+	responseSliceHash := s.resolvedListEntriesSliceHash(ctx, sliceID, resolvedCommit)
 
 	// Fast path for mounted slices: the root entries are the mount aliases, which we can
 	// list without scanning all underlying files. For nested paths we can translate the
@@ -776,12 +778,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 				truncated = true
 			}
 
-			return &filev1.ListEntriesResponse{
-				SliceId:   sliceID,
-				Path:      "",
-				Entries:   entries,
-				Truncated: truncated,
-			}, nil
+			return newListEntriesResponse(sliceID, "", responseSliceHash, entries, truncated), nil
 		}
 
 		// Enforce that requests stay under a mount alias or source path to avoid leaking parent paths.
@@ -838,12 +835,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 		}
 		if len(ancestorChildren) > 0 {
 			sort.Slice(ancestorChildren, func(i, j int) bool { return ancestorChildren[i].Name < ancestorChildren[j].Name })
-			return &filev1.ListEntriesResponse{
-				SliceId:   sliceID,
-				Path:      normalizedPath,
-				Entries:   ancestorChildren,
-				Truncated: false,
-			}, nil
+			return newListEntriesResponse(sliceID, normalizedPath, responseSliceHash, ancestorChildren, false), nil
 		}
 
 		storedParentPath := common.SliceStoredPath(slice, normalizedPath)
@@ -856,7 +848,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 			}
 			children, err := s.storage.ListEntries(ctx, sliceID, parentEntry.ID)
 			if err == nil && s.childrenIncludeLocalModifiedPath(ctx, sliceID, storedParentPath, children) {
-				return buildListResponse(sliceID, normalizedPath, children, slice, limit), nil
+				return buildListResponse(sliceID, normalizedPath, responseSliceHash, children, slice, limit), nil
 			}
 		}
 		if parentEntry, err := s.storage.GetEntryByPath(ctx, backingSliceID, storedParentPath); err == nil && parentEntry != nil {
@@ -865,7 +857,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 			}
 			children, err := s.storage.ListEntries(ctx, backingSliceID, parentEntry.ID)
 			if err == nil {
-				return buildListResponse(sliceID, normalizedPath, children, slice, limit), nil
+				return buildListResponse(sliceID, normalizedPath, responseSliceHash, children, slice, limit), nil
 			}
 		}
 		// Fall back to legacy path scanning if directory entries are not materialized.
@@ -884,7 +876,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 					}
 					children, err := s.storage.ListEntries(ctx, homeBackingID, parentEntry.ID)
 					if err == nil {
-						return buildListResponse(sliceID, normalizedPath, children, slice, limit), nil
+						return buildListResponse(sliceID, normalizedPath, responseSliceHash, children, slice, limit), nil
 					}
 				} else if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
 					return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list root home backing: %v", err))
@@ -900,7 +892,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 		if normalizedPath == "" {
 			children, err := s.storage.ListEntries(ctx, backingSliceID, backingSliceID)
 			if err == nil && len(children) > 0 {
-				return buildListResponse(sliceID, "", children, slice, limit), nil
+				return buildListResponse(sliceID, "", responseSliceHash, children, slice, limit), nil
 			}
 		} else {
 			storedParentPath := common.SliceStoredPath(slice, normalizedPath)
@@ -911,7 +903,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 					}
 					children, err := s.storage.ListEntries(ctx, backingSliceID, parentEntry.ID)
 					if err == nil {
-						return buildListResponse(sliceID, normalizedPath, children, slice, limit), nil
+						return buildListResponse(sliceID, normalizedPath, responseSliceHash, children, slice, limit), nil
 					}
 				}
 			}
@@ -1019,7 +1011,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 		}
 		if matchedAny {
 			// Path exists but contains no children (e.g. empty dir in model).
-			return &filev1.ListEntriesResponse{SliceId: sliceID, Path: normalizedPath, Entries: []*filev1.DirectoryEntry{}, Truncated: false}, nil
+			return newListEntriesResponse(sliceID, normalizedPath, responseSliceHash, []*filev1.DirectoryEntry{}, false), nil
 		}
 		return nil, status.Error(codes.NotFound, "path not found")
 	}
@@ -1038,12 +1030,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 		truncated = true
 	}
 
-	return &filev1.ListEntriesResponse{
-		SliceId:   sliceID,
-		Path:      normalizedPath,
-		Entries:   entries,
-		Truncated: truncated,
-	}, nil
+	return newListEntriesResponse(sliceID, normalizedPath, responseSliceHash, entries, truncated), nil
 }
 
 func (s *fileServiceServer) folderMountHasBacking(ctx context.Context, backingSliceID string, mount models.SliceFolderMount) bool {
@@ -1453,7 +1440,31 @@ func cleanPath(raw string) string {
 	return common.CleanRelativePath(raw)
 }
 
-func buildListResponse(sliceID, listPath string, children []*models.DirectoryEntry, slice *models.Slice, limit int32) *filev1.ListEntriesResponse {
+func (s *fileServiceServer) resolvedListEntriesSliceHash(ctx context.Context, sliceID, resolvedCommit string) string {
+	if commitHash := strings.TrimSpace(resolvedCommit); commitHash != "" {
+		return commitHash
+	}
+	if strings.TrimSpace(sliceID) == "" {
+		return ""
+	}
+	metadata, err := s.storage.GetSliceMetadata(ctx, sliceID)
+	if err != nil || metadata == nil {
+		return ""
+	}
+	return strings.TrimSpace(metadata.HeadCommitHash)
+}
+
+func newListEntriesResponse(sliceID, listPath, sliceHash string, entries []*filev1.DirectoryEntry, truncated bool) *filev1.ListEntriesResponse {
+	return &filev1.ListEntriesResponse{
+		SliceId:   sliceID,
+		Path:      listPath,
+		Entries:   entries,
+		Truncated: truncated,
+		SliceHash: strings.TrimSpace(sliceHash),
+	}
+}
+
+func buildListResponse(sliceID, listPath, sliceHash string, children []*models.DirectoryEntry, slice *models.Slice, limit int32) *filev1.ListEntriesResponse {
 	entries := make([]*filev1.DirectoryEntry, 0, len(children))
 	for _, child := range children {
 		if child == nil {
@@ -1490,12 +1501,7 @@ func buildListResponse(sliceID, listPath string, children []*models.DirectoryEnt
 		entries = entries[:limit]
 		truncated = true
 	}
-	return &filev1.ListEntriesResponse{
-		SliceId:   sliceID,
-		Path:      listPath,
-		Entries:   entries,
-		Truncated: truncated,
-	}
+	return newListEntriesResponse(sliceID, listPath, sliceHash, entries, truncated)
 }
 
 func contentSize(content *models.FileContent) int64 {

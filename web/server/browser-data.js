@@ -198,6 +198,13 @@ function isSliceScopedPage(page) {
   return page === 'browser' || page === 'slice-commits' || page === 'slice-changesets' || page === 'slice-agents';
 }
 
+function selectedSliceHasFolderMounts(data) {
+  const slice = (data.slices || []).find((candidate) => (
+    candidate?.slice_id === data.selectedSliceId || candidate?.slug === data.selectedSliceId
+  ));
+  return ((slice?.folder_mounts || slice?.folderMounts || []).length > 0);
+}
+
 function routeNeedsSlices(routeInfo, session) {
   return pageNeedsSlices(routeInfo?.page) || (routeInfo?.page === 'landing' && Boolean(session?.user?.username));
 }
@@ -243,6 +250,8 @@ async function loadBrowserData(request, session, routeInfo, data, setCookies, op
     return;
   }
 
+  const canPinEntriesSliceHash = !selectedSliceHasFolderMounts(data);
+
   try {
     const params = new URLSearchParams();
     const pathname = `/v1/slices/${encodeURIComponent(data.selectedSliceId)}/entries`;
@@ -258,6 +267,9 @@ async function loadBrowserData(request, session, routeInfo, data, setCookies, op
     );
     setCookies.push(...cookies);
     data.rootEntries = payload?.entries || [];
+    if (canPinEntriesSliceHash) {
+      data.sliceHash = payload?.sliceHash || payload?.slice_hash || data.sliceHash || '';
+    }
   } catch (error) {
     recordRouteError(data, setCookies, error);
     data.rootEntriesError = error?.message || 'Unable to load entries.';
@@ -272,8 +284,9 @@ async function loadBrowserData(request, session, routeInfo, data, setCookies, op
     const params = new URLSearchParams();
     const encodedFile = encodePath(data.selectedFile);
     const pathname = `/v1/slices/${encodeURIComponent(data.selectedSliceId)}/files/${encodedFile}`;
-    if (routeInfo.browserState?.sliceHash) {
-      params.set('slice_version.slice_hash', routeInfo.browserState.sliceHash);
+    const effectiveSliceHash = routeInfo.browserState?.sliceHash || (canPinEntriesSliceHash ? data.sliceHash : '') || '';
+    if (effectiveSliceHash) {
+      params.set('slice_version.slice_hash', effectiveSliceHash);
     }
     const { payload, setCookies: cookies } = await fetchJSON(
       request,

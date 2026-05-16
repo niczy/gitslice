@@ -707,6 +707,71 @@ func TestListEntriesIncludesMetadataModifiedFiles(t *testing.T) {
 	}
 }
 
+func TestCurrentHeadUsesCommitSnapshotForEntriesAndFiles(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	const (
+		sliceID    = "home_tester"
+		headCommit = "cmt_head"
+		oldPath    = "tester/hello_world.py"
+		newPath    = "tester/hello_world.zig"
+	)
+	slice := &models.Slice{ID: sliceID, Name: sliceID, Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	oldHash := mustWriteSliceManifest(t, ctx, st, sliceID, oldPath, []byte("print('hello')\n"))
+	newHash := mustWriteSliceManifest(t, ctx, st, sliceID, newPath, []byte("pub fn main() void {}\n"))
+
+	meta, err := st.GetSliceMetadata(ctx, sliceID)
+	if err != nil {
+		t.Fatalf("GetSliceMetadata failed: %v", err)
+	}
+	meta.HeadCommitHash = headCommit
+	meta.ModifiedFiles = []string{newPath}
+	meta.ModifiedFilesCount = 1
+	if err := st.UpdateSliceMetadata(ctx, sliceID, meta); err != nil {
+		t.Fatalf("UpdateSliceMetadata failed: %v", err)
+	}
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: headCommit,
+		SliceID:    sliceID,
+		Files: map[string]string{
+			oldPath: oldHash,
+			newPath: newHash,
+		},
+		Timestamp: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("SaveCommitSnapshot failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	listResp, err := svc.ListEntries(ctx, &filev1.ListEntriesRequest{
+		Version: &filev1.ListEntriesRequest_SliceVersion{SliceVersion: &filev1.SliceVersion{SliceId: sliceID}},
+	})
+	if err != nil {
+		t.Fatalf("ListEntries failed: %v", err)
+	}
+	if got := listResp.GetSliceHash(); got != headCommit {
+		t.Fatalf("expected list slice hash %q, got %q", headCommit, got)
+	}
+	if len(listResp.GetEntries()) != 1 || listResp.GetEntries()[0].GetPath() != "tester" {
+		t.Fatalf("expected root tester directory from commit snapshot, got %#v", listResp.GetEntries())
+	}
+
+	fileResp, err := svc.GetFile(ctx, &filev1.GetFileRequest{
+		Path:    oldPath,
+		Version: &filev1.GetFileRequest_SliceVersion{SliceVersion: &filev1.SliceVersion{SliceId: sliceID}},
+	})
+	if err != nil {
+		t.Fatalf("GetFile failed: %v", err)
+	}
+	if got := string(fileResp.GetFile().GetContent()); got != "print('hello')\n" {
+		t.Fatalf("unexpected file content %q", got)
+	}
+}
+
 func TestGetFileFindsMetadataModifiedPath(t *testing.T) {
 	ctx := authCtx()
 	st := storage.NewInMemoryStorage()
