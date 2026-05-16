@@ -706,6 +706,13 @@ func (s *InMemoryStorage) ListSliceCommits(ctx context.Context, sliceID string, 
 }
 
 func (s *InMemoryStorage) ListSliceContentCommits(ctx context.Context, sliceID string, scopes []ContentCommitScope, limit int, fromCommitHash string) ([]*models.Commit, error) {
+	return s.ListSliceContentCommitsWithOptions(ctx, sliceID, scopes, ListSliceContentCommitsOptions{
+		Limit:          limit,
+		FromCommitHash: fromCommitHash,
+	})
+}
+
+func (s *InMemoryStorage) ListSliceContentCommitsWithOptions(ctx context.Context, sliceID string, scopes []ContentCommitScope, opts ListSliceContentCommitsOptions) ([]*models.Commit, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -713,8 +720,9 @@ func (s *InMemoryStorage) ListSliceContentCommits(ctx context.Context, sliceID s
 		return nil, ErrSliceNotFound
 	}
 
-	limit = normalizeSliceCommitLimit(limit)
+	limit := normalizeSliceCommitLimit(opts.Limit)
 	normalizedScopes := normalizeContentCommitScopes(scopes)
+	maxSeqByHome := normalizeContentCommitMaxSeqByHome(opts.MaxMergeSeqByHome)
 	scopeSet := make(map[string]struct{}, len(normalizedScopes))
 	for _, scope := range normalizedScopes {
 		scopeSet[scope.HomeID+"\x00"+scope.DirPath] = struct{}{}
@@ -733,14 +741,19 @@ func (s *InMemoryStorage) ListSliceContentCommits(ctx context.Context, sliceID s
 		}
 	}
 
-	for _, commit := range s.sliceCommits[sliceID] {
-		addCommit(commit)
+	if len(maxSeqByHome) == 0 {
+		for _, commit := range s.sliceCommits[sliceID] {
+			addCommit(commit)
+		}
 	}
 	for _, row := range s.contentCommitDirs {
 		if row == nil {
 			continue
 		}
 		if _, ok := scopeSet[row.HomeID+"\x00"+row.DirPath]; !ok {
+			continue
+		}
+		if maxSeq, ok := maxSeqByHome[row.HomeID]; ok && row.MergeSeq > maxSeq {
 			continue
 		}
 		addCommit(&models.Commit{
@@ -764,7 +777,7 @@ func (s *InMemoryStorage) ListSliceContentCommits(ctx context.Context, sliceID s
 	})
 
 	start := 0
-	if fromCommitHash = strings.TrimSpace(fromCommitHash); fromCommitHash != "" {
+	if fromCommitHash := strings.TrimSpace(opts.FromCommitHash); fromCommitHash != "" {
 		found := false
 		for i, commit := range commits {
 			if commit.CommitHash == fromCommitHash {

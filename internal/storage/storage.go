@@ -122,6 +122,16 @@ type ChangesetSnapshotOptionLister interface {
 	ListChangesetSnapshotsWithOptions(ctx context.Context, changesetID string, opts ListChangesetSnapshotsOptions) ([]*models.ChangesetSnapshot, error)
 }
 
+type ListSliceContentCommitsOptions struct {
+	Limit             int
+	FromCommitHash    string
+	MaxMergeSeqByHome map[string]int64
+}
+
+type ContentCommitOptionLister interface {
+	ListSliceContentCommitsWithOptions(ctx context.Context, sliceID string, scopes []ContentCommitScope, opts ListSliceContentCommitsOptions) ([]*models.Commit, error)
+}
+
 // HomePathHeadStore persists home-scoped path heads for future merge conflict authority.
 type HomePathHeadStore interface {
 	UpsertHomePathHeads(ctx context.Context, heads []*models.HomePathHead) error

@@ -48,6 +48,26 @@ func normalizeContentCommitScopes(scopes []ContentCommitScope) []ContentCommitSc
 	return out
 }
 
+func normalizeContentCommitMaxSeqByHome(raw map[string]int64) map[string]int64 {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]int64, len(raw))
+	for homeID, seq := range raw {
+		homeID = strings.TrimSpace(homeID)
+		if homeID == "" || seq < 0 {
+			continue
+		}
+		if current, ok := out[homeID]; !ok || seq > current {
+			out[homeID] = seq
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func contentCommitDirRowsFromMergeEvent(event *models.MergeEvent) []*contentCommitDirRow {
 	if event == nil {
 		return nil
