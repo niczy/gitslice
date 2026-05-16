@@ -5438,6 +5438,269 @@ func TestCreateAndMergeChangesetRejectsStaleExpectedPathBase(t *testing.T) {
 	}
 }
 
+func TestCreateAndMergeChangesetFileRenameRecordsRenameIntent(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	homeSliceID := homeslice.IDForUsername("alice")
+	oldPath := "alice/api/old.go"
+	newPath := "alice/api/new.go"
+	oldContent := []byte("package api\n\nfunc Old() {}\n")
+	baseCommitHash := "cmt_loaded"
+
+	slice := &models.Slice{ID: homeSliceID, Name: "alice", Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	oldHash := mustWriteSliceManifest(t, ctx, st, homeSliceID, oldPath, oldContent)
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(homeSliceID, oldPath),
+		Path:     oldPath,
+		Type:     "file",
+		ParentID: homeSliceID,
+		Hash:     oldHash,
+		Size:     int64(len(oldContent)),
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+	if err := st.AddFileToSlice(ctx, oldPath, homeSliceID); err != nil {
+		t.Fatalf("AddFileToSlice failed: %v", err)
+	}
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:           "alice",
+		Path:             oldPath,
+		PathVersion:      3,
+		ContentHash:      oldHash,
+		ManifestHash:     oldHash,
+		SourceSliceID:    homeSliceID,
+		SourceCommitHash: baseCommitHash,
+	}}); err != nil {
+		t.Fatalf("UpsertHomePathHeads failed: %v", err)
+	}
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: baseCommitHash,
+		SliceID:    homeSliceID,
+		Files: map[string]string{
+			oldPath: oldHash,
+		},
+		Timestamp: time.Now().Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("SaveCommitSnapshot failed: %v", err)
+	}
+	metadata, err := st.GetSliceMetadata(ctx, homeSliceID)
+	if err != nil {
+		t.Fatalf("GetSliceMetadata failed: %v", err)
+	}
+	metadata.HeadCommitHash = baseCommitHash
+	if err := st.UpdateSliceMetadata(ctx, homeSliceID, metadata); err != nil {
+		t.Fatalf("UpdateSliceMetadata failed: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	mergeResp, err := srv.CreateAndMergeChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:        homeSliceID,
+		BaseCommitHash: baseCommitHash,
+		ModifiedFiles:  []string{oldPath, newPath},
+		Message:        "rename api file",
+		FileRenames: []*slicev1.FileRename{{
+			SourcePath:      oldPath,
+			DestinationPath: newPath,
+		}},
+		ExpectedPathBases: []*filev1.PathBase{
+			{
+				Path:             oldPath,
+				Exists:           true,
+				ContentHash:      oldHash,
+				PathVersion:      3,
+				SourceSliceId:    homeSliceID,
+				SourceCommitHash: baseCommitHash,
+			},
+			{
+				Path:             newPath,
+				Exists:           false,
+				PathVersion:      0,
+				SourceSliceId:    homeSliceID,
+				SourceCommitHash: baseCommitHash,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateAndMergeChangeset failed: %v", err)
+	}
+	if mergeResp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("merge status = %v, want success: %s", mergeResp.GetStatus(), mergeResp.GetMessage())
+	}
+	if _, err := st.GetEntryByPath(ctx, homeSliceID, oldPath); !errors.Is(err, storage.ErrEntryNotFound) {
+		t.Fatalf("old path entry error = %v, want ErrEntryNotFound", err)
+	}
+	renamedContent, err := storage.ReadSliceFileContent(ctx, st, homeSliceID, newPath)
+	if err != nil {
+		t.Fatalf("ReadSliceFileContent(new path) failed: %v", err)
+	}
+	if got := string(renamedContent.Content); got != string(oldContent) {
+		t.Fatalf("renamed content = %q, want %q", got, oldContent)
+	}
+
+	snapshot, err := st.GetChangesetSnapshot(ctx, mergeResp.GetChangesetId(), 0)
+	if err != nil {
+		t.Fatalf("GetChangesetSnapshot failed: %v", err)
+	}
+	if snapshot.RenameSources[newPath] != oldPath {
+		t.Fatalf("snapshot rename sources = %#v, want %s -> %s", snapshot.RenameSources, newPath, oldPath)
+	}
+	if got := snapshot.FileHashes[newPath]; got != oldHash {
+		t.Fatalf("snapshot new path hash = %q, want %q", got, oldHash)
+	}
+	if _, ok := snapshot.FileHashes[oldPath]; ok {
+		t.Fatalf("snapshot should not retain deleted source path hash: %#v", snapshot.FileHashes)
+	}
+
+	event, err := st.GetMergeEventByChangeset(ctx, mergeResp.GetChangesetId())
+	if err != nil {
+		t.Fatalf("GetMergeEventByChangeset failed: %v", err)
+	}
+	updates := mergeEventPathUpdatesByPath(event)
+	if update := updates[newPath]; update == nil || update.OldPath != oldPath || update.Deleted || update.ManifestHash != oldHash || update.BaseVersion != 0 || update.NewVersion != 1 {
+		t.Fatalf("new path update = %#v, want rename from %s", update, oldPath)
+	}
+	if update := updates[oldPath]; update == nil || !update.Deleted || update.BaseVersion != 3 || update.NewVersion != 4 {
+		t.Fatalf("old path update = %#v, want deleted source", update)
+	}
+
+	reviewResp, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: mergeResp.GetChangesetId()})
+	if err != nil {
+		t.Fatalf("ReviewChangeset failed: %v", err)
+	}
+	if len(reviewResp.GetChanges()) != 1 {
+		t.Fatalf("review changes = %d, want 1: %#v", len(reviewResp.GetChanges()), reviewResp.GetChanges())
+	}
+	reviewChange := reviewResp.GetChanges()[0]
+	if reviewChange.GetChangeType() != filev1.ChangeType_CHANGE_TYPE_RENAME || reviewChange.GetPath() != newPath || reviewChange.GetOldPath() != oldPath {
+		t.Fatalf("review change = %#v, want rename %s -> %s", reviewChange, oldPath, newPath)
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := srv.waitForQueuedHistoryProjections(waitCtx); err != nil {
+		t.Fatalf("waitForQueuedHistoryProjections failed: %v", err)
+	}
+	history, err := st.GetFileHistory(ctx, homeSliceID, newPath, 10, "")
+	if err != nil {
+		t.Fatalf("GetFileHistory(new path) failed: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("history entries = %d, want 1: %#v", len(history), history)
+	}
+	if history[0].ChangeType != models.ChangeTypeRename || history[0].OldPath != oldPath || history[0].Path != newPath || history[0].OldHash != oldHash || history[0].NewHash != oldHash {
+		t.Fatalf("history rename = %#v, want rename record", history[0])
+	}
+}
+
+func TestCreateAndMergeChangesetFileRenameRejectsStaleTargetBase(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	homeSliceID := homeslice.IDForUsername("alice")
+	oldPath := "alice/api/old.go"
+	newPath := "alice/api/new.go"
+	baseCommitHash := "cmt_loaded"
+	oldContent := []byte("package api\n\nfunc Old() {}\n")
+	targetContent := []byte("package api\n\nfunc New() {}\n")
+
+	slice := &models.Slice{ID: homeSliceID, Name: "alice", Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	oldHash := mustWriteSliceManifest(t, ctx, st, homeSliceID, oldPath, oldContent)
+	targetHash := mustWriteSliceManifest(t, ctx, st, homeSliceID, newPath, targetContent)
+	for filePath, hash := range map[string]string{oldPath: oldHash, newPath: targetHash} {
+		if err := st.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       common.GenerateEntryID(homeSliceID, filePath),
+			Path:     filePath,
+			Type:     "file",
+			ParentID: homeSliceID,
+			Hash:     hash,
+		}); err != nil {
+			t.Fatalf("AddEntry(%s) failed: %v", filePath, err)
+		}
+		if err := st.AddFileToSlice(ctx, filePath, homeSliceID); err != nil {
+			t.Fatalf("AddFileToSlice(%s) failed: %v", filePath, err)
+		}
+	}
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{
+		{
+			HomeID:           "alice",
+			Path:             oldPath,
+			PathVersion:      3,
+			ContentHash:      oldHash,
+			ManifestHash:     oldHash,
+			SourceSliceID:    homeSliceID,
+			SourceCommitHash: baseCommitHash,
+		},
+		{
+			HomeID:           "alice",
+			Path:             newPath,
+			PathVersion:      1,
+			ContentHash:      targetHash,
+			ManifestHash:     targetHash,
+			SourceSliceID:    homeSliceID,
+			SourceCommitHash: "cmt_target",
+		},
+	}); err != nil {
+		t.Fatalf("UpsertHomePathHeads failed: %v", err)
+	}
+
+	srv := NewService(st)
+	resp, err := srv.CreateAndMergeChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:        homeSliceID,
+		BaseCommitHash: baseCommitHash,
+		ModifiedFiles:  []string{oldPath, newPath},
+		Message:        "rename over stale target",
+		FileRenames: []*slicev1.FileRename{{
+			SourcePath:      oldPath,
+			DestinationPath: newPath,
+		}},
+		ExpectedPathBases: []*filev1.PathBase{
+			{
+				Path:             oldPath,
+				Exists:           true,
+				ContentHash:      oldHash,
+				PathVersion:      3,
+				SourceSliceId:    homeSliceID,
+				SourceCommitHash: baseCommitHash,
+			},
+			{
+				Path:             newPath,
+				Exists:           false,
+				PathVersion:      0,
+				SourceSliceId:    homeSliceID,
+				SourceCommitHash: baseCommitHash,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateAndMergeChangeset returned error instead of stale response: %v", err)
+	}
+	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_STALE_BASE {
+		t.Fatalf("merge status = %v, want stale base", resp.GetStatus())
+	}
+	if !strings.Contains(resp.GetMessage(), newPath) {
+		t.Fatalf("stale message = %q, want target path", resp.GetMessage())
+	}
+	oldEntry, err := st.GetEntryByPath(ctx, homeSliceID, oldPath)
+	if err != nil {
+		t.Fatalf("old path should remain after stale rename: %v", err)
+	}
+	if oldEntry.Hash != oldHash {
+		t.Fatalf("old path hash = %q, want %q", oldEntry.Hash, oldHash)
+	}
+	targetEntry, err := st.GetEntryByPath(ctx, homeSliceID, newPath)
+	if err != nil {
+		t.Fatalf("target path should remain after stale rename: %v", err)
+	}
+	if targetEntry.Hash != targetHash {
+		t.Fatalf("target path hash = %q, want %q", targetEntry.Hash, targetHash)
+	}
+}
+
 func TestCreateAndMergeMountedHomeSliceUpdatesFileServiceHeadRead(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
 	st := storage.NewInMemoryStorage()

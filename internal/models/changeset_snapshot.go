@@ -15,7 +15,10 @@ type ChangesetSnapshot struct {
 	ModifiedFileCount int
 	FileHashes        map[string]string
 	BasePathVersions  map[string]int64
-	Author            string
-	Message           string
-	CreatedAt         time.Time
+	// RenameSources maps destination path -> source path for explicit file
+	// rename intents captured in this snapshot.
+	RenameSources map[string]string
+	Author        string
+	Message       string
+	CreatedAt     time.Time
 }

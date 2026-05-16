@@ -1291,6 +1291,7 @@ func (s *InMemoryStorage) CreateChangesetSnapshot(ctx context.Context, snapshot 
 	copySnapshot.ModifiedFiles = append([]string(nil), snapshot.ModifiedFiles...)
 	copySnapshot.FileHashes = cloneStringMap(snapshot.FileHashes)
 	copySnapshot.BasePathVersions = cloneInt64Map(snapshot.BasePathVersions)
+	copySnapshot.RenameSources = cloneStringMap(snapshot.RenameSources)
 	s.changesetSnapshots[snapshot.ID] = &copySnapshot
 	s.changesetSnapshotVersions[snapshot.ChangesetID] = append(
 		[]string{snapshot.ID},
@@ -1318,6 +1319,7 @@ func (s *InMemoryStorage) GetChangesetSnapshot(ctx context.Context, changesetID 
 		copySnapshot.ModifiedFileCount = len(copySnapshot.ModifiedFiles)
 		copySnapshot.FileHashes = cloneStringMap(latest.FileHashes)
 		copySnapshot.BasePathVersions = cloneInt64Map(latest.BasePathVersions)
+		copySnapshot.RenameSources = cloneStringMap(latest.RenameSources)
 		return &copySnapshot, nil
 	}
 
@@ -1334,6 +1336,7 @@ func (s *InMemoryStorage) GetChangesetSnapshot(ctx context.Context, changesetID 
 		copySnapshot.ModifiedFileCount = len(copySnapshot.ModifiedFiles)
 		copySnapshot.FileHashes = cloneStringMap(snapshot.FileHashes)
 		copySnapshot.BasePathVersions = cloneInt64Map(snapshot.BasePathVersions)
+		copySnapshot.RenameSources = cloneStringMap(snapshot.RenameSources)
 		return &copySnapshot, nil
 	}
 
@@ -1364,6 +1367,7 @@ func (s *InMemoryStorage) GetChangesetSnapshotByHash(ctx context.Context, change
 		copySnapshot.ModifiedFileCount = len(copySnapshot.ModifiedFiles)
 		copySnapshot.FileHashes = cloneStringMap(snapshot.FileHashes)
 		copySnapshot.BasePathVersions = cloneInt64Map(snapshot.BasePathVersions)
+		copySnapshot.RenameSources = cloneStringMap(snapshot.RenameSources)
 		return &copySnapshot, nil
 	}
 
@@ -1403,10 +1407,12 @@ func (s *InMemoryStorage) ListChangesetSnapshotsWithOptions(ctx context.Context,
 			copySnapshot.ModifiedFiles = append([]string(nil), snapshot.ModifiedFiles...)
 			copySnapshot.FileHashes = cloneStringMap(snapshot.FileHashes)
 			copySnapshot.BasePathVersions = cloneInt64Map(snapshot.BasePathVersions)
+			copySnapshot.RenameSources = cloneStringMap(snapshot.RenameSources)
 		} else {
 			copySnapshot.ModifiedFiles = nil
 			copySnapshot.FileHashes = nil
 			copySnapshot.BasePathVersions = nil
+			copySnapshot.RenameSources = nil
 		}
 		result = append(result, &copySnapshot)
 	}
