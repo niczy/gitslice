@@ -1012,6 +1012,25 @@ func TestMountedHomeFileReadPrefersPathHeadManifest(t *testing.T) {
 	const storedPath = "alice/app/main.go"
 	mustWriteSliceManifest(t, ctx, st, homeSliceID, storedPath, []byte("old materialized\n"))
 	newHash := mustWriteSliceManifest(t, ctx, st, mounted.ID, storedPath, []byte("new path head\n"))
+	appDirID := common.GenerateEntryID(homeSliceID, "alice/app")
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       appDirID,
+		Path:     "alice/app",
+		Type:     "directory",
+		ParentID: homeSliceID,
+	}); err != nil {
+		t.Fatalf("AddEntry(app dir) failed: %v", err)
+	}
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(homeSliceID, storedPath),
+		Path:     storedPath,
+		Type:     "file",
+		ParentID: appDirID,
+		Size:     int64(len("old materialized\n")),
+		Hash:     "old-hash",
+	}); err != nil {
+		t.Fatalf("AddEntry(file) failed: %v", err)
+	}
 	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
 		HomeID:           "alice",
 		Path:             storedPath,
@@ -1021,6 +1040,7 @@ func TestMountedHomeFileReadPrefersPathHeadManifest(t *testing.T) {
 		ManifestHash:     newHash,
 		SourceSliceID:    mounted.ID,
 		SourceCommitHash: "cmt_new",
+		LastMergeSeq:     7,
 		UpdatedAt:        time.Now(),
 	}}); err != nil {
 		t.Fatalf("UpsertHomePathHeads failed: %v", err)
@@ -1041,6 +1061,47 @@ func TestMountedHomeFileReadPrefersPathHeadManifest(t *testing.T) {
 	}
 	if got := resp.GetFile().GetHash(); got != newHash {
 		t.Fatalf("GetFile hash = %q, want %q", got, newHash)
+	}
+	base := resp.GetFile().GetPathBase()
+	if base == nil {
+		t.Fatalf("GetFile path_base is nil")
+	}
+	if got := base.GetPath(); got != storedPath {
+		t.Fatalf("path_base.path = %q, want %q", got, storedPath)
+	}
+	if !base.GetExists() || base.GetContentHash() != newHash || base.GetPathVersion() != 2 || base.GetSourceCommitHash() != "cmt_new" {
+		t.Fatalf("unexpected file path base: %#v", base)
+	}
+	token := resp.GetStateToken()
+	if token == nil || token.GetSliceId() != mounted.ID || len(token.GetCursors()) != 1 {
+		t.Fatalf("unexpected file state token: %#v", token)
+	}
+	cursor := token.GetCursors()[0]
+	if cursor.GetHomeId() != "alice" || cursor.GetMergeSeq() != 7 || cursor.GetMergeShard() != fileStateTokenShardID("alice") {
+		t.Fatalf("unexpected state cursor: %#v", cursor)
+	}
+
+	listResp, err := svc.ListEntries(ctx, &filev1.ListEntriesRequest{
+		Path: "app",
+		Version: &filev1.ListEntriesRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: mounted.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ListEntries failed: %v", err)
+	}
+	if got := len(listResp.GetEntries()); got != 1 {
+		t.Fatalf("ListEntries returned %d entries, want 1: %#v", got, listResp.GetEntries())
+	}
+	entryBase := listResp.GetEntries()[0].GetPathBase()
+	if entryBase == nil {
+		t.Fatalf("ListEntries entry path_base is nil: %#v", listResp.GetEntries()[0])
+	}
+	if entryBase.GetContentHash() != newHash || entryBase.GetPathVersion() != 2 {
+		t.Fatalf("unexpected entry path base: %#v", entryBase)
+	}
+	if listResp.GetStateToken() == nil || len(listResp.GetStateToken().GetCursors()) != 1 || listResp.GetStateToken().GetCursors()[0].GetMergeSeq() != 7 {
+		t.Fatalf("unexpected list state token: %#v", listResp.GetStateToken())
 	}
 }
 

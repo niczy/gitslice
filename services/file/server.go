@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"path"
 	"sort"
@@ -778,7 +779,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 				truncated = true
 			}
 
-			return newListEntriesResponse(sliceID, "", responseSliceHash, entries, truncated), nil
+			return newListEntriesResponse(sliceID, "", responseSliceHash, entries, truncated, nil), nil
 		}
 
 		// Enforce that requests stay under a mount alias or source path to avoid leaking parent paths.
@@ -835,7 +836,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 		}
 		if len(ancestorChildren) > 0 {
 			sort.Slice(ancestorChildren, func(i, j int) bool { return ancestorChildren[i].Name < ancestorChildren[j].Name })
-			return newListEntriesResponse(sliceID, normalizedPath, responseSliceHash, ancestorChildren, false), nil
+			return newListEntriesResponse(sliceID, normalizedPath, responseSliceHash, ancestorChildren, false, nil), nil
 		}
 
 		storedParentPath := common.SliceStoredPath(slice, normalizedPath)
@@ -848,7 +849,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 			}
 			children, err := s.storage.ListEntries(ctx, sliceID, parentEntry.ID)
 			if err == nil && s.childrenIncludeLocalModifiedPath(ctx, sliceID, storedParentPath, children) {
-				return buildListResponse(sliceID, normalizedPath, responseSliceHash, children, slice, limit), nil
+				return s.buildListResponse(ctx, sliceID, normalizedPath, responseSliceHash, sliceID, children, slice, limit, preferSnapshots), nil
 			}
 		}
 		if parentEntry, err := s.storage.GetEntryByPath(ctx, backingSliceID, storedParentPath); err == nil && parentEntry != nil {
@@ -857,7 +858,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 			}
 			children, err := s.storage.ListEntries(ctx, backingSliceID, parentEntry.ID)
 			if err == nil {
-				return buildListResponse(sliceID, normalizedPath, responseSliceHash, children, slice, limit), nil
+				return s.buildListResponse(ctx, sliceID, normalizedPath, responseSliceHash, backingSliceID, children, slice, limit, preferSnapshots), nil
 			}
 		}
 		// Fall back to legacy path scanning if directory entries are not materialized.
@@ -876,7 +877,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 					}
 					children, err := s.storage.ListEntries(ctx, homeBackingID, parentEntry.ID)
 					if err == nil {
-						return buildListResponse(sliceID, normalizedPath, responseSliceHash, children, slice, limit), nil
+						return s.buildListResponse(ctx, sliceID, normalizedPath, responseSliceHash, homeBackingID, children, slice, limit, preferSnapshots), nil
 					}
 				} else if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
 					return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list root home backing: %v", err))
@@ -892,7 +893,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 		if normalizedPath == "" {
 			children, err := s.storage.ListEntries(ctx, backingSliceID, backingSliceID)
 			if err == nil && len(children) > 0 {
-				return buildListResponse(sliceID, "", responseSliceHash, children, slice, limit), nil
+				return s.buildListResponse(ctx, sliceID, "", responseSliceHash, backingSliceID, children, slice, limit, preferSnapshots), nil
 			}
 		} else {
 			storedParentPath := common.SliceStoredPath(slice, normalizedPath)
@@ -903,7 +904,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 					}
 					children, err := s.storage.ListEntries(ctx, backingSliceID, parentEntry.ID)
 					if err == nil {
-						return buildListResponse(sliceID, normalizedPath, responseSliceHash, children, slice, limit), nil
+						return s.buildListResponse(ctx, sliceID, normalizedPath, responseSliceHash, backingSliceID, children, slice, limit, preferSnapshots), nil
 					}
 				}
 			}
@@ -1011,7 +1012,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 		}
 		if matchedAny {
 			// Path exists but contains no children (e.g. empty dir in model).
-			return newListEntriesResponse(sliceID, normalizedPath, responseSliceHash, []*filev1.DirectoryEntry{}, false), nil
+			return newListEntriesResponse(sliceID, normalizedPath, responseSliceHash, []*filev1.DirectoryEntry{}, false, nil), nil
 		}
 		return nil, status.Error(codes.NotFound, "path not found")
 	}
@@ -1030,7 +1031,12 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 		truncated = true
 	}
 
-	return newListEntriesResponse(sliceID, normalizedPath, responseSliceHash, entries, truncated), nil
+	backingSliceID, backingErr := s.resolveBackingSliceID(ctx, sliceID, slice, preferSnapshots)
+	if backingErr != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve backing slice: %v", backingErr))
+	}
+	infos := s.decorateEntryPathBases(ctx, sliceID, responseSliceHash, slice, backingSliceID, entries, preferSnapshots)
+	return newListEntriesResponse(sliceID, normalizedPath, responseSliceHash, entries, truncated, infos), nil
 }
 
 func (s *fileServiceServer) folderMountHasBacking(ctx context.Context, backingSliceID string, mount models.SliceFolderMount) bool {
@@ -1337,12 +1343,20 @@ func (s *fileServiceServer) getFileFromCommitSnapshot(
 		size = contentSize(content)
 	}
 
-	return &filev1.GetFileResponse{File: &filev1.File{
+	info := pathBaseInfoFromSnapshot(responsePath, hash, primarySliceID, effectiveCommit)
+	file := &filev1.File{
 		Path:    responsePath,
 		Content: content.Content,
 		Size:    size,
 		Hash:    hash,
-	}}, true, nil
+	}
+	if info != nil {
+		file.PathBase = info.base
+	}
+	return &filev1.GetFileResponse{
+		File:       file,
+		StateToken: sliceStateToken(primarySliceID, effectiveCommit, []*pathBaseInfo{info}),
+	}, true, nil
 }
 
 func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequest) (*filev1.GetFileResponse, error) {
@@ -1388,6 +1402,7 @@ func (s *fileServiceServer) GetPublicFile(ctx context.Context, req *filev1.GetPu
 
 func (s *fileServiceServer) getFileResolved(ctx context.Context, sliceID, resolvedCommit string, slice *models.Slice, requestPath string, preferSnapshots bool) (*filev1.GetFileResponse, error) {
 	requestPath = cleanPath(requestPath)
+	responseSliceHash := s.resolvedListEntriesSliceHash(ctx, sliceID, resolvedCommit)
 
 	// Mounted slices can translate display paths to stored paths without scanning the
 	// full slice file set. Restrict requests to mount aliases to avoid leaking parent files.
@@ -1454,7 +1469,17 @@ func (s *fileServiceServer) getFileResolved(ctx context.Context, sliceID, resolv
 			Size:    size,
 			Hash:    hash,
 		}
-		return &filev1.GetFileResponse{File: file}, nil
+		info, err := s.pathBaseInfoForPath(ctx, slice, backingSliceID, responsePath, storedPath, hash, responseSliceHash, preferSnapshots)
+		if err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve file base: %v", err))
+		}
+		if info != nil {
+			file.PathBase = info.base
+		}
+		return &filev1.GetFileResponse{
+			File:       file,
+			StateToken: sliceStateToken(sliceID, responseSliceHash, []*pathBaseInfo{info}),
+		}, nil
 	}
 
 	if homeBackingID, ok, err := s.rootHomeBackingForPath(ctx, slice, requestPath, preferSnapshots); err != nil {
@@ -1478,12 +1503,23 @@ func (s *fileServiceServer) getFileResolved(ctx context.Context, sliceID, resolv
 			if size == 0 {
 				size = contentSize(content)
 			}
-			return &filev1.GetFileResponse{File: &filev1.File{
+			file := &filev1.File{
 				Path:    requestPath,
 				Content: content.Content,
 				Size:    size,
 				Hash:    hash,
-			}}, nil
+			}
+			info, baseErr := s.pathBaseInfoForPath(ctx, slice, homeBackingID, requestPath, requestPath, hash, responseSliceHash, preferSnapshots)
+			if baseErr != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve file base: %v", baseErr))
+			}
+			if info != nil {
+				file.PathBase = info.base
+			}
+			return &filev1.GetFileResponse{
+				File:       file,
+				StateToken: sliceStateToken(sliceID, responseSliceHash, []*pathBaseInfo{info}),
+			}, nil
 		}
 		if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load file content: %v", err))
@@ -1563,8 +1599,18 @@ func (s *fileServiceServer) getFileResolved(ctx context.Context, sliceID, resolv
 		Size:    size,
 		Hash:    hash,
 	}
+	info, err := s.pathBaseInfoForPath(ctx, slice, backingSliceID, responsePath, storedPath, hash, responseSliceHash, preferSnapshots)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve file base: %v", err))
+	}
+	if info != nil {
+		file.PathBase = info.base
+	}
 
-	return &filev1.GetFileResponse{File: file}, nil
+	return &filev1.GetFileResponse{
+		File:       file,
+		StateToken: sliceStateToken(sliceID, responseSliceHash, []*pathBaseInfo{info}),
+	}, nil
 }
 
 func cleanPath(raw string) string {
@@ -1585,17 +1631,249 @@ func (s *fileServiceServer) resolvedListEntriesSliceHash(ctx context.Context, sl
 	return strings.TrimSpace(metadata.HeadCommitHash)
 }
 
-func newListEntriesResponse(sliceID, listPath, sliceHash string, entries []*filev1.DirectoryEntry, truncated bool) *filev1.ListEntriesResponse {
-	return &filev1.ListEntriesResponse{
-		SliceId:   sliceID,
-		Path:      listPath,
-		Entries:   entries,
-		Truncated: truncated,
+const fileStateTokenShardCount = 1024
+
+type pathBaseInfo struct {
+	base     *filev1.PathBase
+	homeID   string
+	mergeSeq int64
+}
+
+func fileStateTokenShardID(homeID string) int32 {
+	homeID = strings.TrimSpace(homeID)
+	if homeID == "" {
+		homeID = "global"
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(homeID))
+	return int32(h.Sum32() % fileStateTokenShardCount)
+}
+
+func sliceStateToken(sliceID, sliceHash string, infos []*pathBaseInfo) *filev1.SliceStateToken {
+	token := &filev1.SliceStateToken{
+		SliceId:   strings.TrimSpace(sliceID),
 		SliceHash: strings.TrimSpace(sliceHash),
+	}
+	maxSeqByHome := make(map[string]int64)
+	for _, info := range infos {
+		if info == nil {
+			continue
+		}
+		homeID := strings.TrimSpace(info.homeID)
+		if homeID == "" || info.mergeSeq <= 0 {
+			continue
+		}
+		if current, ok := maxSeqByHome[homeID]; !ok || info.mergeSeq > current {
+			maxSeqByHome[homeID] = info.mergeSeq
+		}
+	}
+	if len(maxSeqByHome) > 0 {
+		homeIDs := make([]string, 0, len(maxSeqByHome))
+		for homeID := range maxSeqByHome {
+			homeIDs = append(homeIDs, homeID)
+		}
+		sort.Strings(homeIDs)
+		token.Cursors = make([]*filev1.StateCursor, 0, len(homeIDs))
+		for _, homeID := range homeIDs {
+			token.Cursors = append(token.Cursors, &filev1.StateCursor{
+				HomeId:     homeID,
+				MergeShard: fileStateTokenShardID(homeID),
+				MergeSeq:   maxSeqByHome[homeID],
+			})
+		}
+	}
+	return token
+}
+
+func firstPathSegment(filePath string) string {
+	filePath = cleanPath(filePath)
+	if filePath == "" {
+		return ""
+	}
+	segment, _, _ := strings.Cut(filePath, "/")
+	return strings.TrimSpace(segment)
+}
+
+func (s *fileServiceServer) homeIDForPathBase(slice *models.Slice, backingSliceID, storedPath string) string {
+	if homeID := homeslice.UsernameFromSliceID(backingSliceID); homeID != "" {
+		return homeID
+	}
+	if slice != nil && slice.IsRoot {
+		return firstPathSegment(storedPath)
+	}
+	return ""
+}
+
+func pathBaseInfoFromHead(displayPath string, head *models.HomePathHead) *pathBaseInfo {
+	if head == nil {
+		return nil
+	}
+	contentHash := strings.TrimSpace(head.ManifestHash)
+	if contentHash == "" {
+		contentHash = strings.TrimSpace(head.ContentHash)
+	}
+	return &pathBaseInfo{
+		base: &filev1.PathBase{
+			Path:             cleanPath(displayPath),
+			Exists:           !head.Deleted,
+			ContentHash:      contentHash,
+			PathVersion:      head.PathVersion,
+			SourceSliceId:    strings.TrimSpace(head.SourceSliceID),
+			SourceCommitHash: strings.TrimSpace(head.SourceCommitHash),
+		},
+		homeID:   strings.TrimSpace(head.HomeID),
+		mergeSeq: head.LastMergeSeq,
 	}
 }
 
-func buildListResponse(sliceID, listPath, sliceHash string, children []*models.DirectoryEntry, slice *models.Slice, limit int32) *filev1.ListEntriesResponse {
+func pathBaseInfoFromSnapshot(displayPath, hash, sourceSliceID, sourceCommitHash string) *pathBaseInfo {
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return nil
+	}
+	return &pathBaseInfo{
+		base: &filev1.PathBase{
+			Path:             cleanPath(displayPath),
+			Exists:           true,
+			ContentHash:      hash,
+			SourceSliceId:    strings.TrimSpace(sourceSliceID),
+			SourceCommitHash: strings.TrimSpace(sourceCommitHash),
+		},
+	}
+}
+
+func (s *fileServiceServer) pathBaseInfoForPath(
+	ctx context.Context,
+	slice *models.Slice,
+	backingSliceID, displayPath, storedPath, hash, resolvedCommit string,
+	preferSnapshots bool,
+) (*pathBaseInfo, error) {
+	if preferSnapshots {
+		return pathBaseInfoFromSnapshot(displayPath, hash, backingSliceID, resolvedCommit), nil
+	}
+	homeID := s.homeIDForPathBase(slice, backingSliceID, storedPath)
+	if homeID == "" {
+		return pathBaseInfoFromSnapshot(displayPath, hash, backingSliceID, resolvedCommit), nil
+	}
+	headStore, ok := s.storage.(storage.HomePathHeadStore)
+	if !ok {
+		return pathBaseInfoFromSnapshot(displayPath, hash, backingSliceID, resolvedCommit), nil
+	}
+	storedPath = cleanPath(storedPath)
+	if storedPath == "" {
+		return nil, nil
+	}
+	heads, err := headStore.GetHomePathHeads(ctx, homeID, []string{storedPath})
+	if err != nil {
+		return nil, err
+	}
+	if info := pathBaseInfoFromHead(displayPath, heads[storedPath]); info != nil {
+		return info, nil
+	}
+	return pathBaseInfoFromSnapshot(displayPath, hash, backingSliceID, resolvedCommit), nil
+}
+
+func (s *fileServiceServer) decorateEntryPathBases(
+	ctx context.Context,
+	sliceID, sliceHash string,
+	slice *models.Slice,
+	backingSliceID string,
+	entries []*filev1.DirectoryEntry,
+	preferSnapshots bool,
+) []*pathBaseInfo {
+	if len(entries) == 0 {
+		return nil
+	}
+	type entryPathBaseTarget struct {
+		entry       *filev1.DirectoryEntry
+		displayPath string
+		storedPath  string
+		homeID      string
+	}
+	infos := make([]*pathBaseInfo, 0, len(entries))
+	groupedByHome := make(map[string][]entryPathBaseTarget)
+	for _, entry := range entries {
+		if entry == nil || entry.GetType() != filev1.EntryType_ENTRY_TYPE_FILE {
+			continue
+		}
+		displayPath := cleanPath(entry.GetPath())
+		storedPath := common.SliceStoredPath(slice, displayPath)
+		if storedPath == "" {
+			storedPath = displayPath
+		}
+		if preferSnapshots {
+			if info := pathBaseInfoFromSnapshot(displayPath, entry.GetHash(), backingSliceID, sliceHash); info != nil {
+				entry.PathBase = info.base
+				infos = append(infos, info)
+			}
+			continue
+		}
+		homeID := s.homeIDForPathBase(slice, backingSliceID, storedPath)
+		if homeID == "" {
+			if info := pathBaseInfoFromSnapshot(displayPath, entry.GetHash(), backingSliceID, sliceHash); info != nil {
+				entry.PathBase = info.base
+				infos = append(infos, info)
+			}
+			continue
+		}
+		groupedByHome[homeID] = append(groupedByHome[homeID], entryPathBaseTarget{
+			entry:       entry,
+			displayPath: displayPath,
+			storedPath:  storedPath,
+			homeID:      homeID,
+		})
+	}
+
+	headStore, ok := s.storage.(storage.HomePathHeadStore)
+	if !ok {
+		for _, targets := range groupedByHome {
+			for _, target := range targets {
+				if info := pathBaseInfoFromSnapshot(target.displayPath, target.entry.GetHash(), backingSliceID, sliceHash); info != nil {
+					target.entry.PathBase = info.base
+					infos = append(infos, info)
+				}
+			}
+		}
+		return infos
+	}
+
+	for homeID, targets := range groupedByHome {
+		paths := make([]string, 0, len(targets))
+		for _, target := range targets {
+			paths = append(paths, target.storedPath)
+		}
+		heads, err := headStore.GetHomePathHeads(ctx, homeID, paths)
+		if err != nil {
+			log.Printf("file: failed to resolve path bases for home %s in %s: %v", homeID, backingSliceID, err)
+			continue
+		}
+		for _, target := range targets {
+			info := pathBaseInfoFromHead(target.displayPath, heads[target.storedPath])
+			if info == nil {
+				info = pathBaseInfoFromSnapshot(target.displayPath, target.entry.GetHash(), backingSliceID, sliceHash)
+			}
+			if info == nil || info.base == nil {
+				continue
+			}
+			target.entry.PathBase = info.base
+			infos = append(infos, info)
+		}
+	}
+	return infos
+}
+
+func newListEntriesResponse(sliceID, listPath, sliceHash string, entries []*filev1.DirectoryEntry, truncated bool, infos []*pathBaseInfo) *filev1.ListEntriesResponse {
+	return &filev1.ListEntriesResponse{
+		SliceId:    sliceID,
+		Path:       listPath,
+		Entries:    entries,
+		Truncated:  truncated,
+		SliceHash:  strings.TrimSpace(sliceHash),
+		StateToken: sliceStateToken(sliceID, sliceHash, infos),
+	}
+}
+
+func (s *fileServiceServer) buildListResponse(ctx context.Context, sliceID, listPath, sliceHash, backingSliceID string, children []*models.DirectoryEntry, slice *models.Slice, limit int32, preferSnapshots bool) *filev1.ListEntriesResponse {
 	entries := make([]*filev1.DirectoryEntry, 0, len(children))
 	for _, child := range children {
 		if child == nil {
@@ -1632,7 +1910,8 @@ func buildListResponse(sliceID, listPath, sliceHash string, children []*models.D
 		entries = entries[:limit]
 		truncated = true
 	}
-	return newListEntriesResponse(sliceID, listPath, sliceHash, entries, truncated)
+	infos := s.decorateEntryPathBases(ctx, sliceID, sliceHash, slice, backingSliceID, entries, preferSnapshots)
+	return newListEntriesResponse(sliceID, listPath, sliceHash, entries, truncated, infos)
 }
 
 func contentSize(content *models.FileContent) int64 {
