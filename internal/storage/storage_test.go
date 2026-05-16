@@ -313,7 +313,7 @@ func runListSliceContentCommitsContract(ctx context.Context, t *testing.T, st St
 	}); err != nil {
 		t.Fatalf("AddSliceCommit(view) failed: %v", err)
 	}
-	appendContentHistoryEvent(t, ctx, store, "alice", sourceSlice.ID, "commit-shared-old", "alice/app/old.txt", baseTime.Add(time.Minute))
+	oldSeq := appendContentHistoryEvent(t, ctx, store, "alice", sourceSlice.ID, "commit-shared-old", "alice/app/old.txt", baseTime.Add(time.Minute))
 	appendContentHistoryEvent(t, ctx, store, "alice", sourceSlice.ID, "commit-unmounted", "alice/other/file.txt", baseTime.Add(2*time.Minute))
 	appendContentHistoryEvent(t, ctx, store, "alice", sourceSlice.ID, "commit-shared-new", "alice/app/new.txt", baseTime.Add(3*time.Minute))
 
@@ -333,9 +333,22 @@ func runListSliceContentCommitsContract(ctx context.Context, t *testing.T, st St
 		t.Fatalf("ListSliceContentCommits page2 failed: %v", err)
 	}
 	assertCommitHashes(t, page2, []string{"commit-shared-old"})
+
+	optionLister, ok := st.(ContentCommitOptionLister)
+	if !ok {
+		t.Fatalf("storage implementation does not implement ContentCommitOptionLister")
+	}
+	commitsAtOldSeq, err := optionLister.ListSliceContentCommitsWithOptions(ctx, viewSlice.ID, []ContentCommitScope{{HomeID: "alice", DirPath: "alice/app"}}, ListSliceContentCommitsOptions{
+		Limit:             10,
+		MaxMergeSeqByHome: map[string]int64{"alice": oldSeq},
+	})
+	if err != nil {
+		t.Fatalf("ListSliceContentCommitsWithOptions failed: %v", err)
+	}
+	assertCommitHashes(t, commitsAtOldSeq, []string{"commit-shared-old"})
 }
 
-func appendContentHistoryEvent(t *testing.T, ctx context.Context, store MergeEventStore, homeID, sourceSliceID, commitHash, filePath string, createdAt time.Time) {
+func appendContentHistoryEvent(t *testing.T, ctx context.Context, store MergeEventStore, homeID, sourceSliceID, commitHash, filePath string, createdAt time.Time) int64 {
 	t.Helper()
 	shardID := int32(11)
 	if homeID == "alice" {
@@ -371,6 +384,7 @@ func appendContentHistoryEvent(t *testing.T, ctx context.Context, store MergeEve
 	if err := store.AppendMergeEvent(ctx, event); err != nil {
 		t.Fatalf("AppendMergeEvent(%s) failed: %v", commitHash, err)
 	}
+	return seq
 }
 
 func assertCommitHashes(t *testing.T, commits []*models.Commit, want []string) {

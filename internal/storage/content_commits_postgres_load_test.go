@@ -220,7 +220,7 @@ func explainContentCommitLoadQuery(ctx context.Context, st *PostgresNativeStorag
 		return nil, fmt.Errorf("no scopes to explain")
 	}
 	scope := normalizedScopes[0]
-	cursor, ok, err := st.findContentCommitListCursor(ctx, sliceID, normalizedScopes, fromCommitHash)
+	cursor, ok, err := st.findContentCommitListCursor(ctx, sliceID, normalizedScopes, fromCommitHash, nil)
 	if err != nil {
 		return nil, err
 	}

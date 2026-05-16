@@ -60,12 +60,19 @@ func insertContentCommitDirs(ctx context.Context, exec execable, event *models.M
 }
 
 func (s *PostgresNativeStorage) ListSliceContentCommits(ctx context.Context, sliceID string, scopes []ContentCommitScope, limit int, fromCommitHash string) ([]*models.Commit, error) {
+	return s.ListSliceContentCommitsWithOptions(ctx, sliceID, scopes, ListSliceContentCommitsOptions{
+		Limit:          limit,
+		FromCommitHash: fromCommitHash,
+	})
+}
+
+func (s *PostgresNativeStorage) ListSliceContentCommitsWithOptions(ctx context.Context, sliceID string, scopes []ContentCommitScope, opts ListSliceContentCommitsOptions) ([]*models.Commit, error) {
 	ctx = ensureCtx(ctx)
 	sliceID = strings.TrimSpace(sliceID)
 	if sliceID == "" {
 		return nil, ErrInvalidInput
 	}
-	limit = normalizeSliceCommitLimit(limit)
+	limit := normalizeSliceCommitLimit(opts.Limit)
 
 	var exists bool
 	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM slices WHERE id = $1)`, sliceID).Scan(&exists)
@@ -77,10 +84,11 @@ func (s *PostgresNativeStorage) ListSliceContentCommits(ctx context.Context, sli
 	}
 
 	normalizedScopes := normalizeContentCommitScopes(scopes)
-	fromCommitHash = strings.TrimSpace(fromCommitHash)
+	maxSeqByHome := normalizeContentCommitMaxSeqByHome(opts.MaxMergeSeqByHome)
+	fromCommitHash := strings.TrimSpace(opts.FromCommitHash)
 	var initialCursor *contentCommitListCursor
 	if fromCommitHash != "" {
-		cursor, ok, err := s.findContentCommitListCursor(ctx, sliceID, normalizedScopes, fromCommitHash)
+		cursor, ok, err := s.findContentCommitListCursor(ctx, sliceID, normalizedScopes, fromCommitHash, maxSeqByHome)
 		if err != nil {
 			return nil, err
 		}
@@ -95,13 +103,16 @@ func (s *PostgresNativeStorage) ListSliceContentCommits(ctx context.Context, sli
 		pageSize = defaultSliceCommitListLimit
 	}
 	streams := make([]*postgresContentCommitStream, 0, len(normalizedScopes)+1)
-	streams = append(streams, newPostgresContentCommitStream(initialCursor, pageSize, func(ctx context.Context, after *contentCommitListCursor, pageLimit int) ([]*models.Commit, error) {
-		return s.listSliceCommitPageByTime(ctx, sliceID, after, pageLimit)
-	}))
+	if len(maxSeqByHome) == 0 {
+		streams = append(streams, newPostgresContentCommitStream(initialCursor, pageSize, func(ctx context.Context, after *contentCommitListCursor, pageLimit int) ([]*models.Commit, error) {
+			return s.listSliceCommitPageByTime(ctx, sliceID, after, pageLimit)
+		}))
+	}
 	for _, scope := range normalizedScopes {
 		scope := scope
+		maxSeq, hasMaxSeq := maxSeqByHome[scope.HomeID]
 		streams = append(streams, newPostgresContentCommitStream(initialCursor, pageSize, func(ctx context.Context, after *contentCommitListCursor, pageLimit int) ([]*models.Commit, error) {
-			return s.listContentCommitDirPage(ctx, scope.HomeID, scope.DirPath, after, pageLimit)
+			return s.listContentCommitDirPage(ctx, scope.HomeID, scope.DirPath, maxSeq, hasMaxSeq, after, pageLimit)
 		}))
 	}
 
@@ -191,34 +202,40 @@ func (s *postgresContentCommitStream) pop() *models.Commit {
 	return next
 }
 
-func (s *PostgresNativeStorage) findContentCommitListCursor(ctx context.Context, sliceID string, scopes []ContentCommitScope, commitHash string) (*contentCommitListCursor, bool, error) {
+func (s *PostgresNativeStorage) findContentCommitListCursor(ctx context.Context, sliceID string, scopes []ContentCommitScope, commitHash string, maxSeqByHome map[string]int64) (*contentCommitListCursor, bool, error) {
 	homeIDs := make([]string, 0, len(scopes))
 	dirPaths := make([]string, 0, len(scopes))
+	maxSeqs := make([]int64, 0, len(scopes))
+	hasMaxSeqs := make([]bool, 0, len(scopes))
 	for _, scope := range scopes {
 		homeIDs = append(homeIDs, scope.HomeID)
 		dirPaths = append(dirPaths, scope.DirPath)
+		maxSeq, hasMaxSeq := maxSeqByHome[scope.HomeID]
+		maxSeqs = append(maxSeqs, maxSeq)
+		hasMaxSeqs = append(hasMaxSeqs, hasMaxSeq)
 	}
 	var cursor contentCommitListCursor
 	err := s.pool.QueryRow(ctx, `
 		WITH scope_rows AS (
-			SELECT home_id, dir_path
-			FROM unnest($2::text[], $3::text[]) AS s(home_id, dir_path)
+			SELECT home_id, dir_path, max_seq, has_max_seq
+			FROM unnest($2::text[], $3::text[], $4::bigint[], $5::boolean[]) AS s(home_id, dir_path, max_seq, has_max_seq)
 		),
 		combined AS (
 			SELECT committed_at, commit_hash
 			FROM slice_commits
-			WHERE slice_id = $1 AND commit_hash = $4
+			WHERE slice_id = $1 AND commit_hash = $6 AND NOT $7
 			UNION ALL
 			SELECT c.committed_at, c.commit_hash
 			FROM content_commit_dirs c
 			JOIN scope_rows s ON s.home_id = c.home_id AND s.dir_path = c.dir_path
-			WHERE c.commit_hash = $4
+			WHERE c.commit_hash = $6
+			  AND (NOT s.has_max_seq OR c.merge_seq <= s.max_seq)
 		)
 		SELECT committed_at, commit_hash
 		FROM combined
 		ORDER BY committed_at DESC, commit_hash DESC
 		LIMIT 1
-	`, sliceID, homeIDs, dirPaths, commitHash).Scan(&cursor.CommittedAt, &cursor.CommitHash)
+	`, sliceID, homeIDs, dirPaths, maxSeqs, hasMaxSeqs, commitHash, len(maxSeqByHome) > 0).Scan(&cursor.CommittedAt, &cursor.CommitHash)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, false, nil
@@ -256,7 +273,7 @@ func (s *PostgresNativeStorage) listSliceCommitPageByTime(ctx context.Context, s
 	return collectContentCommitRows(rows, limit)
 }
 
-func (s *PostgresNativeStorage) listContentCommitDirPage(ctx context.Context, homeID string, dirPath string, after *contentCommitListCursor, limit int) ([]*models.Commit, error) {
+func (s *PostgresNativeStorage) listContentCommitDirPage(ctx context.Context, homeID string, dirPath string, maxMergeSeq int64, hasMaxMergeSeq bool, after *contentCommitListCursor, limit int) ([]*models.Commit, error) {
 	var rows pgx.Rows
 	var err error
 	if after == nil {
@@ -264,18 +281,20 @@ func (s *PostgresNativeStorage) listContentCommitDirPage(ctx context.Context, ho
 			SELECT commit_hash, parent_hash, message, committed_at
 			FROM content_commit_dirs
 			WHERE home_id = $1 AND dir_path = $2
+			  AND (NOT $3 OR merge_seq <= $4)
 			ORDER BY committed_at DESC, commit_hash DESC
-			LIMIT $3
-		`, homeID, dirPath, limit)
+			LIMIT $5
+		`, homeID, dirPath, hasMaxMergeSeq, maxMergeSeq, limit)
 	} else {
 		rows, err = s.pool.Query(ctx, `
 			SELECT commit_hash, parent_hash, message, committed_at
 			FROM content_commit_dirs
 			WHERE home_id = $1 AND dir_path = $2
-			  AND (committed_at, commit_hash) < ($3, $4)
+			  AND (NOT $3 OR merge_seq <= $4)
+			  AND (committed_at, commit_hash) < ($5, $6)
 			ORDER BY committed_at DESC, commit_hash DESC
-			LIMIT $5
-		`, homeID, dirPath, after.CommittedAt, after.CommitHash, limit)
+			LIMIT $7
+		`, homeID, dirPath, hasMaxMergeSeq, maxMergeSeq, after.CommittedAt, after.CommitHash, limit)
 	}
 	if err != nil {
 		return nil, err

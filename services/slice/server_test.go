@@ -515,6 +515,86 @@ func TestGetSliceCommitsAllowsAnonymousPublicSlice(t *testing.T) {
 	}
 }
 
+func TestGetSliceCommitsRespectsStateToken(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	homeSliceID := homeslice.IDForUsername("alice")
+	slice := &models.Slice{ID: homeSliceID, Name: "alice", Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	svc := newSliceServiceServer(st)
+	first, err := svc.CreateAndMergeChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:       homeSliceID,
+		ModifiedFiles: []string{"alice/app/first.go"},
+		Message:       "first edit",
+		FileContents: []*slicev1.FileContentChange{{
+			Path:    "alice/app/first.go",
+			Content: []byte("package app\n"),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("first CreateAndMergeChangeset failed: %v", err)
+	}
+	if first.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("first merge status = %v, want success", first.GetStatus())
+	}
+	second, err := svc.CreateAndMergeChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:       homeSliceID,
+		ModifiedFiles: []string{"alice/app/second.go"},
+		Message:       "second edit",
+		FileContents: []*slicev1.FileContentChange{{
+			Path:    "alice/app/second.go",
+			Content: []byte("package app\n"),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("second CreateAndMergeChangeset failed: %v", err)
+	}
+	if second.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("second merge status = %v, want success", second.GetStatus())
+	}
+
+	token := &filev1.SliceStateToken{
+		SliceId: homeSliceID,
+		Cursors: []*filev1.StateCursor{{
+			HomeId:     "alice",
+			MergeShard: first.GetMergeShard(),
+			MergeSeq:   first.GetMergeSeq(),
+		}},
+	}
+	tokenResp, err := svc.GetSliceCommits(ctx, &slicev1.CommitHistoryRequest{
+		SliceId:    homeSliceID,
+		Limit:      10,
+		StateToken: token,
+	})
+	if err != nil {
+		t.Fatalf("GetSliceCommits with token failed: %v", err)
+	}
+	assertCommitInfoHashes(t, tokenResp.GetCommits(), []string{first.GetNewCommitHash()})
+	if tokenResp.GetStateToken().GetCursors()[0].GetMergeSeq() != first.GetMergeSeq() {
+		t.Fatalf("response did not echo requested state token: %#v", tokenResp.GetStateToken())
+	}
+
+	currentTokenResp, err := svc.GetSliceCommits(ctx, &slicev1.CommitHistoryRequest{
+		SliceId: homeSliceID,
+		Limit:   10,
+		StateToken: &filev1.SliceStateToken{
+			SliceId: homeSliceID,
+			Cursors: []*filev1.StateCursor{{
+				HomeId:     "alice",
+				MergeShard: second.GetMergeShard(),
+				MergeSeq:   second.GetMergeSeq(),
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetSliceCommits with current token failed: %v", err)
+	}
+	assertCommitInfoHashes(t, currentTokenResp.GetCommits(), []string{second.GetNewCommitHash(), first.GetNewCommitHash()})
+}
+
 func TestGetSliceCommitsIncludesOverlappingFolderCommits(t *testing.T) {
 	st := storage.NewInMemoryStorage()
 	ctx := adminAuthContextForUser(t, st, "tester")
@@ -685,6 +765,17 @@ func commitHistoryContains(commits []*slicev1.CommitInfo, hash string) bool {
 		}
 	}
 	return false
+}
+
+func assertCommitInfoHashes(t *testing.T, commits []*slicev1.CommitInfo, want []string) {
+	t.Helper()
+	got := make([]string, 0, len(commits))
+	for _, commit := range commits {
+		got = append(got, commit.GetCommitHash())
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("commit hashes = %#v, want %#v", got, want)
+	}
 }
 
 func appendMergeEventForTest(t *testing.T, ctx context.Context, st storage.MergeEventStore, homeID, changesetID, sourceSliceID, sourceCommitHash, parentCommitHash, filePath string, createdAt time.Time, message string) {

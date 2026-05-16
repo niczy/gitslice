@@ -4342,7 +4342,8 @@ func (s *sliceServiceServer) GetSliceCommits(ctx context.Context, req *slicev1.C
 		return nil, sliceReadAccessError(username)
 	}
 
-	commits, err := s.listSliceCommitsForContent(ctx, slice, int(req.Limit), req.FromCommitHash)
+	stateToken := req.GetStateToken()
+	commits, err := s.listSliceCommitsForContent(ctx, slice, int(req.Limit), req.FromCommitHash, stateToken)
 	if err != nil {
 		if err == storage.ErrSliceNotFound {
 			return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
@@ -4350,7 +4351,7 @@ func (s *sliceServiceServer) GetSliceCommits(ctx context.Context, req *slicev1.C
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list commits: %v", err))
 	}
 
-	response := &slicev1.CommitHistoryResponse{}
+	response := &slicev1.CommitHistoryResponse{StateToken: stateToken}
 	for _, commit := range commits {
 		response.Commits = append(response.Commits, &slicev1.CommitInfo{
 			CommitHash: commit.CommitHash,
@@ -4363,14 +4364,69 @@ func (s *sliceServiceServer) GetSliceCommits(ctx context.Context, req *slicev1.C
 	return response, nil
 }
 
-func (s *sliceServiceServer) listSliceCommitsForContent(ctx context.Context, slice *models.Slice, limit int, fromCommitHash string) ([]*models.Commit, error) {
+func (s *sliceServiceServer) listSliceCommitsForContent(ctx context.Context, slice *models.Slice, limit int, fromCommitHash string, stateToken *filev1.SliceStateToken) ([]*models.Commit, error) {
 	if slice == nil {
 		return nil, storage.ErrSliceNotFound
+	}
+	maxSeqByHome := commitHistoryMaxMergeSeqByHome(stateToken)
+	if len(maxSeqByHome) > 0 {
+		scopes := stateTokenCommitHistoryScopes(slice)
+		if len(scopes) == 0 {
+			return []*models.Commit{}, nil
+		}
+		if lister, ok := s.storage.(storage.ContentCommitOptionLister); ok {
+			return lister.ListSliceContentCommitsWithOptions(ctx, slice.ID, scopes, storage.ListSliceContentCommitsOptions{
+				Limit:             limit,
+				FromCommitHash:    fromCommitHash,
+				MaxMergeSeqByHome: maxSeqByHome,
+			})
+		}
+		return s.storage.ListSliceContentCommits(ctx, slice.ID, scopes, limit, fromCommitHash)
 	}
 	if strings.TrimSpace(slice.ParentSlice) == "" || len(slice.FolderMounts) == 0 {
 		return s.storage.ListSliceCommits(ctx, slice.ID, limit, fromCommitHash)
 	}
 	return s.storage.ListSliceContentCommits(ctx, slice.ID, mountedCommitHistoryScopes(slice), limit, fromCommitHash)
+}
+
+func commitHistoryMaxMergeSeqByHome(token *filev1.SliceStateToken) map[string]int64 {
+	if token == nil || len(token.GetCursors()) == 0 {
+		return nil
+	}
+	maxSeqByHome := make(map[string]int64, len(token.GetCursors()))
+	for _, cursor := range token.GetCursors() {
+		if cursor == nil {
+			continue
+		}
+		homeID := strings.TrimSpace(cursor.GetHomeId())
+		mergeSeq := cursor.GetMergeSeq()
+		if homeID == "" || mergeSeq < 0 {
+			continue
+		}
+		if current, ok := maxSeqByHome[homeID]; !ok || mergeSeq > current {
+			maxSeqByHome[homeID] = mergeSeq
+		}
+	}
+	if len(maxSeqByHome) == 0 {
+		return nil
+	}
+	return maxSeqByHome
+}
+
+func stateTokenCommitHistoryScopes(slice *models.Slice) []storage.ContentCommitScope {
+	if slice == nil {
+		return nil
+	}
+	if username := homeslice.UsernameFromSliceID(slice.ID); username != "" {
+		return []storage.ContentCommitScope{{
+			HomeID:  username,
+			DirPath: homeslice.RelativeRootPath(username),
+		}}
+	}
+	if strings.TrimSpace(slice.ParentSlice) != "" && len(slice.FolderMounts) > 0 {
+		return mountedCommitHistoryScopes(slice)
+	}
+	return nil
 }
 
 func mountedCommitHistoryScopes(slice *models.Slice) []storage.ContentCommitScope {
