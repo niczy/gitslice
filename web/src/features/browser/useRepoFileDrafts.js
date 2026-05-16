@@ -36,11 +36,19 @@ export function useRepoFileDrafts({
     setIsEditingFile(false);
   }, [fileContent]);
 
-  const confirmFileEdit = useCallback(() => {
+  const confirmFileEdit = useCallback((options = {}) => {
     if (!selectedFile) {
       return;
     }
-    setFileDrafts((prev) => ({ ...prev, [selectedFile]: draftContent }));
+    if (options.persistDraft === false) {
+      setFileDrafts((prev) => {
+        const next = { ...prev };
+        delete next[selectedFile];
+        return next;
+      });
+    } else {
+      setFileDrafts((prev) => ({ ...prev, [selectedFile]: draftContent }));
+    }
     setFileContent(draftContent);
     setEncodedFileContent('');
     setPreviewFilePath(selectedFile);

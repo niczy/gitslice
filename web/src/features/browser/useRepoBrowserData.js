@@ -1,13 +1,28 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
+import {
+  createAndMergeChangeset as commitFileTreeChangeset,
+  fetchWithAuth,
+} from '../../utils/api.js';
 import { decodeBase64 } from '../../utils/highlight.js';
 import { normalizeEntryType } from '../../utils/normalize.js';
-import { normalizeWorkspaceResultPath } from './browserApi.js';
+import { buildBrowserPath } from '../../utils/routing.js';
+import {
+  buildBrowserEntriesUrl,
+  normalizeWorkspaceResultPath,
+  readBrowserErrorMessage,
+} from './browserApi.js';
 import {
   getFilePayloadSize,
   getParentDirectoryPath,
   getTreeFileSize,
 } from './browserModel.js';
+import {
+  assertTreeMutationPathsAllowed,
+  encodeTreeTextContent,
+  isSuccessfulMergeResponse,
+  mergeResponseErrorMessage,
+} from './browserTreeOperations.js';
 import { useRepoBrowserFileState } from './useRepoBrowserFileState.js';
 import { useRepoBrowserFileLoader } from './useRepoBrowserFileLoader.js';
 import {
@@ -74,12 +89,13 @@ export function useRepoBrowserData({
   const {
     cancelFileEdit,
     clearFilePreview,
-    confirmFileEdit,
+    confirmFileEdit: applyFileEditLocally,
     displayedFileSize,
     draftContent,
     fileDrafts,
     fileError,
     fileHistory,
+    fileContent,
     hasPreviewContent,
     highlightedContent,
     historyError,
@@ -126,6 +142,7 @@ export function useRepoBrowserData({
   const pendingFileRef = useRef(hasInitialSelectedFilePayload ? null : initialSelectedFilePath || null);
   const selectedFileRef = useRef(initialSelectedFilePath || null);
   const skipNextSliceHashResetRef = useRef(false);
+  const [isCommittingFileEdit, setIsCommittingFileEdit] = useState(false);
 
   const visibleEntryError = selectedFile ? '' : error;
   const selectedDirectoryPath = useMemo(() => {
@@ -360,6 +377,124 @@ export function useRepoBrowserData({
     writeBrowserState,
   });
 
+  const fetchHeadEntriesForPath = useCallback(async (path) => {
+    const normalizedPath = normalizeWorkspaceResultPath(path);
+    const response = await fetchWithAuth(buildBrowserEntriesUrl({
+      apiBaseUrl,
+      sliceId,
+      path: normalizedPath,
+      sliceHash: '',
+    }));
+    if (!response.ok) {
+      throw new Error(await readBrowserErrorMessage(response, 'Unable to refresh folder entries'));
+    }
+    const payload = await response.json();
+    return payload?.entries || [];
+  }, [apiBaseUrl, sliceId]);
+
+  const confirmFileEdit = useCallback(async () => {
+    if (isCommittingFileEdit || !selectedFile || !sliceId) {
+      return;
+    }
+
+    const filePath = normalizeWorkspaceResultPath(selectedFile);
+    if (!filePath) {
+      return;
+    }
+
+    if (draftContent === fileContent) {
+      applyFileEditLocally({ persistDraft: false });
+      return;
+    }
+
+    setIsCommittingFileEdit(true);
+    setError('');
+    setFileError('');
+    setIsLoading(true);
+    setLoadingFilePath(filePath);
+
+    try {
+      assertTreeMutationPathsAllowed({
+        sliceId,
+        currentSlice,
+        paths: [filePath],
+      });
+
+      const mergeResponse = await commitFileTreeChangeset({
+        sliceId,
+        baseCommitHash: sliceHash,
+        modifiedFiles: [filePath],
+        message: `Edit ${filePath}`,
+        fileContents: [{
+          path: filePath,
+          content: encodeTreeTextContent(draftContent),
+        }],
+      });
+      if (!isSuccessfulMergeResponse(mergeResponse)) {
+        throw new Error(mergeResponseErrorMessage(mergeResponse));
+      }
+
+      applyFileEditLocally({ persistDraft: false });
+      resetHistory();
+
+      const parentPath = getParentDirectoryPath(filePath);
+      try {
+        const parentEntries = await fetchHeadEntriesForPath(parentPath);
+        setTreeEntries((prev) => ({
+          ...prev,
+          [parentPath]: parentEntries,
+        }));
+      } catch {
+        // The edit already committed; keep the optimistic file preview if refreshing the tree is delayed.
+      }
+
+      if (sliceHash) {
+        skipNextSliceHashResetRef.current = true;
+        treeEntriesScopeRef.current = `${sliceId}\0`;
+        setSliceHash('');
+      }
+      if (typeof window !== 'undefined') {
+        const nextPath = buildBrowserPath({
+          slice: sliceId,
+          file: filePath,
+        });
+        window.history.replaceState({
+          gitsliceBrowserState: true,
+          browserState: {
+            slice: sliceId,
+            file: filePath,
+            dir: '',
+            sliceHash: '',
+          },
+        }, '', nextPath);
+      }
+    } catch (err) {
+      setFileError(err?.message || 'Unable to commit file edit.');
+    } finally {
+      setIsLoading(false);
+      setLoadingFilePath((currentPath) => (currentPath === filePath ? '' : currentPath));
+      setIsCommittingFileEdit(false);
+    }
+  }, [
+    applyFileEditLocally,
+    currentSlice,
+    draftContent,
+    fetchHeadEntriesForPath,
+    fileContent,
+    isCommittingFileEdit,
+    resetHistory,
+    selectedFile,
+    setError,
+    setFileError,
+    setIsLoading,
+    setLoadingFilePath,
+    setSliceHash,
+    setTreeEntries,
+    sliceHash,
+    sliceId,
+    treeEntriesScopeRef,
+  ]);
+
   useRepoBrowserRouteReader({
     isActive,
     openDirectoryPath,
@@ -426,6 +561,7 @@ export function useRepoBrowserData({
     highlightedContent,
     historyError,
     historyLoading,
+    isCommittingFileEdit,
     isEditingFile,
     isLoading,
     isSelectedFileLoading,
