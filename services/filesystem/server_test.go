@@ -500,6 +500,84 @@ func TestSearchWithRequiredStateTokenReturnsNotReady(t *testing.T) {
 	}
 }
 
+func TestSearchIndexingRecordsProjectionOffset(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	impl, ok := svc.(*filesystemServiceServer)
+	if !ok {
+		t.Fatalf("unexpected service type %T", svc)
+	}
+	homeID := homeslice.IDForUsername("tester")
+	writeResp, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: homeID,
+		Path:        "/tester/docs/projection.md",
+		Content:     []byte("projection offset needle\n"),
+	})
+	if err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	waitForSearchIndexForTest(t, svc)
+
+	const shardID int32 = 17
+	const mergeSeq int64 = 42
+	if err := st.AppendMergeEvent(context.Background(), &models.MergeEvent{
+		HomeID:           homeID,
+		ShardID:          shardID,
+		MergeSeq:         mergeSeq,
+		EventID:          "mev_search_projection",
+		ChangesetID:      "chg_search_projection",
+		SourceSliceID:    homeID,
+		SourceCommitHash: writeResp.GetCommitHash(),
+		Author:           "tester",
+		Message:          "search projection offset",
+		TouchedPaths:     []string{"tester/docs/projection.md"},
+		CreatedAt:        time.Now(),
+	}); err != nil {
+		t.Fatalf("AppendMergeEvent failed: %v", err)
+	}
+
+	if err := impl.indexWorkspaceSearchCommit(ctx, homeID, writeResp.GetCommitHash()); err != nil {
+		t.Fatalf("indexWorkspaceSearchCommit failed: %v", err)
+	}
+	offset, err := st.GetProjectionOffset(context.Background(), searchProjectionName, shardID)
+	if err != nil {
+		t.Fatalf("GetProjectionOffset failed: %v", err)
+	}
+	if offset.MergeSeq != mergeSeq {
+		t.Fatalf("search projection offset seq = %d, want %d", offset.MergeSeq, mergeSeq)
+	}
+
+	searchResp, err := svc.Search(ctx, &filesystemv1.SearchRequest{
+		WorkspaceId: homeID,
+		Query:       "needle",
+		RequiredStateToken: &filev1.SliceStateToken{
+			SliceId: homeID,
+			Cursors: []*filev1.StateCursor{{
+				HomeId:     homeID,
+				MergeShard: shardID,
+				MergeSeq:   mergeSeq,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Search with projection token failed: %v", err)
+	}
+	if searchResp.GetStatus() != filesystemv1.SearchStatus_SEARCH_STATUS_READY {
+		t.Fatalf("search status = %v, want ready", searchResp.GetStatus())
+	}
+	if len(searchResp.GetMatches()) != 1 || searchResp.GetMatches()[0].GetPath() != "/tester/docs/projection.md" {
+		t.Fatalf("unexpected search matches: %#v", searchResp.GetMatches())
+	}
+	if cursors := searchResp.GetIndexedStateToken().GetCursors(); len(cursors) != 1 || cursors[0].GetMergeSeq() != mergeSeq {
+		t.Fatalf("unexpected indexed state token: %#v", searchResp.GetIndexedStateToken())
+	}
+}
+
 func TestSearchUsesMountedLiveBackingSlice(t *testing.T) {
 	ctx := authContext("tester")
 	st := storage.NewInMemoryStorage()

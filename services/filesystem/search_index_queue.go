@@ -2,18 +2,22 @@ package filesystemservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/niczy/gitslice/internal/models"
+	"github.com/niczy/gitslice/internal/searchindex"
 	"github.com/niczy/gitslice/internal/storage"
 )
 
 const (
 	defaultWorkspaceSearchIndexQueueSize = 8192
 	defaultWorkspaceSearchIndexTimeout   = 10 * time.Minute
+	searchProjectionName                 = "search-index"
 )
 
 type workspaceSearchIndexJob struct {
@@ -234,7 +238,40 @@ func (s *filesystemServiceServer) indexWorkspaceSearchCommit(ctx context.Context
 	if err := storage.StoreWorkspaceSearchArtifact(ctx, s.storage, workspaceID, artifact); err != nil {
 		return fmt.Errorf("store workspace search artifact: %w", err)
 	}
+	if err := s.updateSearchProjectionOffsetForCommit(ctx, commitHash); err != nil {
+		if current, currentErr := s.workspaceCommitIsCurrent(ctx, workspaceID, commitHash); currentErr != nil {
+			log.Printf("filesystem: failed to check current commit after projection offset failure workspace=%s commit=%s: %v", workspaceID, commitHash, currentErr)
+		} else if current {
+			if deleteErr := s.storage.DeleteWorkspaceSearchArtifact(ctx, workspaceID, searchindex.CurrentArtifactVersion); deleteErr != nil {
+				log.Printf("filesystem: failed to delete search artifact after projection offset failure workspace=%s commit=%s: %v", workspaceID, commitHash, deleteErr)
+			}
+		}
+		return fmt.Errorf("update search projection offset: %w", err)
+	}
 	return nil
+}
+
+func (s *filesystemServiceServer) updateSearchProjectionOffsetForCommit(ctx context.Context, commitHash string) error {
+	eventStore, ok := s.storage.(storage.MergeEventStore)
+	if !ok {
+		return nil
+	}
+	event, err := eventStore.GetMergeEventBySourceCommitHash(ctx, strings.TrimSpace(commitHash))
+	if err != nil {
+		if errors.Is(err, storage.ErrMergeEventNotFound) {
+			return nil
+		}
+		return err
+	}
+	if event == nil || event.ShardID < 0 || event.MergeSeq <= 0 {
+		return nil
+	}
+	return eventStore.UpdateProjectionOffset(ctx, &models.ProjectionOffset{
+		ProjectionName: searchProjectionName,
+		ShardID:        event.ShardID,
+		MergeSeq:       event.MergeSeq,
+		UpdatedAt:      time.Now(),
+	})
 }
 
 func (s *filesystemServiceServer) workspaceCommitIsCurrent(ctx context.Context, workspaceID, commitHash string) (bool, error) {
