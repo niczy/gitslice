@@ -317,7 +317,7 @@ func TestHandlerImportsMountedSlicePushUnderMountAlias(t *testing.T) {
 	}
 }
 
-func TestHandlerImportsRootMountedPushThroughHomeSliceAndPromotesRoot(t *testing.T) {
+func TestHandlerImportsRootMountedPushThroughHomeSliceAndProjectsRoot(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary is not available")
 	}

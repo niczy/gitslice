@@ -535,6 +535,24 @@ func extractFilesystemCommitHash(output string) string {
 	return strings.TrimSpace(matches[1])
 }
 
+func checkoutContainsFile(resp sliceCheckoutJSON, filePath string, size int64) bool {
+	for _, file := range resp.Files {
+		if file.Path == filePath && file.Size == size {
+			return true
+		}
+	}
+	return false
+}
+
+func sliceHistoryContainsCommit(history sliceHistoryJSON, commitHash, message string) bool {
+	for _, commit := range history.Commits {
+		if commit.CommitHash == commitHash && strings.Contains(commit.Message, message) {
+			return true
+		}
+	}
+	return false
+}
+
 func extractFilesystemBatchCommitHash(output string) string {
 	re := regexp.MustCompile(`Batch commit: ([^\n]+)`)
 	matches := re.FindStringSubmatch(output)
@@ -1005,7 +1023,6 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	if rootResp.SliceID != "root" {
 		t.Fatalf("expected root slice info, got: %+v", rootResp)
 	}
-	rootCommit := rootResp.CommitHash
 
 	rootSliceArg := sliceIDArg("root")
 	output := runCLIAsRootAdminOrFail(t, workdir, "init", rootSliceArg)
@@ -1105,15 +1122,9 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 		if err := json.Unmarshal([]byte(output), &rootCheckoutResp); err != nil {
 			return false, err
 		}
-		return rootCheckoutResp.Commit == sliceCommit, nil
+		return checkoutContainsFile(rootCheckoutResp, appsFolder+"/readme.md", int64(len("apps readme\n"))), nil
 	}); err != nil {
-		t.Fatalf("expected root slice to promote latest commit (%s): %v\nOutput:\n%s", sliceCommit, err, output)
-	}
-	if rootCheckoutResp.Commit != sliceCommit {
-		t.Fatalf("expected root slice to promote latest commit, got: %+v", rootCheckoutResp)
-	}
-	if rootCommit == sliceCommit {
-		t.Fatalf("expected root commit to advance after slice merge, got same commit %s", rootCommit)
+		t.Fatalf("expected root slice checkout to expose path-head content from commit %s: %v\nOutput:\n%s", sliceCommit, err, output)
 	}
 }
 
@@ -1216,9 +1227,6 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 		t.Fatalf("expected fs show patch output, got: %s", output)
 	}
 
-	if err := waitForMergedChangesetMessage(ctx, testStorage, homeslice.IDForUsername(username), "write "+remoteFile, 2*time.Second, 50*time.Millisecond); err != nil {
-		t.Fatalf("expected fs publish to create a merged changeset: %v", err)
-	}
 	if err := waitForCondition(2*time.Second, 50*time.Millisecond, func() (bool, error) {
 		state, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: homeslice.IDForUsername(username)})
 		if err != nil {
@@ -1241,9 +1249,14 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 	if homeCheckoutResp.SliceID != homeslice.IDForUsername(username) {
 		t.Fatalf("expected home slice checkout output, got: %+v", homeCheckoutResp)
 	}
-	output = runCLIForUser(checkoutDir, "changeset", "list", "--status", "merged")
-	if !strings.Contains(output, "write "+remoteFile) {
-		t.Fatalf("expected merged publish changeset in list output, got: %s", output)
+
+	output = runCLIForUser(checkoutDir, "slice", "history", "--json")
+	var historyResp sliceHistoryJSON
+	if err := json.Unmarshal([]byte(output), &historyResp); err != nil {
+		t.Fatalf("decode home slice history JSON: %v\nOutput:\n%s", err, output)
+	}
+	if !sliceHistoryContainsCommit(historyResp, secondWriteCommit, "write "+remoteFile) {
+		t.Fatalf("expected direct fs write commit in slice history, got: %+v", historyResp)
 	}
 
 	output = runCLIForUser("", "fs", "diff", snapshotID)
@@ -2297,40 +2310,37 @@ func TestGatewayHTTPListEntriesIntegration(t *testing.T) {
 		t.Fatalf("expected test storage to be initialized")
 	}
 
-	rootSlice, err := testStorage.GetRootSlice(ctx)
+	username := fmt.Sprintf("gateway-%d", time.Now().UnixNano())
+	homeSlice, err := homeslice.EnsureUserHomeSlice(ctx, testStorage, username)
 	if err != nil {
-		t.Fatalf("failed to load root slice: %v", err)
+		t.Fatalf("failed to create gateway home slice: %v", err)
 	}
 
 	files := []struct {
 		path    string
 		content []byte
 	}{
-		{path: "gateway/readme.md", content: []byte("# Gateway")},
-		{path: "gateway/docs/guide.md", content: []byte("Guide")},
+		{path: username + "/gateway/readme.md", content: []byte("# Gateway")},
+		{path: username + "/gateway/docs/guide.md", content: []byte("Guide")},
 	}
 
+	paths := make([]string, 0, len(files))
 	for _, file := range files {
-		mustWriteSliceManifest(t, ctx, testStorage, rootSlice.ID, file.path, file.content)
-		if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
-			ID:       common.GenerateEntryID(rootSlice.ID, file.path),
-			Path:     file.path,
-			Type:     "file",
-			ParentID: rootSlice.ID,
-			Size:     int64(len(file.content)),
-		}); err != nil {
-			t.Fatalf("failed to add directory entry: %v", err)
-		}
-		if err := testStorage.AddFileToSlice(ctx, file.path, rootSlice.ID); err != nil {
-			t.Fatalf("failed to add file to root slice: %v", err)
-		}
+		seedSliceFile(t, ctx, homeSlice.ID, file.path, file.content)
+		paths = append(paths, file.path)
+	}
+	if err := storage.UpdateHomePathHeadsFromSlicePaths(ctx, testStorage, homeSlice.ID, common.GenerateCommitID(), time.Now(), paths); err != nil {
+		t.Fatalf("failed to project gateway home paths: %v", err)
 	}
 
 	rootAdminAuth := "User " + workflowRootAdminUser(t)
 	rootEntries := fetchGatewayEntries(t, gatewayServiceURL+"/v1/files/entries", rootAdminAuth)
-	assertGatewayEntryNames(t, rootEntries.Entries, "gateway")
+	assertGatewayEntryNames(t, rootEntries.Entries, username)
 
-	gatewayEntries := fetchGatewayEntries(t, gatewayServiceURL+"/v1/files/entries/gateway", rootAdminAuth)
+	userEntries := fetchGatewayEntries(t, gatewayServiceURL+"/v1/files/entries/"+url.PathEscape(username), rootAdminAuth)
+	assertGatewayEntryNames(t, userEntries.Entries, "gateway")
+
+	gatewayEntries := fetchGatewayEntries(t, gatewayServiceURL+"/v1/files/entries/"+url.PathEscape(username)+"/gateway", rootAdminAuth)
 	assertGatewayEntryNames(t, gatewayEntries.Entries, "readme.md", "docs")
 }
 
@@ -2536,11 +2546,7 @@ func assertGatewayEntryNames(t *testing.T, entries []gatewayEntry, expected ...s
 	}
 }
 
-func TestBatchMergeClearsConflictsAndPromotesFiles(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping batch merge integration test in short mode")
-	}
-
+func TestBatchMergeEndpointRemoved(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	ctx = withWorkflowUser(t, ctx)
@@ -2563,33 +2569,10 @@ func TestBatchMergeClearsConflictsAndPromotesFiles(t *testing.T) {
 	defer conn.Close()
 
 	client := slicev1.NewSliceServiceClient(conn)
-	sliceA := fmt.Sprintf("batch-merge-a-%d", time.Now().UnixNano())
-	sliceB := fmt.Sprintf("batch-merge-b-%d", time.Now().UnixNano())
 
-	if err := st.CreateSlice(ctx, &models.Slice{ID: sliceA, Name: "Batch A", Files: []string{"file-a"}, Owners: []string{workflowUsername(t)}, CreatedBy: workflowUsername(t)}); err != nil {
-		t.Fatalf("failed to create slice A: %v", err)
-	}
-	if err := st.CreateSlice(ctx, &models.Slice{ID: sliceB, Name: "Batch B", Files: []string{"file-b"}, Owners: []string{workflowUsername(t)}, CreatedBy: workflowUsername(t)}); err != nil {
-		t.Fatalf("failed to create slice B: %v", err)
-	}
-
-	mergeResp, err := client.BatchMerge(ctx, &slicev1.BatchMergeRequest{})
-	if err != nil {
-		t.Fatalf("batch merge failed: %v", err)
-	}
-	if mergeResp.MergedSliceCount != 2 {
-		t.Fatalf("expected 2 merged slices, got %d", mergeResp.MergedSliceCount)
-	}
-
-	rootMetadata, err := st.GetSliceMetadata(ctx, "root")
-	if err != nil {
-		t.Fatalf("failed to load root metadata: %v", err)
-	}
-	if rootMetadata.HeadCommitHash != mergeResp.GlobalCommitHash {
-		t.Fatalf("expected root commit %s, got %s", mergeResp.GlobalCommitHash, rootMetadata.HeadCommitHash)
-	}
-	if rootMetadata.ModifiedFilesCount != 2 {
-		t.Fatalf("expected 2 modified files in root metadata, got %d", rootMetadata.ModifiedFilesCount)
+	_, err = client.BatchMerge(ctx, &slicev1.BatchMergeRequest{})
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("expected removed batch merge endpoint to return Unimplemented, got %v", err)
 	}
 
 	conflictsResp, err := client.GetConflicts(ctx, &slicev1.ConflictsRequest{})
@@ -2597,7 +2580,7 @@ func TestBatchMergeClearsConflictsAndPromotesFiles(t *testing.T) {
 		t.Fatalf("get conflicts failed: %v", err)
 	}
 	if conflictsResp.TotalConflicts != 0 {
-		t.Fatalf("expected no conflicts after batch merge, found %d", conflictsResp.TotalConflicts)
+		t.Fatalf("expected no conflicts from removed batch merge endpoint, found %d", conflictsResp.TotalConflicts)
 	}
 }
 
@@ -2655,59 +2638,88 @@ func TestSliceCommitHistoryIntegration(t *testing.T) {
 	}
 }
 
-func TestGlobalStateTrackingIntegration(t *testing.T) {
+func TestSliceMergeDoesNotAdvanceRootOrGlobalStateIntegration(t *testing.T) {
+	workdir := t.TempDir()
+	rootSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	folder := "global-" + rootSuffix
+	seedWorkflowHomeFile(t, folder, "README.md", nil)
 	sliceID := fmt.Sprintf("slice-global-%d", time.Now().UnixNano())
+	output := runCLIOrFail(t, workdir, "slice", "create", sliceID, folder)
+	createdSliceID := extractCreatedSliceID(output)
+	if createdSliceID == "" {
+		t.Fatalf("failed to extract created slice ID from output: %s", output)
+	}
+	sliceID = createdSliceID
 
-	createSliceFromRoot(t, sliceID, "")
-
+	output = runCLIOrFail(t, workdir, "init", sliceIDArg(sliceID))
+	if !strings.Contains(output, "Initialized empty gitslice checkout") {
+		t.Fatalf("expected init output, got: %s", output)
+	}
 	sliceClient := newSliceClient(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	ctx = withWorkflowUser(t, ctx)
+	rootCtx := withUsername(context.Background(), workflowRootAdminUser(t))
 
-	resolveAllConflicts(ctx, t, sliceClient)
-
-	mergeResp, err := sliceClient.BatchMerge(ctx, &slicev1.BatchMergeRequest{})
+	initialGlobal, err := sliceClient.GetGlobalState(ctx, &slicev1.GlobalStateRequest{IncludeHistory: true})
 	if err != nil {
-		t.Fatalf("batch merge failed: %v", err)
+		t.Fatalf("failed to get initial global state: %v", err)
+	}
+	initialRootState, err := sliceClient.GetSliceState(rootCtx, &slicev1.StateRequest{SliceId: "root"})
+	if err != nil {
+		t.Fatalf("failed to get initial root slice state: %v", err)
+	}
+
+	mergedPath := folder + "/global.md"
+	if err := os.MkdirAll(filepath.Join(workdir, folder), 0o755); err != nil {
+		t.Fatalf("failed to create folder in checkout: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, filepath.FromSlash(mergedPath)), []byte("global path head\n"), 0o644); err != nil {
+		t.Fatalf("failed to write checkout file: %v", err)
+	}
+	output = runCLIOrFail(t, workdir, "changeset", "create", "--message", "global path head", "--files", mergedPath)
+	changesetID := extractChangesetID(output)
+	if changesetID == "" {
+		t.Fatalf("failed to extract changeset ID from output: %s", output)
+	}
+	output = runCLIOrFail(t, workdir, "changeset", "merge", changesetID, "--wait")
+	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
+		t.Fatalf("expected merge success, got: %s", output)
+	}
+	mergeCommit := extractCommitHash(output)
+	if mergeCommit == "" {
+		t.Fatalf("expected merge commit in output, got: %s", output)
 	}
 
 	stateResp, err := sliceClient.GetGlobalState(ctx, &slicev1.GlobalStateRequest{IncludeHistory: true})
 	if err != nil {
-		t.Fatalf("failed to get global state: %v", err)
+		t.Fatalf("failed to get global state after slice merge: %v", err)
 	}
-
-	if stateResp.GlobalCommitHash != mergeResp.GlobalCommitHash {
-		t.Fatalf("expected global commit hash %s, got %s", mergeResp.GlobalCommitHash, stateResp.GlobalCommitHash)
+	if stateResp.GlobalCommitHash != initialGlobal.GlobalCommitHash || len(stateResp.History) != len(initialGlobal.History) {
+		t.Fatalf("expected slice merge to leave global state unchanged, before=%+v after=%+v", initialGlobal, stateResp)
 	}
-	if len(stateResp.History) == 0 {
-		t.Fatalf("expected global history to include merge commit")
-	}
-	if stateResp.History[0].CommitHash != mergeResp.GlobalCommitHash {
-		t.Fatalf("expected latest history commit %s, got %s", mergeResp.GlobalCommitHash, stateResp.History[0].CommitHash)
-	}
-
-	foundSlice := false
-	for _, id := range stateResp.History[0].MergedSliceIds {
-		if id == sliceID {
-			foundSlice = true
-			break
-		}
-	}
-	if !foundSlice {
-		t.Fatalf("expected merged slice %s to be recorded in history", sliceID)
-	}
-
-	rootCtx, rootCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer rootCancel()
-	rootCtx = withUsername(rootCtx, workflowRootAdminUser(t))
 	rootState, err := sliceClient.GetSliceState(rootCtx, &slicev1.StateRequest{SliceId: "root"})
 	if err != nil {
-		t.Fatalf("failed to get root slice state: %v", err)
+		t.Fatalf("failed to get root slice state after slice merge: %v", err)
+	}
+	if rootState.LatestCommitHash != initialRootState.LatestCommitHash {
+		t.Fatalf("expected slice merge to leave root head %s unchanged, got %s", initialRootState.LatestCommitHash, rootState.LatestCommitHash)
 	}
 
-	if rootState.LatestCommitHash != mergeResp.GlobalCommitHash {
-		t.Fatalf("expected root head to match global commit hash %s, got %s", mergeResp.GlobalCommitHash, rootState.LatestCommitHash)
+	rootCheckoutArg := sliceIDArg("root")
+	var rootCheckoutResp sliceCheckoutJSON
+	if err := waitForCondition(2*time.Second, 50*time.Millisecond, func() (bool, error) {
+		rootCheckoutDir := t.TempDir()
+		output, err = runCLIWithDirInputEnvLegacyUser(rootCheckoutDir, "", workflowProcessEnv(t, nil), true, workflowRootAdminUser(t), "slice", "checkout", rootCheckoutArg, "--here", "--files", "--json")
+		if err != nil {
+			return false, nil
+		}
+		if err := json.Unmarshal([]byte(output), &rootCheckoutResp); err != nil {
+			return false, err
+		}
+		return checkoutContainsFile(rootCheckoutResp, mergedPath, int64(len("global path head\n"))), nil
+	}); err != nil {
+		t.Fatalf("expected root path-head checkout to expose merge commit %s: %v\nOutput:\n%s", mergeCommit, err, output)
 	}
 }
 
@@ -2745,6 +2757,10 @@ func TestPostgresRestartPersistsEndToEnd(t *testing.T) {
 	defer sliceConn.Close()
 
 	sliceClient := slicev1.NewSliceServiceClient(sliceConn)
+	initialGlobal, err := sliceClient.GetGlobalState(ctx, &slicev1.GlobalStateRequest{IncludeHistory: true})
+	if err != nil {
+		t.Fatalf("failed to read initial global state: %v", err)
+	}
 
 	sliceID := fmt.Sprintf("restart-slice-%d", time.Now().UnixNano())
 	fileID := fmt.Sprintf("persist-%d.txt", time.Now().UnixNano())
@@ -2760,6 +2776,9 @@ func TestPostgresRestartPersistsEndToEnd(t *testing.T) {
 	mergeResp, err := sliceClient.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ChangesetId})
 	if err != nil {
 		t.Fatalf("merge failed: %v", err)
+	}
+	if mergeResp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("expected merge success, got %v", mergeResp.GetStatus())
 	}
 
 	if err := st.Close(); err != nil {
@@ -2789,8 +2808,8 @@ func TestPostgresRestartPersistsEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read global state after restart: %v", err)
 	}
-	if globalState.GlobalCommitHash != mergeResp.NewCommitHash {
-		t.Fatalf("expected global commit %s after restart, got %s", mergeResp.NewCommitHash, globalState.GlobalCommitHash)
+	if globalState.GlobalCommitHash != initialGlobal.GlobalCommitHash || len(globalState.History) != len(initialGlobal.History) {
+		t.Fatalf("expected slice merge to leave global state unchanged after restart, before=%+v after=%+v", initialGlobal, globalState)
 	}
 
 	sliceState, err := sliceClient2.GetSliceState(ctx, &slicev1.StateRequest{SliceId: sliceID})
@@ -2874,30 +2893,29 @@ func TestSlicePushLocksAndAutoProjection(t *testing.T) {
 		t.Fatalf("expected new commit hash from merge")
 	}
 
-	var stateResp *slicev1.GlobalStateResponse
-	if err := waitForCondition(2*time.Second, 25*time.Millisecond, func() (bool, error) {
-		resp, err := sliceClient.GetGlobalState(ctx, &slicev1.GlobalStateRequest{IncludeHistory: true})
+	eventStore, ok := testStorage.(storage.MergeEventStore)
+	if !ok {
+		t.Fatal("expected workflow storage to support merge events")
+	}
+	event, err := eventStore.GetMergeEventByChangeset(ctx, changeset.ChangesetId)
+	if err != nil {
+		t.Fatalf("expected accepted merge event for %s: %v", changeset.ChangesetId, err)
+	}
+	if event.SourceSliceID != sliceA || event.SourceCommitHash != mergeResp.NewCommitHash {
+		t.Fatalf("unexpected merge event after path-head projection: %+v", event)
+	}
+	if len(event.PathUpdates) != 1 || event.PathUpdates[0].Path != sharedFile || event.PathUpdates[0].NewVersion <= event.PathUpdates[0].BaseVersion {
+		t.Fatalf("unexpected merge event path updates: %+v", event.PathUpdates)
+	}
+	if headStore, ok := testStorage.(storage.HomePathHeadStore); ok {
+		heads, err := headStore.GetHomePathHeads(ctx, event.HomeID, []string{sharedFile})
 		if err != nil {
-			return false, err
+			t.Fatalf("failed to load projected path head: %v", err)
 		}
-		stateResp = resp
-		for _, entry := range resp.History {
-			if entry.CommitHash != mergeResp.NewCommitHash {
-				continue
-			}
-			for _, id := range entry.MergedSliceIds {
-				if id == sliceA {
-					return true, nil
-				}
-			}
+		head := heads[sharedFile]
+		if head == nil || head.SourceCommitHash != mergeResp.NewCommitHash || head.SourceSliceID != sliceA {
+			t.Fatalf("expected projected path head for %s, got %+v", sharedFile, head)
 		}
-		return false, nil
-	}); err != nil {
-		gotHead := ""
-		if stateResp != nil {
-			gotHead = stateResp.GlobalCommitHash
-		}
-		t.Fatalf("expected promoted commit %s and slice %s in global history, got head=%s: %v", mergeResp.NewCommitHash, sliceA, gotHead, err)
 	}
 
 	conflictResp, err := sliceClient.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: otherChange.ChangesetId})
@@ -2909,27 +2927,25 @@ func TestSlicePushLocksAndAutoProjection(t *testing.T) {
 	}
 }
 
-func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
+func TestConcurrentSlicePushesProjectPathHeads(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	ctx = withWorkflowUser(t, ctx)
 
 	sliceClient := newSliceClient(t)
 
-	initialState, err := sliceClient.GetGlobalState(ctx, &slicev1.GlobalStateRequest{IncludeHistory: true})
-	if err != nil {
-		t.Fatalf("failed to read initial global state: %v", err)
-	}
-
 	const mergeCount = 5
 	slices := make([]string, 0, mergeCount)
 	changesets := make([]string, 0, mergeCount)
 	commits := make(map[string]string)
+	changesetBySlice := make(map[string]string)
+	fileBySlice := make(map[string]string)
 
 	for i := 0; i < mergeCount; i++ {
 		file := fmt.Sprintf("concurrency-%d-%d.txt", i, time.Now().UnixNano())
 		sliceID := fmt.Sprintf("concurrency-slice-%d-%d", i, time.Now().UnixNano())
 		slices = append(slices, sliceID)
+		fileBySlice[sliceID] = file
 
 		if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceID, Name: fmt.Sprintf("Concurrent-%d", i), Files: []string{file}, Owners: []string{workflowUsername(t)}, CreatedBy: workflowUsername(t)}); err != nil {
 			t.Fatalf("failed to create slice %d: %v", i, err)
@@ -2940,6 +2956,7 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 			t.Fatalf("failed to create changeset for slice %d: %v", i, err)
 		}
 		changesets = append(changesets, cs.ChangesetId)
+		changesetBySlice[sliceID] = cs.ChangesetId
 	}
 
 	start := make(chan struct{})
@@ -2981,78 +2998,14 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 		}
 	}
 
-	var globalState *slicev1.GlobalStateResponse
-	if err := waitForCondition(3*time.Second, 25*time.Millisecond, func() (bool, error) {
-		resp, err := sliceClient.GetGlobalState(ctx, &slicev1.GlobalStateRequest{IncludeHistory: true})
-		if err != nil {
-			return false, err
-		}
-		globalState = resp
-		if len(resp.History) < len(initialState.History)+mergeCount {
-			return false, nil
-		}
-		historyCommits := make(map[string][]string, len(resp.History))
-		for _, entry := range resp.History {
-			historyCommits[entry.CommitHash] = entry.MergedSliceIds
-		}
-		for sliceID, commitHash := range commits {
-			mergedSlices, ok := historyCommits[commitHash]
-			if !ok {
-				return false, nil
-			}
-			found := false
-			for _, id := range mergedSlices {
-				if id == sliceID {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return false, nil
-			}
-		}
-		return true, nil
-	}); err != nil {
-		gotLen := 0
-		if globalState != nil {
-			gotLen = len(globalState.History)
-		}
-		t.Fatalf("expected %d new promoted history entries after concurrent merges, got %d: %v", mergeCount, gotLen-len(initialState.History), err)
+	eventStore, ok := testStorage.(storage.MergeEventStore)
+	if !ok {
+		t.Fatal("expected workflow storage to support merge events")
 	}
-
-	rootCtx, rootCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer rootCancel()
-	rootCtx = withUsername(rootCtx, workflowRootAdminUser(t))
-	rootState, err := sliceClient.GetSliceState(rootCtx, &slicev1.StateRequest{SliceId: "root"})
-	if err != nil {
-		t.Fatalf("failed to fetch root slice state: %v", err)
+	headStore, ok := testStorage.(storage.HomePathHeadStore)
+	if !ok {
+		t.Fatal("expected workflow storage to support path heads")
 	}
-	if rootState.LatestCommitHash != globalState.GlobalCommitHash {
-		t.Fatalf("expected root slice head %s to match global %s", rootState.LatestCommitHash, globalState.GlobalCommitHash)
-	}
-
-	historyCommits := make(map[string][]string, len(globalState.History))
-	for _, entry := range globalState.History {
-		historyCommits[entry.CommitHash] = entry.MergedSliceIds
-	}
-
-	for sliceID, commitHash := range commits {
-		mergedSlices, ok := historyCommits[commitHash]
-		if !ok {
-			t.Fatalf("expected commit %s for slice %s to appear in global history", commitHash, sliceID)
-		}
-		foundSlice := false
-		for _, id := range mergedSlices {
-			if id == sliceID {
-				foundSlice = true
-				break
-			}
-		}
-		if !foundSlice {
-			t.Fatalf("expected slice %s to be recorded in history entry %s", sliceID, commitHash)
-		}
-	}
-
 	for sliceID, expectedCommit := range commits {
 		state, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: sliceID})
 		if err != nil {
@@ -3060,6 +3013,22 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 		}
 		if state.LatestCommitHash != expectedCommit {
 			t.Fatalf("expected slice %s head %s, got %s", sliceID, expectedCommit, state.LatestCommitHash)
+		}
+		event, err := eventStore.GetMergeEventByChangeset(ctx, changesetBySlice[sliceID])
+		if err != nil {
+			t.Fatalf("failed to load merge event for slice %s: %v", sliceID, err)
+		}
+		if event.SourceCommitHash != expectedCommit || event.SourceSliceID != sliceID {
+			t.Fatalf("unexpected merge event for slice %s: %+v", sliceID, event)
+		}
+		file := fileBySlice[sliceID]
+		heads, err := headStore.GetHomePathHeads(ctx, event.HomeID, []string{file})
+		if err != nil {
+			t.Fatalf("failed to load path head for slice %s: %v", sliceID, err)
+		}
+		head := heads[file]
+		if head == nil || head.SourceCommitHash != expectedCommit || head.SourceSliceID != sliceID {
+			t.Fatalf("expected projected path head for slice %s file %s, got %+v", sliceID, file, head)
 		}
 	}
 }
