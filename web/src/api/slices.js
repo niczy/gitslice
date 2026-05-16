@@ -187,6 +187,7 @@ export async function createChangeset({
   message = '',
   changesetId = '',
   fileContents = [],
+  expectedPathBases = [],
 } = {}) {
   const response = await fetchWithAuth(`${apiBaseUrl}/v1/changesets`, {
     method: 'POST',
@@ -198,6 +199,7 @@ export async function createChangeset({
       message,
       changesetId,
       fileContents,
+      expectedPathBases,
     }),
   });
   if (!response.ok) {
@@ -212,6 +214,7 @@ export async function createAndMergeChangeset({
   modifiedFiles = [],
   message = '',
   fileContents = [],
+  expectedPathBases = [],
 } = {}) {
   const response = await fetchWithAuth(`${apiBaseUrl}/v1/changesets:createAndMerge`, {
     method: 'POST',
@@ -222,6 +225,7 @@ export async function createAndMergeChangeset({
       modifiedFiles,
       message,
       fileContents,
+      expectedPathBases,
     }),
   });
   if (!response.ok) {

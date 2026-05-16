@@ -26,6 +26,9 @@ export function useRepoBrowserFileState({
   const getInitialDecodedContent = () => (
     initialEncodedContent ? decodeBase64(initialEncodedContent) : ''
   );
+  const getInitialPathBase = () => (
+    initialSelectedFilePayload?.pathBase || initialSelectedFilePayload?.path_base || null
+  );
 
   const [selectedFile, setSelectedFile] = useState(() => initialSelectedFilePath || null);
   const [fileContent, setFileContent] = useState(getInitialDecodedContent);
@@ -38,6 +41,7 @@ export function useRepoBrowserFileState({
   const [selectedFileSize, setSelectedFileSize] = useState(() => (
     getFilePayloadSize(initialSelectedFilePayload, getInitialDecodedContent())
   ));
+  const [selectedFilePathBase, setSelectedFilePathBase] = useState(getInitialPathBase);
   const [loadingFilePath, setLoadingFilePath] = useState(() => (
     initialSelectedFilePath && !hasInitialSelectedFilePayload ? initialSelectedFilePath : ''
   ));
@@ -111,6 +115,7 @@ export function useRepoBrowserFileState({
     setPreviewFileContent('');
     setPreviewEncodedFileContent('');
     setSelectedFileSize(null);
+    setSelectedFilePathBase(null);
     resetDraftState('');
     setFileError('');
     setLoadingFilePath('');
@@ -153,6 +158,7 @@ export function useRepoBrowserFileState({
     resetDraftState,
     resetHistory,
     selectedFile,
+    selectedFilePathBase,
     selectedFileSize,
     setDraftContent,
     setEncodedFileContent,
@@ -163,6 +169,7 @@ export function useRepoBrowserFileState({
     setPreviewFileContent,
     setPreviewFilePath,
     setSelectedFile,
+    setSelectedFilePathBase,
     setSelectedFileSize,
     showFileEditor,
     showHistory,
