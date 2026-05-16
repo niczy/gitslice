@@ -66,6 +66,42 @@ function uniquePaths(paths) {
   return Array.from(new Set(paths.map((path) => normalizeWorkspaceResultPath(path)).filter(Boolean)));
 }
 
+function numericPathBaseValue(pathBase, camelName, snakeName) {
+  const value = pathBase?.[camelName] ?? pathBase?.[snakeName] ?? 0;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function expectedPathBaseForTreePath(path, pathBase, exists = true) {
+  const normalizedPath = normalizeWorkspaceResultPath(path);
+  if (!normalizedPath) {
+    return null;
+  }
+  if (!pathBase) {
+    return {
+      path: normalizedPath,
+      exists: Boolean(exists),
+      pathVersion: 0,
+    };
+  }
+  return {
+    path: normalizedPath,
+    exists: Boolean(pathBase.exists),
+    contentHash: pathBase.contentHash || pathBase.content_hash || '',
+    pathVersion: numericPathBaseValue(pathBase, 'pathVersion', 'path_version'),
+    sourceSliceId: pathBase.sourceSliceId || pathBase.source_slice_id || '',
+    sourceCommitHash: pathBase.sourceCommitHash || pathBase.source_commit_hash || '',
+    moveGeneration: numericPathBaseValue(pathBase, 'moveGeneration', 'move_generation'),
+  };
+}
+
+function expectedPathBasesForFileRename(sourcePath, sourcePathBase, destinationPath) {
+  return [
+    expectedPathBaseForTreePath(sourcePath, sourcePathBase, true),
+    expectedPathBaseForTreePath(destinationPath, null, false),
+  ].filter(Boolean);
+}
+
 export function useRepoBrowserTreeActions({
   apiBaseUrl,
   buildEntriesUrl,
@@ -376,14 +412,17 @@ export function useRepoBrowserTreeActions({
       return `Renamed ${oldName} to ${newName}.`;
     }
 
-    const file = await fetchFileForAction(entryPath);
     await createAndMergeChangeset({
       message: `Rename ${entryPath} to ${newPath}`,
       modifiedFiles: [entryPath, newPath],
-      fileContents: [
-        { path: newPath, content: file?.content || '' },
-        { path: entryPath, deleted: true },
+      fileRenames: [
+        { sourcePath: entryPath, destinationPath: newPath },
       ],
+      expectedPathBases: expectedPathBasesForFileRename(
+        entryPath,
+        entry?.pathBase || entry?.path_base || null,
+        newPath,
+      ),
     });
     await refreshTreeAfterMerge({
       directoryPath: parentPath,

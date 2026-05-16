@@ -364,6 +364,7 @@ message CreateChangesetRequest {
   string changeset_id = 7; // Optional: append a new snapshot to this changeset.
   repeated FileContentChange file_contents = 8; // Optional: file payloads for local checkout changes.
   repeated file.v1.PathBase expected_path_bases = 9; // Optional: reject writes if these read-time bases are stale.
+  repeated FileRename file_renames = 10; // Optional: first-class file rename intents.
 }
 
 message CreateChangesetResponse {
@@ -380,6 +381,11 @@ message FileContentChange {
   bool deleted = 3;
   bool executable = 4;
   string symlink_target = 5;
+}
+
+message FileRename {
+  string source_path = 1;
+  string destination_path = 2;
 }
 
 message ChangesetChunk {

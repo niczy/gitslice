@@ -230,6 +230,21 @@ func (s *sliceServiceServer) buildFileChangeRecordsFromMergeEvent(ctx context.Co
 			paths = append(paths, filePath)
 		}
 	}
+	renameSources := make(map[string]string)
+	for newPath, update := range updates {
+		if update == nil || update.Deleted {
+			continue
+		}
+		oldPath := cleanDiffPath(update.OldPath)
+		if oldPath == "" || oldPath == newPath {
+			continue
+		}
+		renameSources[newPath] = oldPath
+	}
+	renameOldPaths := make(map[string]struct{}, len(renameSources))
+	for _, oldPath := range renameSources {
+		renameOldPaths[oldPath] = struct{}{}
+	}
 
 	changes := make([]*models.FileChangeRecord, 0, len(paths))
 	for _, rawPath := range paths {
@@ -237,10 +252,18 @@ func (s *sliceServiceServer) buildFileChangeRecordsFromMergeEvent(ctx context.Co
 		if filePath == "" {
 			continue
 		}
+		if _, isRenameSource := renameOldPaths[filePath]; isRenameSource {
+			continue
+		}
 		update := updates[filePath]
-		oldHash := strings.TrimSpace(parentFiles[filePath])
+		oldPath := renameSources[filePath]
+		historyPath := filePath
+		if oldPath != "" {
+			historyPath = oldPath
+		}
+		oldHash := strings.TrimSpace(parentFiles[historyPath])
 		if oldHash == "" {
-			oldHash = previousKnownFileHashExcluding(ctx, st, event.SourceSliceID, filePath, event.SourceCommitHash)
+			oldHash = previousKnownFileHashExcluding(ctx, st, event.SourceSliceID, historyPath, event.SourceCommitHash)
 		}
 		newHash := ""
 		deleted := false
@@ -253,6 +276,8 @@ func (s *sliceServiceServer) buildFileChangeRecordsFromMergeEvent(ctx context.Co
 		linesAdded := 0
 		linesDeleted := 0
 		switch {
+		case oldPath != "" && oldHash != "" && newHash != "" && !deleted:
+			changeType = models.ChangeTypeRename
 		case oldHash == "" && newHash != "" && !deleted:
 			changeType = models.ChangeTypeAdd
 			if fileContent, readErr := storage.ReadVersionedFileContent(ctx, st, newHash); readErr == nil && fileContent != nil && len(fileContent.Content) > 0 {
@@ -273,6 +298,7 @@ func (s *sliceServiceServer) buildFileChangeRecordsFromMergeEvent(ctx context.Co
 			SliceID:      strings.TrimSpace(event.SourceSliceID),
 			CommitHash:   strings.TrimSpace(event.SourceCommitHash),
 			Path:         filePath,
+			OldPath:      oldPath,
 			ChangeType:   changeType,
 			OldHash:      oldHash,
 			NewHash:      newHash,

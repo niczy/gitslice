@@ -9,6 +9,7 @@ type MergePathUpdate struct {
 	NewVersion       int64  `json:"new_version"`
 	ContentHash      string `json:"content_hash,omitempty"`
 	ManifestHash     string `json:"manifest_hash,omitempty"`
+	OldPath          string `json:"old_path,omitempty"`
 	SourceSliceID    string `json:"source_slice_id,omitempty"`
 	SourceCommitHash string `json:"source_commit_hash,omitempty"`
 	ParentCommitHash string `json:"parent_commit_hash,omitempty"`

@@ -147,6 +147,7 @@ CREATE TABLE changeset_snapshots (
     modified_files jsonb DEFAULT '[]'::jsonb NOT NULL,
     file_hashes jsonb,
     base_path_versions jsonb,
+    rename_sources jsonb,
     author text DEFAULT ''::text NOT NULL,
     message text DEFAULT ''::text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL

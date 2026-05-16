@@ -1297,7 +1297,11 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 	if err != nil {
 		return nil, err
 	}
-	modifiedFiles := mergeModifiedFilesWithFileContents(req.ModifiedFiles, fileContents)
+	fileRenames, err := normalizeChangesetFileRenames(req.GetFileRenames())
+	if err != nil {
+		return nil, err
+	}
+	modifiedFiles := mergeModifiedFilesWithFileContentsAndRenames(req.ModifiedFiles, fileContents, fileRenames)
 
 	// Validate modified files
 	for _, fileID := range modifiedFiles {
@@ -1333,7 +1337,7 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		if !s.hasSliceViewAccess(ctx, slice, username) {
 			return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 		}
-		modifiedFiles, fileContents = filterChangesetChangesForSlice(slice, modifiedFiles, fileContents)
+		modifiedFiles, fileContents, fileRenames = filterChangesetChangesForSlice(slice, modifiedFiles, fileContents, fileRenames)
 		if len(modifiedFiles) == 0 {
 			return nil, status.Error(codes.InvalidArgument, "no modified files remain after filtering paths outside the slice tracked folders")
 		}
@@ -1346,6 +1350,9 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		baseCommitHash := strings.TrimSpace(req.BaseCommitHash)
 		if baseCommitHash == "" {
 			baseCommitHash = strings.TrimSpace(existing.BaseCommitHash)
+		}
+		if err := s.applyChangesetFileRenames(ctx, existing.SliceID, fileRenames); err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to apply changeset file renames: %v", err))
 		}
 		if err := s.applyChangesetFileContents(ctx, existing.SliceID, fileContents); err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to apply changeset file content: %v", err))
@@ -1363,7 +1370,7 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		if err := s.storage.UpdateChangeset(ctx, existing); err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update changeset: %v", err))
 		}
-		if err := s.createChangesetSnapshot(ctx, existing, expectedPathBases); err != nil {
+		if err := s.createChangesetSnapshotWithRenameSources(ctx, existing, changesetRenameSourcesForSnapshot(fileRenames), expectedPathBases); err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to save changeset snapshot: %v", err))
 		}
 		ciRunID, ciStatus := s.enqueueChangesetExportCI(ctx, existing.ID, username)
@@ -1389,7 +1396,7 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 	if !s.hasSliceViewAccess(ctx, slice, username) {
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
-	modifiedFiles, fileContents = filterChangesetChangesForSlice(slice, modifiedFiles, fileContents)
+	modifiedFiles, fileContents, fileRenames = filterChangesetChangesForSlice(slice, modifiedFiles, fileContents, fileRenames)
 	if len(modifiedFiles) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "no modified files remain after filtering paths outside the slice tracked folders")
 	}
@@ -1398,6 +1405,9 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to validate expected path bases: %v", err))
 	} else if len(drifts) > 0 {
 		return nil, status.Error(codes.FailedPrecondition, expectedPathBasePreconditionMessage(drifts))
+	}
+	if err := s.applyChangesetFileRenames(ctx, req.SliceId, fileRenames); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to apply changeset file renames: %v", err))
 	}
 	if err := s.applyChangesetFileContents(ctx, req.SliceId, fileContents); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to apply changeset file content: %v", err))
@@ -1421,7 +1431,7 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 	if err := s.storage.CreateChangeset(ctx, cs); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to create changeset: %v", err))
 	}
-	if err := s.createChangesetSnapshot(ctx, cs, expectedPathBases); err != nil {
+	if err := s.createChangesetSnapshotWithRenameSources(ctx, cs, changesetRenameSourcesForSnapshot(fileRenames), expectedPathBases); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to save changeset snapshot: %v", err))
 	}
 	ciRunID, ciStatus := s.enqueueChangesetExportCI(ctx, cs.ID, username)
@@ -1445,15 +1455,23 @@ func (s *sliceServiceServer) CreateAndMergeChangeset(ctx context.Context, req *s
 	if strings.TrimSpace(req.GetChangesetId()) != "" {
 		return nil, status.Error(codes.InvalidArgument, "changeset_id is not supported for direct file-tree commits")
 	}
-	hasFileContentChange := false
+	hasDirectFileTreeChange := false
 	for _, change := range req.GetFileContents() {
 		if change != nil {
-			hasFileContentChange = true
+			hasDirectFileTreeChange = true
 			break
 		}
 	}
-	if !hasFileContentChange {
-		return nil, status.Error(codes.InvalidArgument, "file_contents is required for direct file-tree commits")
+	if !hasDirectFileTreeChange {
+		for _, rename := range req.GetFileRenames() {
+			if rename != nil {
+				hasDirectFileTreeChange = true
+				break
+			}
+		}
+	}
+	if !hasDirectFileTreeChange {
+		return nil, status.Error(codes.InvalidArgument, "file_contents or file_renames is required for direct file-tree commits")
 	}
 
 	createResp, err := s.CreateChangeset(ctx, req)
@@ -2140,6 +2158,7 @@ func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st st
 		return nil, err
 	}
 
+	renameSources := normalizeSnapshotRenameSources(snapshotRenameSources(snapshot))
 	baseVersions, err := s.mergeEventBasePathVersions(ctx, st, homeID, paths, snapshot)
 	if err != nil {
 		return nil, err
@@ -2154,6 +2173,7 @@ func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st st
 			NewVersion:       baseVersion + 1,
 			ContentHash:      hash,
 			ManifestHash:     hash,
+			OldPath:          renameSources[filePath],
 			SourceSliceID:    cs.SliceID,
 			SourceCommitHash: commitHash,
 			ParentCommitHash: strings.TrimSpace(parentHash),
@@ -2589,10 +2609,10 @@ func normalizeModifiedFiles(files []string) []string {
 	return normalized
 }
 
-func filterChangesetChangesForSlice(slice *models.Slice, modifiedFiles []string, fileContents []changesetFileContentChange) ([]string, []changesetFileContentChange) {
+func filterChangesetChangesForSlice(slice *models.Slice, modifiedFiles []string, fileContents []changesetFileContentChange, fileRenames []changesetFileRename) ([]string, []changesetFileContentChange, []changesetFileRename) {
 	roots, restrictAdds := changesetAllowedAddRoots(slice)
 	if !restrictAdds {
-		return modifiedFiles, fileContents
+		return modifiedFiles, fileContents, fileRenames
 	}
 	existingPaths := changesetExistingDisplayPathSet(slice)
 	keepPath := func(raw string) bool {
@@ -2618,7 +2638,13 @@ func filterChangesetChangesForSlice(slice *models.Slice, modifiedFiles []string,
 			filteredContents = append(filteredContents, change)
 		}
 	}
-	return normalizeModifiedFiles(filteredFiles), filteredContents
+	filteredRenames := make([]changesetFileRename, 0, len(fileRenames))
+	for _, rename := range fileRenames {
+		if keepPath(rename.sourcePath) && keepPath(rename.destinationPath) {
+			filteredRenames = append(filteredRenames, rename)
+		}
+	}
+	return normalizeModifiedFiles(filteredFiles), filteredContents, filteredRenames
 }
 
 func changesetAllowedAddRoots(slice *models.Slice) ([]string, bool) {
@@ -2702,6 +2728,11 @@ type changesetFileContentChange struct {
 	symlinkTarget string
 }
 
+type changesetFileRename struct {
+	sourcePath      string
+	destinationPath string
+}
+
 func normalizeChangesetFileContentChanges(changes []*slicev1.FileContentChange) ([]changesetFileContentChange, error) {
 	if len(changes) == 0 {
 		return nil, nil
@@ -2743,9 +2774,47 @@ func normalizeChangesetFileContentChanges(changes []*slicev1.FileContentChange) 
 	return normalized, nil
 }
 
-func mergeModifiedFilesWithFileContents(files []string, changes []changesetFileContentChange) []string {
-	seen := make(map[string]struct{}, len(files)+len(changes))
-	out := make([]string, 0, len(files)+len(changes))
+func normalizeChangesetFileRenames(renames []*slicev1.FileRename) ([]changesetFileRename, error) {
+	if len(renames) == 0 {
+		return nil, nil
+	}
+	seenSources := make(map[string]struct{}, len(renames))
+	seenDestinations := make(map[string]struct{}, len(renames))
+	normalized := make([]changesetFileRename, 0, len(renames))
+	for _, rename := range renames {
+		if rename == nil {
+			continue
+		}
+		sourcePath := cleanDiffPath(rename.GetSourcePath())
+		destinationPath := cleanDiffPath(rename.GetDestinationPath())
+		if sourcePath == "" || destinationPath == "" {
+			return nil, status.Error(codes.InvalidArgument, "file rename source_path and destination_path are required")
+		}
+		if sourcePath == destinationPath {
+			return nil, status.Error(codes.InvalidArgument, "file rename source_path and destination_path must differ")
+		}
+		if err := common.ValidateFileID(sourcePath); err != nil {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid file rename source path %s: %v", sourcePath, err))
+		}
+		if err := common.ValidateFileID(destinationPath); err != nil {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid file rename destination path %s: %v", destinationPath, err))
+		}
+		if _, ok := seenSources[sourcePath]; ok {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("duplicate file rename source path %s", sourcePath))
+		}
+		if _, ok := seenDestinations[destinationPath]; ok {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("duplicate file rename destination path %s", destinationPath))
+		}
+		seenSources[sourcePath] = struct{}{}
+		seenDestinations[destinationPath] = struct{}{}
+		normalized = append(normalized, changesetFileRename{sourcePath: sourcePath, destinationPath: destinationPath})
+	}
+	return normalized, nil
+}
+
+func mergeModifiedFilesWithFileContentsAndRenames(files []string, changes []changesetFileContentChange, renames []changesetFileRename) []string {
+	seen := make(map[string]struct{}, len(files)+len(changes)+(len(renames)*2))
+	out := make([]string, 0, len(files)+len(changes)+(len(renames)*2))
 	for _, filePath := range normalizeModifiedFiles(files) {
 		cleaned := cleanDiffPath(filePath)
 		if cleaned == "" {
@@ -2767,8 +2836,36 @@ func mergeModifiedFilesWithFileContents(files []string, changes []changesetFileC
 		seen[change.path] = struct{}{}
 		out = append(out, change.path)
 	}
+	for _, rename := range renames {
+		for _, filePath := range []string{rename.sourcePath, rename.destinationPath} {
+			if filePath == "" {
+				continue
+			}
+			if _, exists := seen[filePath]; exists {
+				continue
+			}
+			seen[filePath] = struct{}{}
+			out = append(out, filePath)
+		}
+	}
 	sort.Strings(out)
 	return out
+}
+
+func changesetRenameSourcesForSnapshot(renames []changesetFileRename) map[string]string {
+	if len(renames) == 0 {
+		return nil
+	}
+	sources := make(map[string]string, len(renames))
+	for _, rename := range renames {
+		sourcePath := cleanDiffPath(rename.sourcePath)
+		destinationPath := cleanDiffPath(rename.destinationPath)
+		if sourcePath == "" || destinationPath == "" || sourcePath == destinationPath {
+			continue
+		}
+		sources[destinationPath] = sourcePath
+	}
+	return normalizeSnapshotRenameSources(sources)
 }
 
 func normalizeExpectedPathBases(bases []*filev1.PathBase) map[string]*filev1.PathBase {
@@ -2974,6 +3071,43 @@ func (s *sliceServiceServer) applyChangesetFileContents(ctx context.Context, sli
 	return nil
 }
 
+func (s *sliceServiceServer) applyChangesetFileRenames(ctx context.Context, sliceID string, renames []changesetFileRename) error {
+	for _, rename := range renames {
+		sourcePath := cleanDiffPath(rename.sourcePath)
+		destinationPath := cleanDiffPath(rename.destinationPath)
+		if sourcePath == "" || destinationPath == "" {
+			return fmt.Errorf("file rename source and destination are required")
+		}
+		if sourcePath == destinationPath {
+			return fmt.Errorf("file rename source and destination must differ")
+		}
+		if _, err := s.storage.GetEntryByPath(ctx, sliceID, destinationPath); err == nil {
+			return fmt.Errorf("file rename destination already exists: %s", destinationPath)
+		} else if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
+			return fmt.Errorf("failed to check rename destination %s: %w", destinationPath, err)
+		}
+
+		manifest, err := s.storage.GetFileManifest(ctx, sliceID, sourcePath)
+		if err != nil {
+			if errors.Is(err, storage.ErrEntryNotFound) {
+				return fmt.Errorf("file rename source does not exist: %s", sourcePath)
+			}
+			return fmt.Errorf("failed to load rename source %s: %w", sourcePath, err)
+		}
+		content, err := storage.ReadManifestContent(ctx, s.storage, manifest)
+		if err != nil {
+			return fmt.Errorf("failed to read rename source %s: %w", sourcePath, err)
+		}
+		if err := s.upsertSliceFilePathWithMetadata(ctx, sliceID, destinationPath, strings.TrimSpace(manifest.Hash), content.Content, manifest.Executable, manifest.SymlinkTarget); err != nil {
+			return fmt.Errorf("failed to write rename destination %s: %w", destinationPath, err)
+		}
+		if err := s.removeSliceFilePath(ctx, sliceID, sourcePath); err != nil {
+			return fmt.Errorf("failed to remove rename source %s: %w", sourcePath, err)
+		}
+	}
+	return nil
+}
+
 func revertModifiedFiles(change *models.FileChangeRecord) []string {
 	if change == nil {
 		return nil
@@ -3115,14 +3249,29 @@ func (s *sliceServiceServer) buildStandardReviewChanges(ctx context.Context, cs 
 	reviewChanges := make([]*filev1.FileChangeRecord, 0, len(paths))
 	warnings := make([]string, 0, 1)
 	missingPatchCount := 0
+	renameSources := normalizeSnapshotRenameSources(snapshotRenameSources(snapshot))
+	renameOldPaths := make(map[string]struct{}, len(renameSources))
+	for _, sourcePath := range renameSources {
+		renameOldPaths[sourcePath] = struct{}{}
+	}
 
 	for _, rawPath := range paths {
 		filePath := cleanDiffPath(rawPath)
 		if filePath == "" {
 			continue
 		}
+		if _, isRenameSource := renameOldPaths[filePath]; isRenameSource {
+			continue
+		}
 
-		before, beforeWarning := s.loadReviewFileAtBase(ctx, cs, filePath)
+		beforePath := filePath
+		changeType := models.ChangeTypeModify
+		if sourcePath := renameSources[filePath]; sourcePath != "" {
+			beforePath = sourcePath
+			changeType = models.ChangeTypeRename
+		}
+
+		before, beforeWarning := s.loadReviewFileAtBase(ctx, cs, beforePath)
 		if beforeWarning != "" {
 			warnings = append(warnings, beforeWarning)
 		}
@@ -3134,12 +3283,13 @@ func (s *sliceServiceServer) buildStandardReviewChanges(ctx context.Context, cs 
 			continue
 		}
 
-		changeType := models.ChangeTypeModify
-		switch {
-		case !before.exists && after.exists:
-			changeType = models.ChangeTypeAdd
-		case before.exists && !after.exists:
-			changeType = models.ChangeTypeDelete
+		if changeType != models.ChangeTypeRename {
+			switch {
+			case !before.exists && after.exists:
+				changeType = models.ChangeTypeAdd
+			case before.exists && !after.exists:
+				changeType = models.ChangeTypeDelete
+			}
 		}
 
 		if changeType == models.ChangeTypeModify && before.hash != "" && after.hash != "" && before.hash == after.hash {
@@ -3148,7 +3298,7 @@ func (s *sliceServiceServer) buildStandardReviewChanges(ctx context.Context, cs 
 
 		patch := ""
 		if before.patchable && after.patchable {
-			patch = buildUnifiedPatchFromLines(filePath, filePath, before.lines, after.lines)
+			patch = buildUnifiedPatchFromLines(beforePath, filePath, before.lines, after.lines)
 		} else {
 			missingPatchCount++
 		}
@@ -3159,7 +3309,7 @@ func (s *sliceServiceServer) buildStandardReviewChanges(ctx context.Context, cs 
 			SliceID:      cs.SliceID,
 			CommitHash:   cs.Hash,
 			Path:         filePath,
-			OldPath:      "",
+			OldPath:      renameSources[filePath],
 			ChangeType:   changeType,
 			OldHash:      before.hash,
 			NewHash:      after.hash,
@@ -3200,13 +3350,27 @@ func (s *sliceServiceServer) buildStandardReviewChangesFromHashes(ctx context.Co
 	warnings = append(warnings, afterWarnings...)
 
 	reviewChanges := make([]*filev1.FileChangeRecord, 0, len(paths))
+	renameSources := normalizeSnapshotRenameSources(snapshotRenameSources(snapshot))
+	renameOldPaths := make(map[string]struct{}, len(renameSources))
+	for _, sourcePath := range renameSources {
+		renameOldPaths[sourcePath] = struct{}{}
+	}
 	for _, rawPath := range paths {
 		filePath := cleanDiffPath(rawPath)
 		if filePath == "" {
 			continue
 		}
+		if _, isRenameSource := renameOldPaths[filePath]; isRenameSource {
+			continue
+		}
 
-		beforeHash := strings.TrimSpace(baseHashes[filePath])
+		beforePath := filePath
+		changeType := models.ChangeTypeModify
+		if sourcePath := renameSources[filePath]; sourcePath != "" {
+			beforePath = sourcePath
+			changeType = models.ChangeTypeRename
+		}
+		beforeHash := strings.TrimSpace(baseHashes[beforePath])
 		beforeExists := beforeHash != ""
 		afterHash := strings.TrimSpace(afterHashes[filePath])
 		existsAfter := afterExists[filePath] && afterHash != ""
@@ -3214,12 +3378,13 @@ func (s *sliceServiceServer) buildStandardReviewChangesFromHashes(ctx context.Co
 			continue
 		}
 
-		changeType := models.ChangeTypeModify
-		switch {
-		case !beforeExists && existsAfter:
-			changeType = models.ChangeTypeAdd
-		case beforeExists && !existsAfter:
-			changeType = models.ChangeTypeDelete
+		if changeType != models.ChangeTypeRename {
+			switch {
+			case !beforeExists && existsAfter:
+				changeType = models.ChangeTypeAdd
+			case beforeExists && !existsAfter:
+				changeType = models.ChangeTypeDelete
+			}
 		}
 		if changeType == models.ChangeTypeModify && beforeHash == afterHash {
 			continue
@@ -3230,7 +3395,7 @@ func (s *sliceServiceServer) buildStandardReviewChangesFromHashes(ctx context.Co
 			SliceID:    cs.SliceID,
 			CommitHash: cs.Hash,
 			Path:       filePath,
-			OldPath:    "",
+			OldPath:    renameSources[filePath],
 			ChangeType: changeType,
 			OldHash:    beforeHash,
 			NewHash:    afterHash,
@@ -3884,6 +4049,10 @@ func summarizeReviewChanges(changes []*filev1.FileChangeRecord) *slicev1.DiffSum
 }
 
 func (s *sliceServiceServer) createChangesetSnapshot(ctx context.Context, cs *models.Changeset, expectedPathBases ...map[string]*filev1.PathBase) error {
+	return s.createChangesetSnapshotWithRenameSources(ctx, cs, nil, expectedPathBases...)
+}
+
+func (s *sliceServiceServer) createChangesetSnapshotWithRenameSources(ctx context.Context, cs *models.Changeset, renameSources map[string]string, expectedPathBases ...map[string]*filev1.PathBase) error {
 	if cs == nil {
 		return nil
 	}
@@ -3932,6 +4101,7 @@ func (s *sliceServiceServer) createChangesetSnapshot(ctx context.Context, cs *mo
 		ModifiedFiles:    modifiedFiles,
 		FileHashes:       normalizeSnapshotFileHashes(snapshotFileHashes),
 		BasePathVersions: normalizeSnapshotBasePathVersions(basePathVersions),
+		RenameSources:    normalizeSnapshotRenameSources(renameSources),
 		Author:           cs.Author,
 		Message:          cs.Message,
 		CreatedAt:        time.Now(),
@@ -4225,6 +4395,29 @@ func normalizeSnapshotBasePathVersions(baseVersions map[string]int64) map[string
 		return nil
 	}
 	return out
+}
+
+func normalizeSnapshotRenameSources(renameSources map[string]string) map[string]string {
+	out := make(map[string]string, len(renameSources))
+	for rawDestination, rawSource := range renameSources {
+		destination := cleanDiffPath(rawDestination)
+		source := cleanDiffPath(rawSource)
+		if destination == "" || source == "" || destination == source {
+			continue
+		}
+		out[destination] = source
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func snapshotRenameSources(snapshot *models.ChangesetSnapshot) map[string]string {
+	if snapshot == nil {
+		return nil
+	}
+	return snapshot.RenameSources
 }
 
 func (s *sliceServiceServer) resolveChangesetSnapshotForReview(ctx context.Context, cs *models.Changeset, requestedVersion int32) (*models.ChangesetSnapshot, error) {
