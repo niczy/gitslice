@@ -40,8 +40,8 @@ func startBenchmarkPostgresPoolObserver() *benchmarkPostgresPoolObserver {
 	return startBenchmarkPostgresPoolObserverForStorage(benchStorage)
 }
 
-func startBenchmarkPromotionPostgresPoolObserver() *benchmarkPostgresPoolObserver {
-	return startBenchmarkPostgresPoolObserverForStorage(benchPromotionStorage)
+func startBenchmarkProjectionPostgresPoolObserver() *benchmarkPostgresPoolObserver {
+	return startBenchmarkPostgresPoolObserverForStorage(benchProjectionStorage)
 }
 
 func startBenchmarkPostgresPoolObserverForStorage(st storage.Storage) *benchmarkPostgresPoolObserver {
@@ -153,14 +153,14 @@ func subtractPostgresPoolStats(end, start storage.PostgresPoolStats) storage.Pos
 	}
 }
 
-func drainBenchmarkPromotions(timeout time.Duration) (time.Duration, bool, error) {
-	if benchPromotionWaiter == nil {
+func drainBenchmarkProjections(timeout time.Duration) (time.Duration, bool, error) {
+	if benchProjectionWaiter == nil {
 		return 0, false, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	startedAt := time.Now()
-	err := benchPromotionWaiter.WaitForQueuedPromotions(ctx)
+	err := benchProjectionWaiter.WaitForQueuedProjections(ctx)
 	return time.Since(startedAt), true, err
 }
 

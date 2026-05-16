@@ -157,14 +157,15 @@ func appendMergeEventWithPathHeadCAS(ctx context.Context, exec execable, event *
 			}
 			tag, err := exec.Exec(ctx, `
 				INSERT INTO home_path_heads (
-					home_id, path, path_version, content_hash, manifest_hash,
+					home_id, path, entry_type, path_version, content_hash, manifest_hash,
 					source_slice_id, source_commit_hash, last_merge_seq, deleted, updated_at
 				)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 				ON CONFLICT (home_id, path) DO NOTHING
 			`,
 				head.HomeID,
 				head.Path,
+				head.EntryType,
 				head.PathVersion,
 				head.ContentHash,
 				head.ManifestHash,
@@ -189,18 +190,20 @@ func appendMergeEventWithPathHeadCAS(ctx context.Context, exec execable, event *
 		}
 		tag, err := exec.Exec(ctx, `
 			UPDATE home_path_heads
-			SET path_version = $1,
-			    content_hash = $2,
-			    manifest_hash = $3,
-			    source_slice_id = $4,
-			    source_commit_hash = $5,
-			    last_merge_seq = $6,
-			    deleted = $7,
-			    updated_at = $8
-			WHERE home_id = $9
-			  AND path = $10
-			  AND path_version = $11
+			SET entry_type = $1,
+			    path_version = $2,
+			    content_hash = $3,
+			    manifest_hash = $4,
+			    source_slice_id = $5,
+			    source_commit_hash = $6,
+			    last_merge_seq = $7,
+			    deleted = $8,
+			    updated_at = $9
+			WHERE home_id = $10
+			  AND path = $11
+			  AND path_version = $12
 		`,
+			head.EntryType,
 			head.PathVersion,
 			head.ContentHash,
 			head.ManifestHash,
@@ -219,6 +222,9 @@ func appendMergeEventWithPathHeadCAS(ctx context.Context, exec execable, event *
 		if tag.RowsAffected() != 1 {
 			return ErrHomePathHeadConflict
 		}
+	}
+	if err := refreshPathHeadChildren(ctx, exec, heads); err != nil {
+		return err
 	}
 	return appendMergeEvent(ctx, exec, normalized)
 }

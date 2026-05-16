@@ -28,6 +28,17 @@ func IDForUsername(username string) string {
 	return idPrefix + strings.TrimSpace(username)
 }
 
+func IsHomeSliceID(sliceID string) bool {
+	return strings.HasPrefix(strings.TrimSpace(sliceID), idPrefix)
+}
+
+func UsernameFromSliceID(sliceID string) string {
+	if !IsHomeSliceID(sliceID) {
+		return ""
+	}
+	return strings.TrimPrefix(strings.TrimSpace(sliceID), idPrefix)
+}
+
 // ExternalSlugForSlice returns the public slug for a home slice.
 func ExternalSlugForSlice(slice *models.Slice) (string, bool) {
 	if slice == nil {
@@ -61,10 +72,25 @@ func RelativeRootPath(username string) string {
 	return strings.TrimPrefix(VisibleRootPath(username), "/")
 }
 
+func rootPathForUsername(ctx context.Context, st storage.Storage, username string) string {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return ""
+	}
+	user, err := st.GetUser(ctx, username)
+	if err == nil {
+		rootPath := strings.TrimPrefix(strings.TrimSpace(user.RootPath), "/")
+		if rootPath != "" {
+			return rootPath
+		}
+	}
+	return RelativeRootPath(username)
+}
+
 // ResolveLiveBackingSliceID returns a user's home slice when a mounted slice was
 // created from root paths that all live under that user's home root.
 // This lets read-side projections see the same live backing tree that the git
-// layer writes to before asynchronous root promotion catches up.
+// layer writes to before asynchronous root projection catches up.
 func ResolveLiveBackingSliceID(ctx context.Context, st storage.Storage, slice *models.Slice) (string, bool, error) {
 	if st == nil || slice == nil || strings.TrimSpace(slice.ParentSlice) == "" || len(slice.FolderMounts) == 0 {
 		return "", false, nil
@@ -173,6 +199,9 @@ func EnsureUserHomeSlice(ctx context.Context, st storage.Storage, username strin
 	if _, err := ensureDirectory(ctx, st, rootSlice.ID, rootPath); err != nil {
 		return nil, err
 	}
+	if err := ensureHomeRootPathHead(ctx, st, user.Username, homeSlice.ID, rootPath); err != nil {
+		return nil, err
+	}
 	return homeSlice, nil
 }
 
@@ -212,6 +241,9 @@ func BackfillUserHomeSlice(ctx context.Context, st storage.Storage, username str
 	if _, err := ensureDirectory(ctx, st, rootSlice.ID, rootPath); err != nil {
 		return nil, err
 	}
+	if err := ensureHomeRootPathHead(ctx, st, user.Username, homeSlice.ID, rootPath); err != nil {
+		return nil, err
+	}
 
 	filesCopied, directoriesCopied, err := copyRootSubtreeToHomeSlice(ctx, st, rootSlice.ID, homeSlice.ID, rootPath)
 	if err != nil {
@@ -231,6 +263,34 @@ func BackfillUserHomeSlice(ctx context.Context, st storage.Storage, username str
 		FilesCopied:       filesCopied,
 		DirectoriesCopied: directoriesCopied,
 	}, nil
+}
+
+func ensureHomeRootPathHead(ctx context.Context, st storage.Storage, username, homeSliceID, rootPath string) error {
+	heads, ok := st.(storage.HomePathHeadStore)
+	if !ok {
+		return nil
+	}
+	rootPath = common.CleanRelativePath(rootPath)
+	username = strings.TrimSpace(username)
+	homeSliceID = strings.TrimSpace(homeSliceID)
+	if username == "" || homeSliceID == "" || rootPath == "" {
+		return nil
+	}
+	sourceCommitHash := ""
+	if metadata, err := st.GetSliceMetadata(ctx, homeSliceID); err == nil && metadata != nil {
+		sourceCommitHash = strings.TrimSpace(metadata.HeadCommitHash)
+	} else if err != nil && !errors.Is(err, storage.ErrSliceNotFound) && !errors.Is(err, storage.ErrEntryNotFound) {
+		return err
+	}
+	return heads.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:           username,
+		Path:             rootPath,
+		EntryType:        "directory",
+		PathVersion:      1,
+		SourceSliceID:    homeSliceID,
+		SourceCommitHash: sourceCommitHash,
+		UpdatedAt:        time.Now(),
+	}})
 }
 
 func ensureHomeSliceRecord(ctx context.Context, st storage.Storage, user *models.User) (*models.Slice, bool, error) {

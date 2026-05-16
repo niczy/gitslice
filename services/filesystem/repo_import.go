@@ -228,7 +228,7 @@ func (s *filesystemServiceServer) syncRepoSnapshotToHomePath(ctx context.Context
 		modifiedPaths = append(modifiedPaths, targetPath)
 	}
 
-	modifiedPaths = normalizePromotionPaths(modifiedPaths)
+	modifiedPaths = normalizeMutationPaths(modifiedPaths)
 	if len(modifiedPaths) == 0 {
 		return "", len(files), nil
 	}

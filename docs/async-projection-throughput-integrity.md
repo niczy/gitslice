@@ -1,8 +1,8 @@
-# Design: Async Promotion, Throughput, and Conflict Integrity
+# Design: Async Projection, Throughput, and Conflict Integrity
 
 ## Problem Statement
 
-The historical merge workflow treated home/root promotion as part of the
+The historical merge workflow treated home/root projection as part of the
 user-visible merge operation. That gave strong read-after-merge behavior for
 materialized home/root views, but it also made every merge pay for work that was
 not needed to decide whether the merge is valid.
@@ -13,13 +13,13 @@ In the recent Postgres benchmark, the average merge profile was roughly:
 | --- | ---: |
 | Conflict check | 27 ms |
 | Finalize source slice merge | 226 ms |
-| Home/root promotion | 1319 ms |
+| Home/root projection | 1319 ms |
 | Total merge | 1760 ms |
 
 The database can handle far more than 43 simple writes per second. The issue is
 that a logical merge expands into multiple indexed reads, lock table writes,
 metadata updates, commit-history inserts, directory materialization, and
-home/root view updates. The slowest piece is synchronous promotion.
+home/root view updates. The slowest piece is synchronous projection.
 
 The goal is to increase merge throughput without weakening conflict resolution
 or allowing derived views to overwrite newer accepted content.
@@ -35,7 +35,7 @@ Put differently:
 
 ```
 Merge transaction = source of truth
-Home/root promotion = derived materialization
+Home/root projection = derived materialization
 ```
 
 The merge path should synchronously decide:
@@ -45,7 +45,7 @@ The merge path should synchronously decide:
 3. Can the changeset be marked merged?
 4. What source slice commit/event was accepted?
 
-Home/root promotion should asynchronously reflect accepted merge events into
+Home/root projection should asynchronously reflect accepted merge events into
 convenient read views. It should not be the authority for whether a merge is
 allowed.
 
@@ -85,7 +85,7 @@ slice is just a view. `home_path_heads` is the conflict authority.
 
 ## Throughput Versus Integrity Tradeoff
 
-### Fully synchronous promotion
+### Fully synchronous projection
 
 Legacy fully synchronous behavior:
 
@@ -112,7 +112,7 @@ Costs:
 - Large batches and hot homes can slow unrelated source-slice merges.
 - The merge path performs work that is not required for conflict correctness.
 
-### Async promotion
+### Async projection
 
 Current request-time behavior:
 
@@ -121,26 +121,26 @@ MergeChangeset
   -> validate path-head versions
   -> mark source changeset merged
   -> append source slice commit
-  -> enqueue promotion work
+  -> enqueue projection work
   -> return success
 
-Promotion worker
+Projection worker
   -> update home/root materialized views in batches
 ```
 
 Config changes are the exception for now: changesets touching
-`.gitslice/config.yaml` wait for promotion before applying config because config
+`.gitslice/config.yaml` wait for projection before applying config because config
 sync reads the root file tree.
 
-Promotion is intentionally backpressured relative to foreground merge traffic:
-the in-process worker queue uses fewer concurrent promotion workers and larger
+Projection is intentionally backpressured relative to foreground merge traffic:
+the in-process worker queue uses fewer concurrent projection workers and larger
 batches so derived-view writes do not saturate the same Postgres pool used by
 `CreateSliceFromFolder`, `CreateChangeset`, and `MergeChangeset`.
 
 Advantages:
 
 - Merge latency tracks correctness work, not view materialization.
-- Promotions can be batched by home and path.
+- Projections can be batched by home and path.
 - Workers can be tuned independently from request concurrency.
 - Durable retry/idempotency can be added around a smaller worker boundary.
 
@@ -151,33 +151,33 @@ Costs:
   success but before queue drain can leave materialized views stale until a
   reconciliation worker exists.
 - APIs that need a fully materialized home/root view need an explicit wait,
-  freshness token, or promotion status check.
-- Promotion must be order-independent and idempotent, or stale jobs can
+  freshness token, or projection status check.
+- Projection must be order-independent and idempotent, or stale jobs can
   overwrite newer accepted content.
 
 The integrity tradeoff is acceptable only if the merge transaction remains the
-single authority and promotion uses monotonic guards.
+single authority and projection uses monotonic guards.
 
 ---
 
-## Required Safety Rule: Monotonic Per-Path Promotion
+## Required Safety Rule: Monotonic Per-Path Projection
 
-Durable async promotion must not be "last worker wins." Queue execution order is
-not a valid correctness mechanism once promotion can be retried, distributed
+Durable async projection must not be "last worker wins." Queue execution order is
+not a valid correctness mechanism once projection can be retried, distributed
 across processes, or replayed after a crash. The current first phase keeps
 home-scoped jobs on the same in-process FIFO shard, but that is a throughput
 step, not the final integrity model.
 
 Bad case without guards:
 
-1. Slice B queues an older promotion for `alice/app/foo.go`.
-2. Slice A queues a newer promotion for `alice/app/foo.go`.
+1. Slice B queues an older projection for `alice/app/foo.go`.
+2. Slice A queues a newer projection for `alice/app/foo.go`.
 3. Worker applies A first.
 4. Worker later applies stale B.
 5. Home view incorrectly points at B's older content.
 
 The fix is to assign every accepted merge a monotonic sequence and apply
-promotion per path only when the event is newer than the currently materialized
+projection per path only when the event is newer than the currently materialized
 path state.
 
 Conceptual table:
@@ -195,7 +195,7 @@ home_path_state (
 )
 ```
 
-Promotion upsert:
+Projection upsert:
 
 ```sql
 INSERT INTO home_path_state (
@@ -217,7 +217,7 @@ SET source_slice_id = EXCLUDED.source_slice_id,
 WHERE home_path_state.merge_seq < EXCLUDED.merge_seq;
 ```
 
-This makes promotion:
+This makes projection:
 
 - **Idempotent**: replaying the same event does not change the result.
 - **Order-independent**: stale events cannot overwrite newer materialization.
@@ -254,7 +254,7 @@ The source slice commit and `merge_events` row must be in the same DB
 transaction. If the transaction commits, the event exists. If the transaction
 rolls back, there is no accepted merge to promote.
 
-The promotion worker can then:
+The projection worker can then:
 
 1. Claim pending events with `FOR UPDATE SKIP LOCKED`.
 2. Group them by home slice and path.
@@ -276,7 +276,7 @@ alice/api-a includes alice/app/foo.go
 alice/api-b includes alice/app/foo.go
 ```
 
-Conflict resolution must continue to work even when home promotion lags.
+Conflict resolution must continue to work even when home projection lags.
 
 Required merge-time behavior:
 
@@ -300,7 +300,7 @@ MergeChangeset(slice B)
   -> home_path_heads[alice/app/foo.go].path_version = 13
   -> return MERGE_STATUS_STALE_BASE
   -> no merge event appended
-  -> no promotion event exists
+  -> no projection event exists
 ```
 
 `file_slice_index` and materialized home/root trees are read models for
@@ -342,7 +342,7 @@ merge transaction's synchronous validation. Another slice can merge after the UI
 renders `READY_FOR_MERGE`, so `MergeChangeset` must still repeat the path-head
 CAS before appending a merge event.
 
-Async promotion does not change this logic. The proactive status should inspect
+Async projection does not change this logic. The proactive status should inspect
 path heads and snapshot manifest refs. It should not depend on whether
 home/root materialized views are current.
 
@@ -350,7 +350,7 @@ home/root materialized views are current.
 
 ## API Consistency Options
 
-Async promotion creates a product/API choice.
+Async projection creates a product/API choice.
 
 ### Option A: merge returns after source commit only
 
@@ -360,7 +360,7 @@ Response:
 {
   "status": "SUCCESS",
   "newCommitHash": "commit_...",
-  "promotionStatus": "PENDING"
+  "projectionStatus": "PENDING"
 }
 ```
 
@@ -373,19 +373,19 @@ Request:
 ```json
 {
   "changesetId": "chg_...",
-  "waitForPromotion": true
+  "waitForProjection": true
 }
 ```
 
 Default can be fast. Tests, CLI commands, and user workflows that need immediate
 home/root consistency can opt into waiting.
 
-### Option C: separate promotion status endpoint
+### Option C: separate projection status endpoint
 
 Expose:
 
 ```
-GET /v1/merge-events/{commit_hash}/promotion-status
+GET /v1/merge-events/{commit_hash}/projection-status
 ```
 
 Useful when web UI wants to show "merged, publishing..." without blocking the
@@ -416,24 +416,24 @@ This reduces write amplification before changing consistency behavior.
 - Include `modified_files`, `commit_hash`, `source_slice_id`, and derived
   `home_slice_id` when available.
 
-### Phase 3: Async home/root promotion worker
+### Phase 3: Async home/root projection worker
 
-- Change request-time merge to enqueue/append promotion work and return.
+- Change request-time merge to enqueue/append projection work and return.
 - Let background workers claim pending events with `FOR UPDATE SKIP LOCKED`.
 - Group events by home slice.
-- Apply per-path monotonic promotion guards.
+- Apply per-path monotonic projection guards.
 - Mark events promoted only after all materialized writes succeed.
 
 ### Phase 4: Freshness APIs and test updates
 
-- Keep `WaitForQueuedPromotions` or equivalent for integration tests and
+- Keep `WaitForQueuedProjections` or equivalent for integration tests and
   benchmark integrity checks.
 - Treat `GetSliceCommits` and `gs slice history` as projection-backed reads.
 - Add optional CLI/UI wait behavior where users expect immediate history or
   home/root visibility. `gs changeset merge --wait` waits for the projection
   tokens returned by the merge response, while default merge returns after the
   accepted merge event commits.
-- Surface promotion lag in admin/debug endpoints.
+- Surface projection lag in admin/debug endpoints.
 - Surface proactive changeset state in list/detail APIs so users see whether to
   merge, sync, or resolve conflicts before attempting the merge.
 - Backfill older merge events with
@@ -456,8 +456,8 @@ The design is correct only if these invariants hold:
 1. A changeset cannot be marked merged unless path-head CAS passes.
 2. A merge event is appended in the same transaction as the accepted source
    slice commit.
-3. Promotion workers never overwrite a path with an older `merge_seq`.
-4. Promotion is idempotent and safe to retry.
+3. Projection workers never overwrite a path with an older `merge_seq`.
+4. Projection is idempotent and safe to retry.
 5. Home/root view lag never participates in conflict authority.
 6. APIs that require history or home/root freshness explicitly wait for the
    relevant projection.
@@ -475,9 +475,9 @@ transaction rather than on home/root materialization.
 
 Expected changes:
 
-- Merge latency should drop by roughly the current promotion latency for the
+- Merge latency should drop by roughly the current projection latency for the
   fast path.
-- Promotion throughput can improve through batching because workers can process
+- Projection throughput can improve through batching because workers can process
   many accepted events together.
 - Hot homes still serialize per path via monotonic upserts, but unrelated homes
   and unrelated paths can proceed in parallel.
@@ -490,11 +490,11 @@ from corrupting home/root materialization.
 
 ## Open Questions
 
-1. Should CLI `gs changeset merge` ever wait for home/root promotion by default,
+1. Should CLI `gs changeset merge` ever wait for home/root projection by default,
    or should only explicit wait modes block after the accepted merge event?
 2. Should the web UI read source slices immediately after merge and only use
-   home/root views when promotion is current?
-3. How much promotion lag is acceptable before surfacing an admin warning?
-4. Do we need per-path promotion status, or is per-commit status enough?
+   home/root views when projection is current?
+3. How much projection lag is acceptable before surfacing an admin warning?
+4. Do we need per-path projection status, or is per-commit status enough?
 5. Should line stats be synchronous for history correctness, or eventually
    enriched after merge?

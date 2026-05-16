@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/niczy/gitslice/internal/homeslice"
+	"github.com/niczy/gitslice/internal/storage"
 )
 
 type runnerTokenJSON struct {
@@ -121,7 +123,7 @@ func writeRemoteFileFromString(t *testing.T, remotePath, content string) {
 	output := runCLIOrFail(t, "", "fs", "write", remotePath, "-f", tmp)
 	commitHash := extractFilesystemCommitHash(output)
 	waitForRemoteHomeHead(t, remotePath, commitHash)
-	waitForRemoteHomePromotion(t, remotePath)
+	waitForRemoteHomeProjection(t, remotePath)
 }
 
 func waitForRemoteHomeHead(t *testing.T, remotePath, commitHash string) {
@@ -147,20 +149,27 @@ func waitForRemoteHomeHead(t *testing.T, remotePath, commitHash string) {
 	}
 }
 
-func waitForRemoteHomePromotion(t *testing.T, remotePath string) {
+func waitForRemoteHomeProjection(t *testing.T, remotePath string) {
 	t.Helper()
 	if testStorage == nil {
 		return
 	}
-	parts := strings.Split(strings.TrimPrefix(remotePath, "/"), "/")
-	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+	rootPath := strings.TrimPrefix(remotePath, "/")
+	if strings.TrimSpace(rootPath) == "" {
 		return
 	}
-	homeID := homeslice.IDForUsername(parts[0])
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := waitForMergedChangesetMessage(ctx, testStorage, homeID, "write "+remotePath, 3*time.Second, 25*time.Millisecond); err != nil {
-		t.Fatalf("expected home promotion for %s: %v", remotePath, err)
+	if err := waitForCondition(3*time.Second, 25*time.Millisecond, func() (bool, error) {
+		if _, err := storage.ReadSliceFileContent(ctx, testStorage, "root", rootPath); err != nil {
+			if errors.Is(err, storage.ErrEntryNotFound) {
+				return false, nil
+			}
+			return false, err
+		}
+		return true, nil
+	}); err != nil {
+		t.Fatalf("expected root path-head projection for %s: %v", remotePath, err)
 	}
 }
 

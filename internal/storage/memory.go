@@ -1612,8 +1612,18 @@ func (s *InMemoryStorage) GetFileManifest(ctx context.Context, sliceID, path str
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	manifest, ok := s.manifests[strings.TrimSpace(sliceID)+":"+cleanRelativePath(path)]
+	cleanedSliceID := strings.TrimSpace(sliceID)
+	cleanedPath := cleanRelativePath(path)
+	if _, root, view := s.pathHeadViewModeLocked(cleanedSliceID); root && view {
+		if manifest, pathHeadView, err := s.pathHeadFileManifestLocked(cleanedSliceID, cleanedPath); err == nil || (pathHeadView && !errors.Is(err, ErrEntryNotFound)) {
+			return manifest, err
+		}
+	}
+	manifest, ok := s.manifests[cleanedSliceID+":"+cleanedPath]
 	if !ok {
+		if manifest, view, err := s.pathHeadFileManifestLocked(cleanedSliceID, cleanedPath); view || err != nil {
+			return manifest, err
+		}
 		return nil, ErrEntryNotFound
 	}
 	return cloneManifest(manifest), nil
@@ -1632,9 +1642,67 @@ func (s *InMemoryStorage) GetFileManifestHashes(ctx context.Context, sliceID str
 		}
 		if manifest, ok := s.manifests[cleanedSliceID+":"+cleanedPath]; ok && manifest != nil {
 			result[cleanedPath] = strings.TrimSpace(manifest.Hash)
+			continue
+		}
+		if manifest, view, err := s.pathHeadFileManifestLocked(cleanedSliceID, cleanedPath); err != nil {
+			if errors.Is(err, ErrEntryNotFound) {
+				continue
+			}
+			return nil, err
+		} else if view && manifest != nil {
+			result[cleanedPath] = strings.TrimSpace(manifest.Hash)
 		}
 	}
 	return result, nil
+}
+
+func (s *InMemoryStorage) pathHeadViewModeLocked(sliceID string) (homeID string, root bool, ok bool) {
+	sliceID = strings.TrimSpace(sliceID)
+	if homeID, ok := homePathHeadHomeIDFromSliceID(sliceID); ok {
+		return homeID, false, true
+	}
+	if sliceID == ids.RootSliceID {
+		return "", true, true
+	}
+	if sl := s.slices[sliceID]; sl != nil && sl.IsRoot {
+		return "", true, true
+	}
+	return "", false, false
+}
+
+func (s *InMemoryStorage) pathHeadFileManifestLocked(sliceID, filePath string) (*models.FileManifest, bool, error) {
+	homeID, root, ok := s.pathHeadViewModeLocked(sliceID)
+	if !ok {
+		return nil, false, nil
+	}
+	filePath = cleanRelativePath(filePath)
+	if filePath == "" {
+		return nil, true, ErrEntryNotFound
+	}
+	if root {
+		var pathHomeID string
+		pathHomeID, ok = pathHeadViewHomeIDForRootPath(filePath)
+		if !ok {
+			return nil, true, ErrEntryNotFound
+		}
+		homeID = pathHomeID
+	}
+	head := s.homePathHeads[homePathHeadKey(homeID, filePath)]
+	if head == nil || head.Deleted || normalizeHomePathHeadEntryType(head.EntryType) != homePathHeadEntryTypeFile {
+		return nil, true, ErrEntryNotFound
+	}
+	hash := strings.TrimSpace(head.ManifestHash)
+	if hash == "" {
+		hash = strings.TrimSpace(head.ContentHash)
+	}
+	if hash == "" {
+		return nil, true, ErrEntryNotFound
+	}
+	manifest := s.versionedManifests[hash]
+	if manifest == nil {
+		return nil, true, ErrEntryNotFound
+	}
+	return cloneManifestForPath(manifest, filePath, hash), true, nil
 }
 
 func (s *InMemoryStorage) DeleteFileManifest(ctx context.Context, sliceID, path string) error {
@@ -2127,8 +2195,19 @@ func (s *InMemoryStorage) GetEntryByPath(ctx context.Context, sliceID, path stri
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	entryID, ok := s.entriesByPath[sliceID+":"+path]
+	cleanedSliceID := strings.TrimSpace(sliceID)
+	cleanedPath := cleanRelativePath(path)
+	if _, root, view := s.pathHeadViewModeLocked(cleanedSliceID); root && view {
+		if entry, ok, err := s.pathHeadEntryLocked(cleanedSliceID, cleanedPath); ok || err != nil {
+			return entry, err
+		}
+	}
+
+	entryID, ok := s.entriesByPath[cleanedSliceID+":"+cleanedPath]
 	if !ok {
+		if entry, view, err := s.pathHeadEntryLocked(cleanedSliceID, cleanedPath); view || err != nil {
+			return entry, err
+		}
 		return nil, ErrEntryNotFound
 	}
 
@@ -2140,6 +2219,62 @@ func (s *InMemoryStorage) GetEntryByPath(ctx context.Context, sliceID, path stri
 	copy := *entry
 	copy.Hash = s.entryHashLocked(entry)
 	return &copy, nil
+}
+
+func (s *InMemoryStorage) pathHeadEntryLocked(sliceID, filePath string) (*models.DirectoryEntry, bool, error) {
+	homeID, root, ok := s.pathHeadViewModeLocked(sliceID)
+	if !ok {
+		return nil, false, nil
+	}
+	filePath = cleanRelativePath(filePath)
+	if filePath == "" {
+		return pathHeadViewEntry(sliceID, "", homePathHeadEntryTypeDirectory, "", nil), true, nil
+	}
+	if root {
+		var pathHomeID string
+		pathHomeID, ok = pathHeadViewHomeIDForRootPath(filePath)
+		if !ok {
+			return nil, true, ErrEntryNotFound
+		}
+		homeID = pathHomeID
+	}
+	if head := s.homePathHeads[homePathHeadKey(homeID, filePath)]; head != nil && !head.Deleted {
+		entryType := normalizeHomePathHeadEntryType(head.EntryType)
+		if entryType == homePathHeadEntryTypeFile {
+			hash := strings.TrimSpace(head.ManifestHash)
+			if hash == "" {
+				hash = strings.TrimSpace(head.ContentHash)
+			}
+			return pathHeadViewEntry(sliceID, filePath, entryType, hash, s.versionedManifests[hash]), true, nil
+		}
+		return pathHeadViewEntry(sliceID, filePath, entryType, "", nil), true, nil
+	}
+	if s.pathHeadDirectoryExistsLocked(homeID, filePath) {
+		return pathHeadViewEntry(sliceID, filePath, homePathHeadEntryTypeDirectory, "", nil), true, nil
+	}
+	return nil, true, ErrEntryNotFound
+}
+
+func (s *InMemoryStorage) pathHeadDirectoryExistsLocked(homeID, dirPath string) bool {
+	homeID = normalizeHomePathHeadHomeID(homeID)
+	dirPath = cleanRelativePath(dirPath)
+	prefix := dirPath
+	if prefix != "" {
+		prefix += "/"
+	}
+	for _, head := range s.homePathHeads {
+		if head == nil || head.Deleted || normalizeHomePathHeadHomeID(head.HomeID) != homeID {
+			continue
+		}
+		headPath := cleanRelativePath(head.Path)
+		if dirPath == "" {
+			return true
+		}
+		if strings.HasPrefix(headPath, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *InMemoryStorage) GetExistingEntriesByPaths(ctx context.Context, sliceID string, paths []string) (map[string]bool, error) {
@@ -2164,6 +2299,11 @@ func (s *InMemoryStorage) ListEntries(ctx context.Context, sliceID, parentID str
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	cleanedSliceID := strings.TrimSpace(sliceID)
+	if entries, view, parentExists := s.listPathHeadEntriesLocked(cleanedSliceID, parentID); view && (len(entries) > 0 || parentExists) {
+		return entries, nil
+	}
+
 	var result []*models.DirectoryEntry
 	for _, entryID := range s.entriesByParent[parentID] {
 		entry, ok := s.entries[entryID]
@@ -2185,6 +2325,95 @@ func (s *InMemoryStorage) ListEntries(ctx context.Context, sliceID, parentID str
 	return result, nil
 }
 
+func (s *InMemoryStorage) listPathHeadEntriesLocked(sliceID, parentID string) ([]*models.DirectoryEntry, bool, bool) {
+	homeID, root, ok := s.pathHeadViewModeLocked(sliceID)
+	if !ok {
+		return nil, false, false
+	}
+	parentPath, ok := pathHeadViewParentPath(sliceID, parentID)
+	if !ok {
+		return nil, true, false
+	}
+	parentExists := false
+	if !root && parentPath != "" {
+		parentExists = s.pathHeadDirectoryExistsLocked(homeID, parentPath)
+	}
+	if root && parentPath != "" {
+		if pathHomeID, ok := pathHeadViewHomeIDForRootPath(parentPath); ok {
+			parentExists = s.pathHeadDirectoryExistsLocked(pathHomeID, parentPath)
+		}
+	}
+
+	type child struct {
+		path         string
+		entryType    string
+		manifestHash string
+		manifest     *models.FileManifest
+	}
+	children := map[string]*child{}
+	for _, head := range s.homePathHeads {
+		if head == nil || head.Deleted {
+			continue
+		}
+		if !root && normalizeHomePathHeadHomeID(head.HomeID) != homeID {
+			continue
+		}
+		headPath := cleanRelativePath(head.Path)
+		if headPath == "" {
+			continue
+		}
+		if root && parentPath != "" {
+			pathHomeID, ok := pathHeadViewHomeIDForRootPath(parentPath)
+			if !ok || normalizeHomePathHeadHomeID(head.HomeID) != pathHomeID {
+				continue
+			}
+		}
+		var rest string
+		switch {
+		case parentPath == "":
+			rest = headPath
+		case headPath == parentPath:
+			continue
+		case strings.HasPrefix(headPath, parentPath+"/"):
+			rest = strings.TrimPrefix(headPath, parentPath+"/")
+		default:
+			continue
+		}
+		name, remainder, _ := strings.Cut(rest, "/")
+		if name == "" {
+			continue
+		}
+		childPath := name
+		if parentPath != "" {
+			childPath = parentPath + "/" + name
+		}
+		entryType := homePathHeadEntryTypeDirectory
+		manifestHash := ""
+		var manifest *models.FileManifest
+		if remainder == "" {
+			entryType = normalizeHomePathHeadEntryType(head.EntryType)
+			if entryType == homePathHeadEntryTypeFile {
+				manifestHash = strings.TrimSpace(head.ManifestHash)
+				if manifestHash == "" {
+					manifestHash = strings.TrimSpace(head.ContentHash)
+				}
+				manifest = s.versionedManifests[manifestHash]
+			}
+		}
+		existing := children[childPath]
+		if existing == nil || existing.entryType != homePathHeadEntryTypeDirectory {
+			children[childPath] = &child{path: childPath, entryType: entryType, manifestHash: manifestHash, manifest: manifest}
+		}
+	}
+
+	result := make([]*models.DirectoryEntry, 0, len(children))
+	for _, c := range children {
+		result = append(result, pathHeadViewEntry(sliceID, c.path, c.entryType, c.manifestHash, c.manifest))
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Path < result[j].Path })
+	return result, true, parentExists
+}
+
 func (s *InMemoryStorage) ListEntriesByPathPrefixes(ctx context.Context, sliceID string, prefixes []string) ([]*models.DirectoryEntry, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -2196,7 +2425,24 @@ func (s *InMemoryStorage) ListEntriesByPathPrefixes(ctx context.Context, sliceID
 
 	cleanedSliceID := strings.TrimSpace(sliceID)
 	result := make([]*models.DirectoryEntry, 0)
-	seen := make(map[string]struct{})
+	indexByPath := make(map[string]int)
+	addEntry := func(entry *models.DirectoryEntry, replace bool) {
+		if entry == nil {
+			return
+		}
+		entryPath := cleanRelativePath(entry.Path)
+		if entryPath == "" {
+			return
+		}
+		if idx, ok := indexByPath[entryPath]; ok {
+			if replace {
+				result[idx] = entry
+			}
+			return
+		}
+		indexByPath[entryPath] = len(result)
+		result = append(result, entry)
+	}
 	for _, entry := range s.entries {
 		if entry == nil {
 			continue
@@ -2210,14 +2456,34 @@ func (s *InMemoryStorage) ListEntriesByPathPrefixes(ctx context.Context, sliceID
 		if !pathMatchesAnyPrefix(entryPath, cleanedPrefixes) {
 			continue
 		}
-		key := entry.ID + "\x00" + entryPath
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
 		copy := *entry
 		copy.Hash = s.entryHashLocked(entry)
-		result = append(result, &copy)
+		addEntry(&copy, false)
+	}
+	if homeID, root, ok := s.pathHeadViewModeLocked(cleanedSliceID); ok {
+		for _, head := range s.homePathHeads {
+			if head == nil || head.Deleted {
+				continue
+			}
+			if !root && normalizeHomePathHeadHomeID(head.HomeID) != homeID {
+				continue
+			}
+			headPath := cleanRelativePath(head.Path)
+			if !pathMatchesAnyPrefix(headPath, cleanedPrefixes) {
+				continue
+			}
+			entryType := normalizeHomePathHeadEntryType(head.EntryType)
+			manifestHash := ""
+			var manifest *models.FileManifest
+			if entryType == homePathHeadEntryTypeFile {
+				manifestHash = strings.TrimSpace(head.ManifestHash)
+				if manifestHash == "" {
+					manifestHash = strings.TrimSpace(head.ContentHash)
+				}
+				manifest = s.versionedManifests[manifestHash]
+			}
+			addEntry(pathHeadViewEntry(cleanedSliceID, headPath, entryType, manifestHash, manifest), root)
+		}
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Path == result[j].Path {

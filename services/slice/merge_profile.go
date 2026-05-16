@@ -8,15 +8,15 @@ import (
 )
 
 type mergeProfile struct {
-	changesetID       string
-	sliceID           string
-	modifiedFiles     int
-	startedAt         time.Time
-	revertDuration    time.Duration
-	finalizeDuration  time.Duration
-	promotionDuration time.Duration
-	configDuration    time.Duration
-	totalDuration     time.Duration
+	changesetID        string
+	sliceID            string
+	modifiedFiles      int
+	startedAt          time.Time
+	revertDuration     time.Duration
+	finalizeDuration   time.Duration
+	projectionDuration time.Duration
+	configDuration     time.Duration
+	totalDuration      time.Duration
 }
 
 func newMergeProfile(changesetID, sliceID string, modifiedFiles int) *mergeProfile {
@@ -42,11 +42,11 @@ func (p *mergeProfile) markFinalize(duration time.Duration) {
 	p.finalizeDuration = duration
 }
 
-func (p *mergeProfile) markPromotion(duration time.Duration) {
+func (p *mergeProfile) markProjection(duration time.Duration) {
 	if p == nil {
 		return
 	}
-	p.promotionDuration = duration
+	p.projectionDuration = duration
 }
 
 func (p *mergeProfile) markConfig(duration time.Duration) {
@@ -68,13 +68,13 @@ func (p *mergeProfile) summary() string {
 		return ""
 	}
 	return fmt.Sprintf(
-		"Merge profile: changeset_id=%s slice_id=%s modified_files=%d revert_ms=%d finalize_ms=%d promotion_ms=%d config_ms=%d total_ms=%d",
+		"Merge profile: changeset_id=%s slice_id=%s modified_files=%d revert_ms=%d finalize_ms=%d projection_ms=%d config_ms=%d total_ms=%d",
 		p.changesetID,
 		p.sliceID,
 		p.modifiedFiles,
 		p.revertDuration.Milliseconds(),
 		p.finalizeDuration.Milliseconds(),
-		p.promotionDuration.Milliseconds(),
+		p.projectionDuration.Milliseconds(),
 		p.configDuration.Milliseconds(),
 		p.totalDuration.Milliseconds(),
 	)

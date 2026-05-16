@@ -143,7 +143,13 @@ func (s *PostgresNativeStorage) AcceptChangesetMergeByID(ctx context.Context, ch
 	var updateCount int64
 	var changesetRows int64
 	var metadataRows int64
-	err := s.pool.QueryRow(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	err = tx.QueryRow(ctx, `
 		WITH input AS (
 			SELECT
 				$1::text AS changeset_id,
@@ -299,10 +305,10 @@ func (s *PostgresNativeStorage) AcceptChangesetMergeByID(ctx context.Context, ch
 		),
 		ins_heads AS (
 			INSERT INTO home_path_heads (
-				home_id, path, path_version, content_hash, manifest_hash,
+				home_id, path, entry_type, path_version, content_hash, manifest_hash,
 				source_slice_id, source_commit_hash, last_merge_seq, deleted, updated_at
 			)
-			SELECT r.home_id, u.path, u.new_version, u.manifest_hash, u.manifest_hash,
+			SELECT r.home_id, u.path, 'file', u.new_version, u.manifest_hash, u.manifest_hash,
 			       r.c_slice_id, r.commit_hash, seq.merge_seq, u.manifest_hash = '', r.merged_at
 			FROM ready r
 			CROSS JOIN seq
@@ -313,7 +319,8 @@ func (s *PostgresNativeStorage) AcceptChangesetMergeByID(ctx context.Context, ch
 		),
 		upd_heads AS (
 			UPDATE home_path_heads h
-			SET path_version = u.new_version,
+			SET entry_type = 'file',
+			    path_version = u.new_version,
 			    content_hash = u.manifest_hash,
 			    manifest_hash = u.manifest_hash,
 			    source_slice_id = r.c_slice_id,
@@ -559,6 +566,16 @@ func (s *PostgresNativeStorage) AcceptChangesetMergeByID(ctx context.Context, ch
 		PathUpdates:      pathUpdates,
 		CreatedAt:        mergedAt,
 	}
+	heads, err := homePathHeadsFromMergeEvent(event)
+	if err != nil {
+		return nil, err
+	}
+	if err := refreshPathHeadChildren(ctx, tx, heads); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
 	return &AcceptChangesetMergeResult{
 		Changeset:   &cs,
 		SourceSlice: &sourceSlice,
@@ -716,7 +733,10 @@ func buildFastMergePathUpdates(cs *models.Changeset, snapshot *models.ChangesetS
 	return updates, nil
 }
 
-func acceptFastChangesetMergeStatement(ctx context.Context, q queryable, cs *models.Changeset, event *models.MergeEvent) error {
+func acceptFastChangesetMergeStatement(ctx context.Context, q interface {
+	queryable
+	execable
+}, cs *models.Changeset, event *models.MergeEvent) error {
 	if cs == nil || event == nil || len(event.PathUpdates) == 0 {
 		return ErrInvalidInput
 	}
@@ -785,10 +805,10 @@ func acceptFastChangesetMergeStatement(ctx context.Context, q queryable, cs *mod
 		),
 		ins_heads AS (
 			INSERT INTO home_path_heads (
-				home_id, path, path_version, content_hash, manifest_hash,
+				home_id, path, entry_type, path_version, content_hash, manifest_hash,
 				source_slice_id, source_commit_hash, last_merge_seq, deleted, updated_at
 			)
-			SELECT $8, u.path, u.new_version, u.content_hash, u.manifest_hash,
+			SELECT $8, u.path, 'file', u.new_version, u.content_hash, u.manifest_hash,
 			       $11, $12, seq.merge_seq, u.deleted, $17
 			FROM updates u
 			CROSS JOIN seq
@@ -798,7 +818,8 @@ func acceptFastChangesetMergeStatement(ctx context.Context, q queryable, cs *mod
 		),
 		upd_heads AS (
 			UPDATE home_path_heads h
-			SET path_version = u.new_version,
+			SET entry_type = 'file',
+			    path_version = u.new_version,
 			    content_hash = u.content_hash,
 			    manifest_hash = u.manifest_hash,
 			    source_slice_id = $11,
@@ -937,6 +958,15 @@ func acceptFastChangesetMergeStatement(ctx context.Context, q queryable, cs *mod
 	}
 	if metadataRows != 1 {
 		return ErrSliceNotFound
+	}
+
+	normalized.MergeSeq = mergeSeq
+	heads, err := homePathHeadsFromMergeEvent(normalized)
+	if err != nil {
+		return err
+	}
+	if err := refreshPathHeadChildren(ctx, q, heads); err != nil {
+		return err
 	}
 
 	event.HomeID = normalized.HomeID

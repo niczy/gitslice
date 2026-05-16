@@ -6,11 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/url"
-	"sort"
 	"strings"
-	"time"
 
-	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
@@ -129,128 +126,10 @@ func (s *sliceServiceServer) GetGlobalState(ctx context.Context, req *slicev1.Gl
 }
 
 func (s *sliceServiceServer) BatchMerge(ctx context.Context, req *slicev1.BatchMergeRequest) (*slicev1.BatchMergeResponse, error) {
-	log.Printf("BatchMerge called: max_slices=%v", req.GetMaxSlices())
-	username, err := s.requireUsername(ctx)
-	if err != nil {
+	if _, err := s.requireUsername(ctx); err != nil {
 		return nil, err
 	}
-
-	rootSlice, err := s.storage.GetRootSlice(ctx)
-	if errors.Is(err, storage.ErrSliceNotFound) {
-		if initErr := s.storage.InitializeRootSlice(ctx); initErr != nil {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to initialize root slice: %v", initErr))
-		}
-		rootSlice, err = s.storage.GetRootSlice(ctx)
-	}
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load root slice: %v", err))
-	}
-
-	allSlices, err := s.storage.ListSlicesByOwner(ctx, username, int(^uint(0)>>1), 0)
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list slices: %v", err))
-	}
-
-	mergeCandidates := make([]*models.Slice, 0, len(allSlices))
-	for _, slice := range allSlices {
-		if slice.IsRoot {
-			continue
-		}
-		mergeCandidates = append(mergeCandidates, slice)
-	}
-
-	maxSlices := req.GetMaxSlices()
-	if maxSlices > 0 && int(maxSlices) < len(mergeCandidates) {
-		mergeCandidates = mergeCandidates[:maxSlices]
-	}
-
-	rootMetadata, err := s.storage.GetSliceMetadata(ctx, rootSlice.ID)
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load root metadata: %v", err))
-	}
-
-	mergedFiles := make(map[string]bool)
-	for _, file := range rootMetadata.ModifiedFiles {
-		mergedFiles[file] = true
-	}
-	for _, file := range rootSlice.Files {
-		mergedFiles[file] = true
-	}
-
-	mergedSliceIDs := make([]string, 0, len(mergeCandidates))
-	for _, slice := range mergeCandidates {
-		mergedSliceIDs = append(mergedSliceIDs, slice.ID)
-
-		metadata, err := s.storage.GetSliceMetadata(ctx, slice.ID)
-		if err != nil {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load slice metadata: %v", err))
-		}
-
-		filesToMerge := make(map[string]bool)
-		for _, fileID := range slice.Files {
-			filesToMerge[fileID] = true
-		}
-		for _, fileID := range metadata.ModifiedFiles {
-			filesToMerge[fileID] = true
-		}
-
-		for fileID := range filesToMerge {
-			if err := s.storage.AddFileToSlice(ctx, fileID, rootSlice.ID); err != nil {
-				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to add file to root slice: %v", err))
-			}
-			if err := s.storage.RemoveFileFromSlice(ctx, fileID, slice.ID); err != nil {
-				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to remove file from slice: %v", err))
-			}
-			mergedFiles[fileID] = true
-		}
-
-		metadata.HeadCommitHash = common.GenerateCommitID()
-		metadata.ModifiedFiles = []string{}
-		metadata.ModifiedFilesCount = 0
-		if err := s.storage.UpdateSliceMetadata(ctx, slice.ID, metadata); err != nil {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update slice metadata: %v", err))
-		}
-	}
-
-	mergedFileList := make([]string, 0, len(mergedFiles))
-	for file := range mergedFiles {
-		mergedFileList = append(mergedFileList, file)
-	}
-	sort.Strings(mergedFileList)
-
-	commitTime := time.Now()
-	globalCommitHash := common.GenerateCommitID()
-	rootMetadata.HeadCommitHash = globalCommitHash
-	rootMetadata.ModifiedFiles = mergedFileList
-	rootMetadata.ModifiedFilesCount = len(mergedFileList)
-	if err := s.storage.UpdateSliceMetadata(ctx, rootSlice.ID, rootMetadata); err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update root metadata: %v", err))
-	}
-
-	state, err := s.storage.GetGlobalState(ctx)
-	if err != nil {
-		if !errors.Is(err, storage.ErrInvalidInput) {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load global state: %v", err))
-		}
-		state = &models.GlobalState{}
-	}
-	state.GlobalCommitHash = globalCommitHash
-	state.Timestamp = commitTime
-	state.History = append([]*models.GlobalCommit{{
-		CommitHash:     globalCommitHash,
-		Timestamp:      commitTime,
-		MergedSliceIDs: mergedSliceIDs,
-	}}, state.History...)
-	if err := s.storage.UpdateGlobalState(ctx, state); err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update global state: %v", err))
-	}
-
-	return &slicev1.BatchMergeResponse{
-		GlobalCommitHash: globalCommitHash,
-		MergedSliceCount: int32(len(mergeCandidates)),
-		MergedSliceIds:   mergedSliceIDs,
-		Timestamp:        commitTime.Unix(),
-	}, nil
+	return nil, status.Error(codes.Unimplemented, "global batch merge was removed; merge changesets directly to update slice path heads")
 }
 
 func (s *sliceServiceServer) scopedDivergentConflicts(ctx context.Context, username, requestedSliceID string) ([]*models.FileConflict, error) {

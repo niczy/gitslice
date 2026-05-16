@@ -30,19 +30,18 @@ type Config struct {
 	StorageType string
 
 	// Postgres configuration (if storage type is postgres or postgres_native)
-	PostgresDSN               string
-	PostgresMaxConns          int32
-	PostgresMinConns          int32
-	PostgresMaxConnLifetime   time.Duration
-	PostgresPromotionMaxConns int32
+	PostgresDSN                string
+	PostgresMaxConns           int32
+	PostgresMinConns           int32
+	PostgresMaxConnLifetime    time.Duration
+	PostgresProjectionMaxConns int32
 
-	// Merge-event promotion worker. Disabled by default while durable workers
-	// run behind a feature flag.
-	MergeEventPromotionEnabled      bool
-	MergeEventPromotionWorkers      int
-	MergeEventPromotionBatchSize    int
-	MergeEventPromotionShardCount   int32
-	MergeEventPromotionPollInterval time.Duration
+	// Merge-event projection workers build derived commit-history indexes.
+	MergeEventProjectionEnabled      bool
+	MergeEventProjectionWorkers      int
+	MergeEventProjectionBatchSize    int
+	MergeEventProjectionShardCount   int32
+	MergeEventProjectionPollInterval time.Duration
 
 	// Object store configuration (filesystem, GCS)
 	//
@@ -107,51 +106,51 @@ func LoadConfig() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	postgresPromotionMaxConns, err := getEnvOptionalInt32("POSTGRES_PROMOTION_MAX_CONNS")
+	postgresProjectionMaxConns, err := getEnvOptionalInt32("POSTGRES_PROJECTION_MAX_CONNS")
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(os.Getenv("POSTGRES_PROMOTION_MAX_CONNS")) == "" {
-		postgresPromotionMaxConns = 4
+	if strings.TrimSpace(os.Getenv("POSTGRES_PROJECTION_MAX_CONNS")) == "" {
+		postgresProjectionMaxConns = 4
 	}
 	return &Config{
-		CoreServicePort:           corePort,
-		CoreBindAddr:              getEnv("CORE_BIND_ADDR", ""),
-		GatewayPort:               getEnv("GATEWAY_PORT", corePort),
-		DeployEnv:                 getEnv("DEPLOY_ENV", ""),
-		AuthProvider:              getEnv("AUTH_PROVIDER", "local"),
-		AllowLegacyUserAuth:       getEnvBool("ALLOW_LEGACY_USER_AUTH", false),
-		StorageType:               getEnv("STORAGE_TYPE", "memory"),
-		PostgresDSN:               getEnv("POSTGRES_DSN", ""),
-		PostgresMaxConns:          postgresMaxConns,
-		PostgresMinConns:          postgresMinConns,
-		PostgresMaxConnLifetime:   postgresMaxConnLifetime,
-		PostgresPromotionMaxConns: postgresPromotionMaxConns,
-		MergeEventPromotionEnabled: getEnvBool(
-			"MERGE_EVENT_PROMOTION_ENABLED",
+		CoreServicePort:            corePort,
+		CoreBindAddr:               getEnv("CORE_BIND_ADDR", ""),
+		GatewayPort:                getEnv("GATEWAY_PORT", corePort),
+		DeployEnv:                  getEnv("DEPLOY_ENV", ""),
+		AuthProvider:               getEnv("AUTH_PROVIDER", "local"),
+		AllowLegacyUserAuth:        getEnvBool("ALLOW_LEGACY_USER_AUTH", false),
+		StorageType:                getEnv("STORAGE_TYPE", "memory"),
+		PostgresDSN:                getEnv("POSTGRES_DSN", ""),
+		PostgresMaxConns:           postgresMaxConns,
+		PostgresMinConns:           postgresMinConns,
+		PostgresMaxConnLifetime:    postgresMaxConnLifetime,
+		PostgresProjectionMaxConns: postgresProjectionMaxConns,
+		MergeEventProjectionEnabled: getEnvBool(
+			"MERGE_EVENT_PROJECTION_ENABLED",
 			true,
 		),
-		MergeEventPromotionWorkers:      getEnvInt("MERGE_EVENT_PROMOTION_WORKERS", 1),
-		MergeEventPromotionBatchSize:    getEnvInt("MERGE_EVENT_PROMOTION_BATCH_SIZE", 256),
-		MergeEventPromotionShardCount:   int32(getEnvInt("MERGE_EVENT_PROMOTION_SHARDS", 1024)),
-		MergeEventPromotionPollInterval: getEnvDuration("MERGE_EVENT_PROMOTION_POLL_INTERVAL", 250*time.Millisecond),
-		ObjectStoreType:                 getEnv("OBJECT_STORE_TYPE", "gcs"),
-		ObjectStoreDir:                  getEnv("OBJECT_STORE_DIR", ""),
-		GCSBucket:                       getEnv("GCS_BUCKET", "gitslice-objects"),
-		GCSEndpoint:                     getEnv("GCS_ENDPOINT", ""),
-		GCSCredentialsFile:              getEnv("GCS_CREDENTIALS_FILE", ""),
-		GCSCredentialsJSON:              getEnv("GCS_CREDENTIALS_JSON", ""),
-		GCSDisableAuth:                  getEnvBool("GCS_DISABLE_AUTH", false),
-		R2Bucket:                        getEnv("R2_BUCKET", ""),
-		R2Prefix:                        getEnv("R2_PREFIX", ""),
-		R2Endpoint:                      getEnv("R2_ENDPOINT", ""),
-		R2Region:                        getEnv("R2_REGION", "auto"),
-		R2AccessKeyID:                   getEnv("R2_ACCESS_KEY_ID", ""),
-		R2SecretAccessKey:               getEnv("R2_SECRET_ACCESS_KEY", ""),
-		R2UsePathStyle:                  getEnvBool("R2_USE_PATH_STYLE", false),
-		AgentWSTokenSecret:              getEnv("AGENT_WS_TOKEN_SECRET", "dev-insecure-agent-secret"),
-		ClerkWebhookSecret:              getEnv("CLERK_WEBHOOK_SECRET", ""),
-		AgentRuntimeProviderDefault:     getEnv("AGENT_RUNTIME_PROVIDER_DEFAULT", ""),
+		MergeEventProjectionWorkers:      getEnvInt("MERGE_EVENT_PROJECTION_WORKERS", 1),
+		MergeEventProjectionBatchSize:    getEnvInt("MERGE_EVENT_PROJECTION_BATCH_SIZE", 256),
+		MergeEventProjectionShardCount:   int32(getEnvInt("MERGE_EVENT_PROJECTION_SHARDS", 1024)),
+		MergeEventProjectionPollInterval: getEnvDuration("MERGE_EVENT_PROJECTION_POLL_INTERVAL", 250*time.Millisecond),
+		ObjectStoreType:                  getEnv("OBJECT_STORE_TYPE", "gcs"),
+		ObjectStoreDir:                   getEnv("OBJECT_STORE_DIR", ""),
+		GCSBucket:                        getEnv("GCS_BUCKET", "gitslice-objects"),
+		GCSEndpoint:                      getEnv("GCS_ENDPOINT", ""),
+		GCSCredentialsFile:               getEnv("GCS_CREDENTIALS_FILE", ""),
+		GCSCredentialsJSON:               getEnv("GCS_CREDENTIALS_JSON", ""),
+		GCSDisableAuth:                   getEnvBool("GCS_DISABLE_AUTH", false),
+		R2Bucket:                         getEnv("R2_BUCKET", ""),
+		R2Prefix:                         getEnv("R2_PREFIX", ""),
+		R2Endpoint:                       getEnv("R2_ENDPOINT", ""),
+		R2Region:                         getEnv("R2_REGION", "auto"),
+		R2AccessKeyID:                    getEnv("R2_ACCESS_KEY_ID", ""),
+		R2SecretAccessKey:                getEnv("R2_SECRET_ACCESS_KEY", ""),
+		R2UsePathStyle:                   getEnvBool("R2_USE_PATH_STYLE", false),
+		AgentWSTokenSecret:               getEnv("AGENT_WS_TOKEN_SECRET", "dev-insecure-agent-secret"),
+		ClerkWebhookSecret:               getEnv("CLERK_WEBHOOK_SECRET", ""),
+		AgentRuntimeProviderDefault:      getEnv("AGENT_RUNTIME_PROVIDER_DEFAULT", ""),
 	}, nil
 }
 
@@ -189,23 +188,23 @@ func (c *Config) Validate() error {
 	if c.PostgresMaxConnLifetime < 0 {
 		return fmt.Errorf("POSTGRES_MAX_CONN_LIFETIME must be >= 0")
 	}
-	if c.PostgresPromotionMaxConns < 0 {
-		return fmt.Errorf("POSTGRES_PROMOTION_MAX_CONNS must be >= 0")
+	if c.PostgresProjectionMaxConns < 0 {
+		return fmt.Errorf("POSTGRES_PROJECTION_MAX_CONNS must be >= 0")
 	}
-	if c.MergeEventPromotionWorkers < 0 {
-		return fmt.Errorf("MERGE_EVENT_PROMOTION_WORKERS must be >= 0")
+	if c.MergeEventProjectionWorkers < 0 {
+		return fmt.Errorf("MERGE_EVENT_PROJECTION_WORKERS must be >= 0")
 	}
-	if c.MergeEventPromotionBatchSize < 0 {
-		return fmt.Errorf("MERGE_EVENT_PROMOTION_BATCH_SIZE must be >= 0")
+	if c.MergeEventProjectionBatchSize < 0 {
+		return fmt.Errorf("MERGE_EVENT_PROJECTION_BATCH_SIZE must be >= 0")
 	}
-	if c.MergeEventPromotionShardCount < 0 {
-		return fmt.Errorf("MERGE_EVENT_PROMOTION_SHARDS must be >= 0")
+	if c.MergeEventProjectionShardCount < 0 {
+		return fmt.Errorf("MERGE_EVENT_PROJECTION_SHARDS must be >= 0")
 	}
-	if c.MergeEventPromotionPollInterval < 0 {
-		return fmt.Errorf("MERGE_EVENT_PROMOTION_POLL_INTERVAL must be >= 0")
+	if c.MergeEventProjectionPollInterval < 0 {
+		return fmt.Errorf("MERGE_EVENT_PROJECTION_POLL_INTERVAL must be >= 0")
 	}
-	if c.MergeEventPromotionEnabled && c.PostgresPromotionMaxConns == 1 {
-		return fmt.Errorf("MERGE_EVENT_PROMOTION_ENABLED requires POSTGRES_PROMOTION_MAX_CONNS to be 0/shared or at least 2")
+	if c.MergeEventProjectionEnabled && c.PostgresProjectionMaxConns == 1 {
+		return fmt.Errorf("MERGE_EVENT_PROJECTION_ENABLED requires POSTGRES_PROJECTION_MAX_CONNS to be 0/shared or at least 2")
 	}
 	summary, err := c.PostgresTargetSummary()
 	if err != nil {

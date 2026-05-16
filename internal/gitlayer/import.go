@@ -327,8 +327,8 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 	}
 	h.refreshWorkspaceSearchArtifactAsync(targetSliceID, commitHash)
 	if homeslice.IsHomeSliceID(targetSliceID) {
-		if err := h.enqueueHomeSlicePromotion(ctx, targetSliceID, commitHash, modifiedPaths, commitTime); err != nil {
-			log.Printf("gitlayer: failed to enqueue home slice promotion for commit %s in %s: %v", commitHash, targetSliceID, err)
+		if err := storage.UpdateHomePathHeadsFromSlicePaths(ctx, h.st, targetSliceID, commitHash, commitTime, modifiedPaths); err != nil {
+			log.Printf("gitlayer: failed to update home path heads for commit %s in %s: %v", commitHash, targetSliceID, err)
 		}
 	}
 	return nil

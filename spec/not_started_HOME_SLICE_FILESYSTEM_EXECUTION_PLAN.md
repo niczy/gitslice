@@ -15,7 +15,7 @@ Replace the current workspace-oriented `gs fs` UX with an implicit per-user home
 - `gs fs` no longer asks the user to name a workspace or slice.
 - The user's home slice is the authoritative working tree for `/username/**`.
 - `root` remains the published shared tree and is updated asynchronously from home-slice commits in batches.
-- Slices remain the internal unit of ownership, history, batching, and promotion. They are just hidden from the `gs fs` UX.
+- Slices remain the internal unit of ownership, history, batching, and projection. They are just hidden from the `gs fs` UX.
 
 This keeps the existing storage architecture intact while removing the main user-facing complexity.
 
@@ -46,7 +46,7 @@ That is the model this plan implements.
 - Standardize all user-facing remote paths as absolute paths in a global namespace: `/<username>/...`.
 - Create the user's home slice automatically on account creation.
 - Keep the user's home slice authoritative for their subtree.
-- Publish home-slice commits into `root` asynchronously using batch promotion.
+- Publish home-slice commits into `root` asynchronously using batch projection.
 - Preserve snapshot, diff, restore, upload, download, and shell workflows for the user's home slice.
 - Remove `workspace:path` syntax from the CLI with no backward-compatibility layer.
 
@@ -90,7 +90,7 @@ Examples:
 - stored path in `home_nic`: `nic/src/main.py`
 - stored path in `root`: `nic/src/main.py`
 
-This is an important design choice. It means promotion from a home slice into `root` can copy the same path keys without path rewriting.
+This is an important design choice. It means projection from a home slice into `root` can copy the same path keys without path rewriting.
 
 ### Authority Model
 
@@ -118,7 +118,7 @@ The visible path is global-looking, but the home slice is still required interna
 - ownership
 - commit history
 - snapshot lineage
-- promotion state
+- projection state
 - merge inputs into `root`
 - access control rules
 
@@ -181,7 +181,7 @@ When a home slice is first created for an existing user, bootstrap it from the c
 After that:
 
 - the home slice remains authoritative for `/username/**`
-- root promotion is one-way from home slice to `root`
+- root projection is one-way from home slice to `root`
 - no fallback read path is required
 
 ### Mutation Rules
@@ -192,7 +192,7 @@ For any `gs fs` mutation:
 2. Validate the first path segment matches the authenticated username.
 3. Strip the leading slash and operate on the stored path in the user's home slice.
 4. Record the slice-local commit/snapshot exactly as the filesystem service already does.
-5. Enqueue asynchronous promotion of the changed paths to `root`.
+5. Update the durable path-head projection for the changed paths.
 
 ### Forbidden Paths
 
@@ -205,28 +205,25 @@ The following must be rejected:
 
 ---
 
-## Root Promotion Model
+## Root Projection Model
 
-### Existing Mechanism To Reuse
+### Current Mechanism
 
-The repo already has an asynchronous root-promotion queue and same-slice batching design in [finished_ROOT_PROMOTION_QUEUE_BATCHING.md](/home/nic/workspace/gitslice/spec/finished_ROOT_PROMOTION_QUEUE_BATCHING.md).
+Root/home file visibility is derived from durable path-head state in `home_path_heads` and `path_head_children`. The previous root-projection queue has been removed.
 
-This home-slice design should reuse that model instead of inventing a second batching system.
-
-### Promotion Flow
+### Projection Flow
 
 For each home-slice commit:
 
 1. Filesystem mutation updates `home_<username>`.
 2. Filesystem service creates or extends the slice-local commit.
-3. Filesystem service enqueues root promotion for the changed files.
-4. The existing promotion worker batches queued promotions.
-5. The worker applies those changes to `root`.
+3. Filesystem service updates path-head rows for the changed files.
+4. Root/home reads resolve directory entries from the path-head projection.
 
 ### Expected Consistency
 
 - Home slice: strongly consistent for the user.
-- `root`: eventually consistent.
+- `root`: strongly consistent with committed path heads.
 
 This is the intended behavior. The user's CLI should reflect home-slice state immediately, while the published root may lag briefly.
 
@@ -235,10 +232,10 @@ This is the intended behavior. The user's CLI should reflect home-slice state im
 Normal operation should produce no user-facing conflicts because:
 
 - each user owns exactly one subtree
-- promotion only touches `/username/**`
+- projection only touches `/username/**`
 - no other user may write that subtree through `gs fs`
 
-If root promotion detects conflicting writes outside this invariant, treat it as a system integrity issue, not as a normal user workflow.
+If root projection detects conflicting writes outside this invariant, treat it as a system integrity issue, not as a normal user workflow.
 
 ---
 
@@ -366,7 +363,7 @@ Existing users must be backfilled safely. The migration path is:
 
 ## Risks
 
-### Promotion Lag
+### Projection Lag
 
 Root will lag the home slice. This is expected, but it must be visible in logs and metrics.
 
@@ -461,11 +458,11 @@ Deploy:
 
 - yes
 
-### PR4: Shared Root Promotion For Filesystem Commits
+### PR4: Shared Root Projection For Filesystem Commits
 
 Scope:
 
-- extract or reuse the existing root-promotion queue so filesystem commits can enqueue promotions too
+- extract or reuse the existing root-projection queue so filesystem commits can enqueue projections too
 - enqueue home-slice mutations for asynchronous publish into `root`
 - preserve batching semantics and eventual consistency
 
@@ -473,7 +470,7 @@ Files likely touched:
 
 - `services/slice/server.go`
 - `services/filesystem/server.go`
-- shared promotion helper if extracted
+- shared projection helper if extracted
 
 Verification:
 
@@ -601,8 +598,8 @@ Deploy:
 1. land provisioning first
 2. backfill existing users
 3. land backend home-slice enforcement
-4. land async promotion wiring
+4. land async projection wiring
 5. cut the CLI to absolute paths
 6. remove stale workspace UX
 
-That order ensures the new CLI never reaches a server that lacks home slices or promotion behavior.
+That order ensures the new CLI never reaches a server that lacks home slices or projection behavior.

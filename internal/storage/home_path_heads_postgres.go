@@ -20,7 +20,10 @@ func (s *postgresNativeTxView) UpsertHomePathHeads(ctx context.Context, heads []
 	return upsertHomePathHeads(ctx, s.tx, heads)
 }
 
-func upsertHomePathHeads(ctx context.Context, exec execable, heads []*models.HomePathHead) error {
+func upsertHomePathHeads(ctx context.Context, exec interface {
+	execable
+	queryable
+}, heads []*models.HomePathHead) error {
 	normalized := make([]*models.HomePathHead, 0, len(heads))
 	for _, head := range heads {
 		if head == nil {
@@ -38,6 +41,7 @@ func upsertHomePathHeads(ctx context.Context, exec execable, heads []*models.Hom
 
 	homeIDs := make([]string, 0, len(normalized))
 	paths := make([]string, 0, len(normalized))
+	entryTypes := make([]string, 0, len(normalized))
 	pathVersions := make([]int64, 0, len(normalized))
 	contentHashes := make([]string, 0, len(normalized))
 	manifestHashes := make([]string, 0, len(normalized))
@@ -49,6 +53,7 @@ func upsertHomePathHeads(ctx context.Context, exec execable, heads []*models.Hom
 	for _, head := range normalized {
 		homeIDs = append(homeIDs, head.HomeID)
 		paths = append(paths, head.Path)
+		entryTypes = append(entryTypes, head.EntryType)
 		pathVersions = append(pathVersions, head.PathVersion)
 		contentHashes = append(contentHashes, head.ContentHash)
 		manifestHashes = append(manifestHashes, head.ManifestHash)
@@ -61,20 +66,21 @@ func upsertHomePathHeads(ctx context.Context, exec execable, heads []*models.Hom
 
 	_, err := exec.Exec(ctx, `
 		INSERT INTO home_path_heads (
-			home_id, path, path_version, content_hash, manifest_hash,
+			home_id, path, entry_type, path_version, content_hash, manifest_hash,
 			source_slice_id, source_commit_hash, last_merge_seq, deleted, updated_at
 		)
-		SELECT home_id, path, path_version, content_hash, manifest_hash,
+		SELECT home_id, path, entry_type, path_version, content_hash, manifest_hash,
 		       source_slice_id, source_commit_hash, last_merge_seq, deleted, updated_at
 		FROM unnest(
-			$1::text[], $2::text[], $3::bigint[], $4::text[], $5::text[],
-			$6::text[], $7::text[], $8::bigint[], $9::boolean[], $10::timestamptz[]
+			$1::text[], $2::text[], $3::text[], $4::bigint[], $5::text[], $6::text[],
+			$7::text[], $8::text[], $9::bigint[], $10::boolean[], $11::timestamptz[]
 		) AS rows(
-			home_id, path, path_version, content_hash, manifest_hash,
+			home_id, path, entry_type, path_version, content_hash, manifest_hash,
 			source_slice_id, source_commit_hash, last_merge_seq, deleted, updated_at
 		)
 		ON CONFLICT (home_id, path) DO UPDATE
-		SET path_version = EXCLUDED.path_version,
+		SET entry_type = EXCLUDED.entry_type,
+		    path_version = EXCLUDED.path_version,
 		    content_hash = EXCLUDED.content_hash,
 		    manifest_hash = EXCLUDED.manifest_hash,
 		    source_slice_id = EXCLUDED.source_slice_id,
@@ -87,8 +93,171 @@ func upsertHomePathHeads(ctx context.Context, exec execable, heads []*models.Hom
 		       EXCLUDED.last_merge_seq = home_path_heads.last_merge_seq
 		       AND EXCLUDED.path_version >= home_path_heads.path_version
 		   )
-	`, homeIDs, paths, pathVersions, contentHashes, manifestHashes, sourceSliceIDs, sourceCommitHashes, lastMergeSeqs, deleted, updatedAts)
+	`, homeIDs, paths, entryTypes, pathVersions, contentHashes, manifestHashes, sourceSliceIDs, sourceCommitHashes, lastMergeSeqs, deleted, updatedAts)
+	if err != nil {
+		return err
+	}
+	return refreshStoredPathHeadChildren(ctx, exec, normalized)
+}
+
+func refreshStoredPathHeadChildren(ctx context.Context, db interface {
+	execable
+	queryable
+}, heads []*models.HomePathHead) error {
+	for _, head := range heads {
+		if head == nil {
+			continue
+		}
+		stored, err := scanHomePathHead(db.QueryRow(ctx, `
+			SELECT home_id, path, path_version, content_hash, manifest_hash,
+			       source_slice_id, source_commit_hash, last_merge_seq, deleted, updated_at, entry_type
+			FROM home_path_heads
+			WHERE home_id = $1 AND path = $2
+		`, head.HomeID, head.Path))
+		if err != nil {
+			if errors.Is(err, ErrEntryNotFound) {
+				continue
+			}
+			return err
+		}
+		if err := refreshPathHeadChildren(ctx, db, []*models.HomePathHead{stored}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func refreshPathHeadChildren(ctx context.Context, exec execable, heads []*models.HomePathHead) error {
+	for _, head := range heads {
+		if head == nil {
+			continue
+		}
+		if head.Deleted {
+			if err := deletePathHeadChild(ctx, exec, head.HomeID, head.Path); err != nil {
+				return err
+			}
+			if err := prunePathHeadAncestorChildren(ctx, exec, head.HomeID, head.Path); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := upsertPathHeadChildren(ctx, exec, head); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func upsertPathHeadChildren(ctx context.Context, exec execable, head *models.HomePathHead) error {
+	parts := strings.Split(cleanRelativePath(head.Path), "/")
+	if len(parts) == 0 {
+		return nil
+	}
+	for i := range parts {
+		childPath := strings.Join(parts[:i+1], "/")
+		dirPath := ""
+		if i > 0 {
+			dirPath = strings.Join(parts[:i], "/")
+		}
+		entryType := homePathHeadEntryTypeDirectory
+		contentHash := ""
+		manifestHash := ""
+		sourceSliceID := ""
+		sourceCommitHash := ""
+		if i == len(parts)-1 {
+			entryType = normalizeHomePathHeadEntryType(head.EntryType)
+			if entryType == homePathHeadEntryTypeFile {
+				contentHash = strings.TrimSpace(head.ContentHash)
+				manifestHash = strings.TrimSpace(head.ManifestHash)
+				sourceSliceID = strings.TrimSpace(head.SourceSliceID)
+				sourceCommitHash = strings.TrimSpace(head.SourceCommitHash)
+			}
+		}
+		if _, err := exec.Exec(ctx, `
+			INSERT INTO path_head_children (
+				home_id, dir_path, child_name, child_path, entry_type,
+				content_hash, manifest_hash, source_slice_id, source_commit_hash, updated_at
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			ON CONFLICT (home_id, dir_path, child_name) DO UPDATE SET
+				child_path = EXCLUDED.child_path,
+				entry_type = EXCLUDED.entry_type,
+				content_hash = EXCLUDED.content_hash,
+				manifest_hash = EXCLUDED.manifest_hash,
+				source_slice_id = EXCLUDED.source_slice_id,
+				source_commit_hash = EXCLUDED.source_commit_hash,
+				updated_at = EXCLUDED.updated_at
+		`, head.HomeID, dirPath, parts[i], childPath, entryType, contentHash, manifestHash, sourceSliceID, sourceCommitHash, head.UpdatedAt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func deletePathHeadChild(ctx context.Context, exec execable, homeID, filePath string) error {
+	filePath = cleanRelativePath(filePath)
+	if homeID == "" || filePath == "" {
+		return nil
+	}
+	parent := pathParent(filePath)
+	name := pathBase(filePath)
+	_, err := exec.Exec(ctx, `
+		DELETE FROM path_head_children
+		WHERE home_id = $1 AND dir_path = $2 AND child_name = $3
+	`, homeID, parent, name)
 	return err
+}
+
+func prunePathHeadAncestorChildren(ctx context.Context, exec execable, homeID, filePath string) error {
+	ancestors := ancestorDirectoryPaths(filePath)
+	for i := len(ancestors) - 1; i >= 0; i-- {
+		dirPath := ancestors[i]
+		parent := pathParent(dirPath)
+		name := pathBase(dirPath)
+		if name == "" {
+			continue
+		}
+		if _, err := exec.Exec(ctx, `
+			DELETE FROM path_head_children c
+			WHERE c.home_id = $1
+				  AND c.dir_path = $2
+				  AND c.child_name = $3
+				  AND NOT EXISTS (
+				    SELECT 1
+				    FROM home_path_heads h
+				    WHERE h.home_id = c.home_id
+				      AND h.deleted = false
+				      AND (h.path = c.child_path OR h.path LIKE c.child_path || '/%')
+				  )
+			`, homeID, parent, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func pathParent(filePath string) string {
+	filePath = cleanRelativePath(filePath)
+	if filePath == "" {
+		return ""
+	}
+	idx := strings.LastIndex(filePath, "/")
+	if idx < 0 {
+		return ""
+	}
+	return filePath[:idx]
+}
+
+func pathBase(filePath string) string {
+	filePath = cleanRelativePath(filePath)
+	if filePath == "" {
+		return ""
+	}
+	idx := strings.LastIndex(filePath, "/")
+	if idx < 0 {
+		return filePath
+	}
+	return filePath[idx+1:]
 }
 
 func (s *PostgresNativeStorage) GetHomePathHeads(ctx context.Context, homeID string, paths []string) (map[string]*models.HomePathHead, error) {
@@ -114,7 +283,7 @@ func getHomePathHeads(ctx context.Context, q queryable, homeID string, paths []s
 
 	rows, err := q.Query(ctx, `
 		SELECT home_id, path, path_version, content_hash, manifest_hash,
-		       source_slice_id, source_commit_hash, last_merge_seq, deleted, updated_at
+		       source_slice_id, source_commit_hash, last_merge_seq, deleted, updated_at, entry_type
 		FROM home_path_heads
 		WHERE home_id = $1 AND path = ANY($2)
 	`, homeID, cleanedPaths)
@@ -152,7 +321,7 @@ func listHomePathHeads(ctx context.Context, q queryable, homeID string, limit in
 
 	rows, err := q.Query(ctx, `
 		SELECT home_id, path, path_version, content_hash, manifest_hash,
-		       source_slice_id, source_commit_hash, last_merge_seq, deleted, updated_at
+		       source_slice_id, source_commit_hash, last_merge_seq, deleted, updated_at, entry_type
 		FROM home_path_heads
 		WHERE home_id = $1
 		ORDER BY path ASC
@@ -209,6 +378,7 @@ func scanHomePathHead(row interface {
 		&head.LastMergeSeq,
 		&head.Deleted,
 		&head.UpdatedAt,
+		&head.EntryType,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -218,6 +388,7 @@ func scanHomePathHead(row interface {
 	}
 	head.HomeID = normalizeHomePathHeadHomeID(head.HomeID)
 	head.Path = cleanRelativePath(head.Path)
+	head.EntryType = normalizeHomePathHeadEntryType(head.EntryType)
 	head.ContentHash = strings.TrimSpace(head.ContentHash)
 	head.ManifestHash = strings.TrimSpace(head.ManifestHash)
 	head.SourceSliceID = strings.TrimSpace(head.SourceSliceID)

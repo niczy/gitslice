@@ -994,7 +994,7 @@ the behavior correct when:
 
 - one file appears in two custom slices
 - two changesets touch overlapping files through different slices
-- async home promotion is enabled
+- async home projection is enabled
 - a changeset has green CI but becomes stale before merge
 
 If a changeset becomes stale, previous CI does not need to be deleted, but it no

@@ -21,7 +21,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/niczy/gitslice/internal/authresolver"
 	"github.com/niczy/gitslice/internal/authz"
@@ -29,7 +28,6 @@ import (
 	"github.com/niczy/gitslice/internal/gitrepo"
 	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
-	"github.com/niczy/gitslice/internal/rootpromote"
 	"github.com/niczy/gitslice/internal/storage"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -42,21 +40,16 @@ const (
 )
 
 type Handler struct {
-	st                    storage.Storage
-	promotionStorage      storage.Storage
-	cacheDir              string
-	mu                    sync.Mutex
-	promotionQueueMu      sync.Mutex
-	promotionQueue        *rootpromote.Queue
-	promotionBatchWindow  time.Duration
-	promotionBatchMaxSize int
+	st       storage.Storage
+	cacheDir string
+	mu       sync.Mutex
 }
 
 type gitProjection struct {
-	displaySlice         *models.Slice
-	targetSliceID        string
-	homePromotionSliceID string
-	mounts               []models.SliceFolderMount
+	displaySlice          *models.Slice
+	targetSliceID         string
+	homeProjectionSliceID string
+	mounts                []models.SliceFolderMount
 }
 
 type route struct {
@@ -65,31 +58,23 @@ type route struct {
 }
 
 func NewHandler(st storage.Storage, cacheDir string) *Handler {
-	return NewHandlerWithPromotionStorage(st, st, cacheDir)
+	return NewHandlerWithProjectionStorage(st, st, cacheDir)
 }
 
-func NewHandlerWithPromotionStorage(st storage.Storage, promotionSt storage.Storage, cacheDir string) *Handler {
+func NewHandlerWithProjectionStorage(st storage.Storage, projectionSt storage.Storage, cacheDir string) *Handler {
 	cacheDir = strings.TrimSpace(cacheDir)
 	if cacheDir == "" {
 		cacheDir = filepath.Join(os.TempDir(), "gitslice-git-cache")
 	}
-	if promotionSt == nil {
-		promotionSt = st
-	}
+	_ = projectionSt
 	return &Handler{
-		st:                    st,
-		promotionStorage:      promotionSt,
-		cacheDir:              cacheDir,
-		promotionBatchWindow:  rootpromote.DefaultBatchWindow,
-		promotionBatchMaxSize: rootpromote.DefaultBatchMaxSize,
+		st:       st,
+		cacheDir: cacheDir,
 	}
 }
 
-func (h *Handler) promotionStore() storage.Storage {
-	if h.promotionStorage != nil {
-		return h.promotionStorage
-	}
-	return h.st
+func (h *Handler) waitForQueuedProjections(ctx context.Context) error {
+	return nil
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -871,7 +856,7 @@ func (h *Handler) resolveGitProjection(ctx context.Context, slice *models.Slice)
 		return projection, err
 	}
 	projection.targetSliceID = homeSliceID
-	projection.homePromotionSliceID = homeSliceID
+	projection.homeProjectionSliceID = homeSliceID
 	return projection, nil
 }
 

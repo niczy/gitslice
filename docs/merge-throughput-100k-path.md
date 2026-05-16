@@ -55,19 +55,19 @@ Throughput: 35.2 full workflows/sec
 MergeChangeset P50: 1971.09 ms
 Foreground pool empty acquires: 225,577
 Foreground pool cumulative acquire wait: 3h8m22s
-Promotion drain: 0.09 s
+Projection drain: 0.09 s
 ```
 
-With a separate small promotion pool:
+With a separate small projection pool:
 
 ```text
-BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS=4
+BENCHMARK_POSTGRES_PROJECTION_MAX_CONNS=4
 
 Throughput: 38.7 full workflows/sec
 MergeChangeset P50: 1906.81 ms
 Foreground pool empty acquires: 179,459
 Foreground pool cumulative acquire wait: 2h15m55s
-Promotion drain: 0.12 s
+Projection drain: 0.12 s
 ```
 
 Merge-acceptance-only local Postgres benchmark after pre-creating ready
@@ -77,14 +77,14 @@ changesets:
 BENCHMARK_USERS=5000
 BENCHMARK_WORKERS=128
 BENCHMARK_POSTGRES_MAX_CONNS=64
-BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS=4
+BENCHMARK_POSTGRES_PROJECTION_MAX_CONNS=4
 
 Merge throughput: 150.8 accepted merges/sec
 MergeChangeset P50/P95/P99: 836.36 ms / 978.82 ms / 1303.74 ms
 Foreground pool acquisitions: 60,000
 Foreground pool empty acquires: 1,158
 Foreground pool cumulative acquire wait: 47.22 s
-Promotion drain: 0.44 s
+Projection drain: 0.44 s
 ```
 
 With more workers and more foreground connections, staying below this local
@@ -94,18 +94,18 @@ Postgres instance's `max_connections=100` cap:
 BENCHMARK_USERS=5000
 BENCHMARK_WORKERS=192
 BENCHMARK_POSTGRES_MAX_CONNS=88
-BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS=4
+BENCHMARK_POSTGRES_PROJECTION_MAX_CONNS=4
 
 Merge throughput: 153.5 accepted merges/sec
 MergeChangeset P50/P95/P99: 1176.08 ms / 1744.71 ms / 2215.93 ms
 Foreground pool acquisitions: 60,000
 Foreground pool empty acquires: 1,670
 Foreground pool cumulative acquire wait: 2m4s
-Promotion drain: 0.39 s
+Projection drain: 0.39 s
 ```
 
 After switching merge acceptance to the Postgres fast path, removing merge-time
-history/root promotion, collapsing acceptance to one statement, and trimming
+history/root projection, collapsing acceptance to one statement, and trimming
 non-hot-path indexes:
 
 ```text
@@ -113,14 +113,14 @@ BENCHMARK_USERS=5000
 BENCHMARK_WORKERS=128
 BENCHMARK_HOME_SHARDS=64
 BENCHMARK_POSTGRES_MAX_CONNS=64
-BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS=4
+BENCHMARK_POSTGRES_PROJECTION_MAX_CONNS=4
 
 Merge throughput: 733.7 accepted merges/sec
 MergeChangeset P50/P95/P99: 140.75 ms / 394.89 ms / 1008.00 ms
 Foreground pool acquisitions: 5,000
 Foreground pool empty acquires: 1,782
 Foreground pool cumulative acquire wait: 1m54s
-Promotion drain: 0.00 s
+Projection drain: 0.00 s
 ```
 
 Raising the foreground pool to 92 connections on the same local Postgres
@@ -129,7 +129,7 @@ latency. This points to database write/CPU/WAL pressure and statement work, not
 just a connection shortage.
 
 A larger attempted pool (`BENCHMARK_POSTGRES_MAX_CONNS=128`,
-`BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS=8`) failed during benchmark setup
+`BENCHMARK_POSTGRES_PROJECTION_MAX_CONNS=8`) failed during benchmark setup
 because local Postgres rejected new sessions with `FATAL: sorry, too many
 clients already`; the instance reported `max_connections=100`.
 
@@ -161,7 +161,7 @@ doing too many independent storage operations per accepted merge.
 
 The current merge-only run performed about 60,000 foreground pool acquisitions
 for 5,000 accepted merges, or about 12 foreground DB acquisitions per merge,
-before counting the separate promotion drain pool. The path to 100k/sec cannot
+before counting the separate projection drain pool. The path to 100k/sec cannot
 depend on increasing goroutines and Postgres connections. The synchronous write
 set and round-trip count must shrink.
 
@@ -247,7 +247,7 @@ The current workflow does too many synchronous things:
 - appends source slice commit state
 - updates file history records
 - updates changeset status
-- enqueues or runs home/root promotion
+- enqueues or runs home/root projection
 - updates root/global metadata
 - supports read-after-merge behavior through materialized views
 
@@ -581,9 +581,9 @@ Run a matrix for the full workflow and merge acceptance-only paths:
 BENCHMARK_WORKERS:            128, 256, 512
 BENCHMARK_POSTGRES_MAX_CONNS: 64, 96, 128
 BENCHMARK_HOME_SHARDS:        64, 256, 1024
-promotion workers:            1, 2, 4
-promotion batch size:         512, 1024, 2048
-promotion batch window:       50ms, 100ms, 250ms
+projection workers:            1, 2, 4
+projection batch size:         512, 1024, 2048
+projection batch window:       50ms, 100ms, 250ms
 ```
 
 Log pgx pool stats:
@@ -655,9 +655,9 @@ projection events/sec per projection
 
 Status:
 
-- async in-process promotion
-- promotion worker backpressure
-- batched home/root promotion
+- async in-process projection
+- projection worker backpressure
+- batched home/root projection
 
 Expected range:
 
@@ -670,7 +670,7 @@ Useful next work:
 
 - benchmark worker/connection matrix
 - pgx pool stats in benchmark logs
-- separate foreground and promotion DB pools
+- separate foreground and projection DB pools
 - reduce synchronous round trips in CreateSliceFromFolder and CreateChangeset
 
 ### Stage 1: Durable queue and projection isolation
@@ -683,7 +683,7 @@ hundreds to low thousands of merges/sec
 
 Changes:
 
-- append durable merge/promotion events in the merge transaction
+- append durable merge/projection events in the merge transaction
 - projection workers claim events with `FOR UPDATE SKIP LOCKED`
 - foreground DB pool separate from projection DB pools
 - queue depth and projection lag metrics
@@ -888,9 +888,9 @@ Admin surfaces should show lag clearly.
 
 1. Add pgx pool stats to the current benchmark output.
 2. Run the worker/connection matrix to find the current single-node ceiling.
-3. Split foreground and promotion DB pools.
-4. Add durable merge/promotion events in Postgres.
-5. Move promotion workers to claim durable events.
+3. Split foreground and projection DB pools.
+4. Add durable merge/projection events in Postgres.
+5. Move projection workers to claim durable events.
 6. Add projection lag and queue depth metrics.
 7. Introduce home/path head tables for conflict authority.
 8. Convert merge to path-head CAS plus event append.
@@ -912,14 +912,14 @@ Scope:
 - Log acquired connections, idle connections, max acquired connections, acquire
   count, empty acquire count, acquire wait time, canceled acquires, and
   connection creation/destruction counts.
-- Add benchmark output fields for promotion queue drain time when the benchmark
+- Add benchmark output fields for projection queue drain time when the benchmark
   can observe it.
 
 Validation:
 
 - Existing benchmark still passes.
 - Output clearly distinguishes foreground workflow duration from post-workload
-  projection/promotion drain duration.
+  projection/projection drain duration.
 
 Behavior change:
 
@@ -956,44 +956,44 @@ Validation:
 
 - Matrix can be run locally against the benchmark Postgres DSN.
 - Results include throughput, p50/p95/p99 latency, error count, pool wait, and
-  promotion drain time.
+  projection drain time.
 
 Behavior change:
 
 - None.
 
-### PR 3: Separate foreground and promotion DB pools
+### PR 3: Separate foreground and projection DB pools
 
 Scope:
 
-- Add configuration for a promotion/projection Postgres pool.
+- Add configuration for a projection/projection Postgres pool.
 - Keep request-path storage on the foreground pool.
-- Route root/home promotion workers through the promotion pool.
-- Cap promotion pool size independently from foreground pool size.
+- Route root/home projection workers through the projection pool.
+- Cap projection pool size independently from foreground pool size.
 
 Suggested defaults:
 
 ```text
 POSTGRES_MAX_CONNS=64
-POSTGRES_PROMOTION_MAX_CONNS=4
+POSTGRES_PROJECTION_MAX_CONNS=4
 ```
 
 Benchmark override:
 
 ```text
-BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS=4
+BENCHMARK_POSTGRES_PROJECTION_MAX_CONNS=4
 ```
 
 Validation:
 
 - Existing tests pass.
-- Benchmark shows foreground pool wait is not dominated by promotion workers.
-- Promotion still drains and integrity checks pass.
+- Benchmark shows foreground pool wait is not dominated by projection workers.
+- Projection still drains and integrity checks pass.
 
 Behavior change:
 
-- Lower risk of async promotion starving foreground merge/create requests.
-- Possible increase in materialization lag under heavy load because promotion is
+- Lower risk of async projection starving foreground merge/create requests.
+- Possible increase in materialization lag under heavy load because projection is
   intentionally capped.
 
 ### PR 4: Durable merge event schema
@@ -1002,7 +1002,7 @@ Scope:
 
 - Add Postgres tables for accepted merge events and projection offsets.
 - Add storage interfaces for appending and reading merge events.
-- Do not switch production merge or promotion behavior yet.
+- Do not switch production merge or projection behavior yet.
 
 Conceptual tables:
 
@@ -1037,7 +1037,7 @@ Scope:
 
 - Append a durable merge event in the same transaction that marks the changeset
   merged and appends the source slice commit.
-- Keep existing in-process promotion behavior active.
+- Keep existing in-process projection behavior active.
 - Add a debug/admin read path to inspect recently appended merge events.
 
 Validation:
@@ -1051,29 +1051,29 @@ Behavior change:
 - Merge does one additional durable write.
 - No user-visible behavior change.
 
-### PR 6: Durable promotion worker behind a feature flag
+### PR 6: Durable projection worker behind a feature flag
 
 Scope:
 
 - Add a worker that claims unpromoted merge events from Postgres.
 - Use `FOR UPDATE SKIP LOCKED` or equivalent claim semantics.
-- Apply promotion idempotently and update projection offsets.
+- Apply projection idempotently and update projection offsets.
 - Keep the current in-process queue as the default until the durable worker has
   parity.
 
 Feature flag:
 
 ```text
-MERGE_EVENT_PROMOTION_ENABLED=true
-MERGE_EVENT_PROMOTION_WORKERS=1
-MERGE_EVENT_PROMOTION_BATCH_SIZE=256
-MERGE_EVENT_PROMOTION_SHARDS=1024
-MERGE_EVENT_PROMOTION_POLL_INTERVAL=250ms
+MERGE_EVENT_PROJECTION_ENABLED=true
+MERGE_EVENT_PROJECTION_WORKERS=1
+MERGE_EVENT_PROJECTION_BATCH_SIZE=256
+MERGE_EVENT_PROJECTION_SHARDS=1024
+MERGE_EVENT_PROJECTION_POLL_INTERVAL=250ms
 ```
 
 When enabled, the worker holds a projection claim while applying the existing
-promotion logic. A dedicated promotion pool should therefore be shared or have
-at least two connections so a claim holder does not starve its own promotion
+projection logic. A dedicated projection pool should therefore be shared or have
+at least two connections so a claim holder does not starve its own projection
 writes.
 
 Validation:
@@ -1086,22 +1086,22 @@ Behavior change:
 
 - None by default if feature flag is off.
 
-### PR 7: Switch promotion to durable events
+### PR 7: Switch projection to durable events
 
 Scope:
 
 - Make request-time merge return after durable merge event append.
-- Remove dependence on the in-process queue for normal promotion.
+- Remove dependence on the in-process queue for normal projection.
 - Keep synchronous wait behavior only for paths that still require it, such as
   config changes, until those reads are redesigned.
 
 Runtime default:
 
 ```text
-MERGE_EVENT_PROMOTION_ENABLED=true
+MERGE_EVENT_PROJECTION_ENABLED=true
 ```
 
-Set `MERGE_EVENT_PROMOTION_ENABLED=false` to fall back to the in-process queue
+Set `MERGE_EVENT_PROJECTION_ENABLED=false` to fall back to the in-process queue
 while investigating projection lag or worker issues.
 
 Validation:
@@ -1109,7 +1109,7 @@ Validation:
 - Crash/restart test: a merge accepted before restart is eventually promoted
   after restart.
 - Existing root/home materialization tests use explicit waits.
-- Benchmark verifies foreground throughput and promotion lag separately.
+- Benchmark verifies foreground throughput and projection lag separately.
 
 Behavior change:
 

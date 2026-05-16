@@ -52,7 +52,7 @@ func (s *sliceServiceServer) mergeProjectionStatuses(ctx context.Context, event 
 	if event == nil {
 		return nil
 	}
-	projectionNames := []string{durablePromotionProjectionName, historyProjectionName}
+	projectionNames := []string{historyProjectionName}
 	projections := make([]*slicev1.ProjectionStatus, 0, len(projectionNames))
 	for _, projectionName := range projectionNames {
 		projections = append(projections, &slicev1.ProjectionStatus{
@@ -70,7 +70,7 @@ func (s *sliceServiceServer) projectionStatus(ctx context.Context, projectionNam
 	if projectionName == "" || shardID < 0 || requestedSeq < 0 {
 		return nil, status.Error(codes.InvalidArgument, "projection_name, shard_id, and merge_seq are required")
 	}
-	eventStore, ok := s.promotionStore().(storage.MergeEventStore)
+	eventStore, ok := s.projectionStore().(storage.MergeEventStore)
 	if !ok {
 		return nil, status.Error(codes.FailedPrecondition, "projection status is not supported by storage")
 	}

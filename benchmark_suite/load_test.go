@@ -187,19 +187,19 @@ func TestSimulate100kUsers(t *testing.T) {
 	}
 	logBenchmarkPostgresPoolReport(t, "Foreground workload", foregroundPoolReport, foregroundPoolStatsOK)
 
-	drainPoolObserver := startBenchmarkPromotionPostgresPoolObserver()
-	promotionDrainElapsed, promotionDrainObserved, promotionDrainErr := drainBenchmarkPromotions(30 * time.Second)
+	drainPoolObserver := startBenchmarkProjectionPostgresPoolObserver()
+	projectionDrainElapsed, projectionDrainObserved, projectionDrainErr := drainBenchmarkProjections(30 * time.Second)
 	drainPoolReport, drainPoolStatsOK := drainPoolObserver.stopAndReport()
-	if promotionDrainObserved {
-		if promotionDrainErr != nil {
-			t.Logf("Promotion drain elapsed: %.2f s (error: %v)", promotionDrainElapsed.Seconds(), promotionDrainErr)
+	if projectionDrainObserved {
+		if projectionDrainErr != nil {
+			t.Logf("Projection drain elapsed: %.2f s (error: %v)", projectionDrainElapsed.Seconds(), projectionDrainErr)
 		} else {
-			t.Logf("Promotion drain elapsed: %.2f s", promotionDrainElapsed.Seconds())
+			t.Logf("Projection drain elapsed: %.2f s", projectionDrainElapsed.Seconds())
 		}
 	} else {
-		t.Logf("Promotion drain elapsed: unavailable")
+		t.Logf("Projection drain elapsed: unavailable")
 	}
-	logBenchmarkPostgresPoolReport(t, "Promotion drain", drainPoolReport, drainPoolStatsOK)
+	logBenchmarkPostgresPoolReport(t, "Projection drain", drainPoolReport, drainPoolStatsOK)
 
 	// Integrity assertions.
 	if m.errorCount > 0 {
@@ -376,13 +376,17 @@ func TestIntegrity(t *testing.T) {
 		for i := 0; i < integrityUsers; i++ {
 			sid := fmt.Sprintf("%s-u%04d", prefix, i)
 			fid := fmt.Sprintf("integrity/%s/file.go", sid)
+			folder := fmt.Sprintf("integrity/%s", sid)
 			records[i] = record{sid: sid, fid: fid}
 
+			if err := seedBenchmarkRootDirectory(ctx, benchStorage, folder); err != nil {
+				t.Fatalf("user %d: seed root folder: %v", i, err)
+			}
 			_, err := benchSliceClient.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
 				ParentSliceId: "root",
 				NewSliceId:    sid,
 				Name:          sid,
-				FolderPaths:   []string{"integrity"},
+				FolderPaths:   []string{folder},
 			})
 			if err != nil {
 				t.Fatalf("user %d: CreateSliceFromFolder: %v", i, err)
@@ -453,6 +457,7 @@ func TestIntegrity(t *testing.T) {
 			listResp, err := benchSliceClient.ListChangesets(ctx, &slicev1.ListChangesetsRequest{
 				SliceId:      rec.sid,
 				StatusFilter: slicev1.ChangesetStatus_MERGED,
+				Limit:        100,
 			})
 			if err != nil {
 				t.Errorf("user %d: ListChangesets: %v", i, err)
