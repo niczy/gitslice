@@ -101,6 +101,7 @@ message ListEntriesResponse {
   repeated DirectoryEntry entries = 3;
   bool truncated = 4;
   string slice_hash = 5;     // Resolved commit hash used to produce this listing.
+  SliceStateToken state_token = 6;
 }
 
 message DirectoryEntry {
@@ -110,6 +111,7 @@ message DirectoryEntry {
   int64 size = 4;
   bool has_children = 5;
   string hash = 6;
+  PathBase path_base = 7;
 }
 
 enum EntryType {
@@ -136,6 +138,7 @@ message GetPublicFileRequest {
 
 message GetFileResponse {
   File file = 1;
+  SliceStateToken state_token = 2;
 }
 
 message File {
@@ -143,6 +146,34 @@ message File {
   bytes content = 2;
   int64 size = 3;
   string hash = 4;
+  PathBase path_base = 5;
+}
+
+// SliceStateToken identifies the authoritative state used to serve a file/tree
+// response. Follow-up read-model queries can require the same token to avoid
+// mixing file content, commit history, and search results from different states.
+message SliceStateToken {
+  string slice_id = 1;
+  string slice_hash = 2;
+  repeated StateCursor cursors = 3;
+}
+
+message StateCursor {
+  string home_id = 1;
+  int32 merge_shard = 2;
+  int64 merge_seq = 3;
+}
+
+// PathBase captures the read-time base for one visible path. Write APIs can use
+// this as the expected base to reject stale browser or agent edits.
+message PathBase {
+  string path = 1;
+  bool exists = 2;
+  string content_hash = 3;
+  int64 path_version = 4;
+  string source_slice_id = 5;
+  string source_commit_hash = 6;
+  int64 move_generation = 7;
 }
 
 // ========== File Change History Messages ==========
