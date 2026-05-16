@@ -838,6 +838,7 @@ func (s *PostgresNativeStorage) Reset(ctx context.Context) error {
 			global_commits,
 			global_state,
 			file_manifests,
+			commit_snapshot_files,
 			commit_snapshots,
 			content_commit_dirs,
 			directory_entries,
@@ -1558,19 +1559,32 @@ func (s *postgresNativeTxView) GetCommitSnapshot(ctx context.Context, commitHash
 
 func (s *postgresNativeTxView) SaveCommitSnapshot(ctx context.Context, snapshot *models.CommitSnapshot) error {
 	ctx = ensureCtx(ctx)
-	if snapshot == nil || snapshot.CommitHash == "" {
-		return ErrInvalidInput
+	return saveCommitSnapshotTx(ctx, s.tx, snapshot)
+}
+
+func (s *postgresNativeTxView) GetCommitSnapshotFileHash(ctx context.Context, commitHash, filePath string) (string, error) {
+	ctx = ensureCtx(ctx)
+	return getCommitSnapshotFileHash(ctx, s.tx, commitHash, filePath)
+}
+
+func (s *postgresNativeTxView) GetFileAtCommit(ctx context.Context, commitHash, path string) (*models.FileContent, error) {
+	ctx = ensureCtx(ctx)
+	contentHash, err := s.GetCommitSnapshotFileHash(ctx, commitHash, path)
+	if err != nil {
+		return nil, err
 	}
-	filesJSON, _ := json.Marshal(snapshot.Files)
-	if snapshot.Files == nil {
-		filesJSON = []byte("{}")
+	content, err := ReadVersionedFileContent(ctx, s, contentHash)
+	if err != nil {
+		return nil, err
 	}
-	_, err := s.tx.Exec(ctx, `
-		INSERT INTO commit_snapshots (commit_hash, slice_id, files, committed_at)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (commit_hash) DO UPDATE SET slice_id = $2, files = $3, committed_at = $4
-	`, snapshot.CommitHash, snapshot.SliceID, filesJSON, snapshot.Timestamp)
-	return err
+	content.Path = path
+	content.FileID = path
+	return content, nil
+}
+
+func (s *postgresNativeTxView) ListFilesAtCommit(ctx context.Context, commitHash, pathPrefix string) ([]string, error) {
+	ctx = ensureCtx(ctx)
+	return listFilesAtCommit(ctx, s.tx, commitHash, pathPrefix)
 }
 
 func (s *postgresNativeTxView) GetExistingEntriesByPaths(ctx context.Context, sliceID string, paths []string) (map[string]bool, error) {
@@ -4276,31 +4290,33 @@ func (s *PostgresNativeStorage) GetCommitSnapshot(ctx context.Context, commitHas
 
 func (s *PostgresNativeStorage) SaveCommitSnapshot(ctx context.Context, snapshot *models.CommitSnapshot) error {
 	ctx = ensureCtx(ctx)
-	if snapshot.CommitHash == "" {
+	if snapshot == nil || snapshot.CommitHash == "" {
 		return ErrInvalidInput
 	}
 
-	filesJSON, _ := json.Marshal(snapshot.Files)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
 
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO commit_snapshots (commit_hash, slice_id, files, committed_at)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (commit_hash) DO UPDATE SET slice_id = $2, files = $3, committed_at = $4
-	`, snapshot.CommitHash, snapshot.SliceID, filesJSON, snapshot.Timestamp)
-	return err
+	if err := saveCommitSnapshotTx(ctx, tx, snapshot); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *PostgresNativeStorage) GetCommitSnapshotFileHash(ctx context.Context, commitHash, filePath string) (string, error) {
+	ctx = ensureCtx(ctx)
+	return getCommitSnapshotFileHash(ctx, s.pool, commitHash, filePath)
 }
 
 func (s *PostgresNativeStorage) GetFileAtCommit(ctx context.Context, commitHash, path string) (*models.FileContent, error) {
 	ctx = ensureCtx(ctx)
 
-	snapshot, err := s.GetCommitSnapshot(ctx, commitHash)
+	contentHash, err := s.GetCommitSnapshotFileHash(ctx, commitHash, path)
 	if err != nil {
 		return nil, err
-	}
-
-	contentHash, exists := snapshot.Files[path]
-	if !exists {
-		return nil, ErrEntryNotFound
 	}
 
 	content, err := ReadVersionedFileContent(ctx, s, contentHash)
@@ -4314,20 +4330,150 @@ func (s *PostgresNativeStorage) GetFileAtCommit(ctx context.Context, commitHash,
 
 func (s *PostgresNativeStorage) ListFilesAtCommit(ctx context.Context, commitHash, pathPrefix string) ([]string, error) {
 	ctx = ensureCtx(ctx)
+	return listFilesAtCommit(ctx, s.pool, commitHash, pathPrefix)
+}
 
-	snapshot, err := s.GetCommitSnapshot(ctx, commitHash)
+type commitSnapshotQueryer interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+func saveCommitSnapshotTx(ctx context.Context, tx pgx.Tx, snapshot *models.CommitSnapshot) error {
+	if snapshot == nil || snapshot.CommitHash == "" {
+		return ErrInvalidInput
+	}
+	files := snapshot.Files
+	if files == nil {
+		files = map[string]string{}
+	}
+	filesJSON, _ := json.Marshal(files)
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO commit_snapshots (commit_hash, slice_id, files, committed_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (commit_hash) DO UPDATE SET slice_id = $2, files = $3, committed_at = $4
+	`, snapshot.CommitHash, snapshot.SliceID, filesJSON, snapshot.Timestamp); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM commit_snapshot_files WHERE commit_hash = $1`, snapshot.CommitHash); err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		return nil
+	}
+	rows := make([][]any, 0, len(files))
+	for filePath, contentHash := range files {
+		if filePath == "" {
+			continue
+		}
+		rows = append(rows, []any{snapshot.CommitHash, filePath, contentHash})
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	_, err := tx.CopyFrom(
+		ctx,
+		pgx.Identifier{"commit_snapshot_files"},
+		[]string{"commit_hash", "path", "content_hash"},
+		pgx.CopyFromRows(rows),
+	)
+	return err
+}
+
+func getCommitSnapshotFileHash(ctx context.Context, q commitSnapshotQueryer, commitHash, filePath string) (string, error) {
+	commitHash = strings.TrimSpace(commitHash)
+	filePath = strings.TrimSpace(filePath)
+	if commitHash == "" || filePath == "" {
+		return "", ErrInvalidInput
+	}
+
+	var contentHash string
+	err := q.QueryRow(ctx, `
+		SELECT content_hash
+		FROM commit_snapshot_files
+		WHERE commit_hash = $1 AND path = $2
+	`, commitHash, filePath).Scan(&contentHash)
+	if err == nil {
+		return contentHash, nil
+	}
+	if err != pgx.ErrNoRows {
+		return "", err
+	}
+	exists, existsErr := commitSnapshotExists(ctx, q, commitHash)
+	if existsErr != nil {
+		return "", existsErr
+	}
+	if !exists {
+		return "", ErrCommitNotFound
+	}
+	return "", ErrEntryNotFound
+}
+
+func listFilesAtCommit(ctx context.Context, q commitSnapshotQueryer, commitHash, pathPrefix string) ([]string, error) {
+	commitHash = strings.TrimSpace(commitHash)
+	if commitHash == "" {
+		return nil, ErrInvalidInput
+	}
+
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if pathPrefix == "" {
+		rows, err = q.Query(ctx, `
+			SELECT path
+			FROM commit_snapshot_files
+			WHERE commit_hash = $1
+			ORDER BY path
+		`, commitHash)
+	} else {
+		rows, err = q.Query(ctx, `
+			SELECT path
+			FROM commit_snapshot_files
+			WHERE commit_hash = $1 AND path LIKE ($2 || '%') ESCAPE '\'
+			ORDER BY path
+		`, commitHash, escapeLikePattern(pathPrefix))
+	}
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 
 	var files []string
-	for path := range snapshot.Files {
-		if pathPrefix == "" || strings.HasPrefix(path, pathPrefix) {
-			files = append(files, path)
+	for rows.Next() {
+		var filePath string
+		if err := rows.Scan(&filePath); err != nil {
+			return nil, err
+		}
+		files = append(files, filePath)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		exists, existsErr := commitSnapshotExists(ctx, q, commitHash)
+		if existsErr != nil {
+			return nil, existsErr
+		}
+		if !exists {
+			return nil, ErrCommitNotFound
 		}
 	}
-	sort.Strings(files)
 	return files, nil
+}
+
+func commitSnapshotExists(ctx context.Context, q commitSnapshotQueryer, commitHash string) (bool, error) {
+	var exists bool
+	if err := q.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM commit_snapshots WHERE commit_hash = $1)
+	`, commitHash).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+func escapeLikePattern(value string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return replacer.Replace(value)
 }
 
 // ============ File Change History ============

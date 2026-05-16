@@ -1836,6 +1836,13 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if err := st.SaveCommitSnapshot(ctx, snapshot); err != nil {
 		t.Fatalf("SaveCommitSnapshot failed: %v", err)
 	}
+	fileHash, err := st.GetCommitSnapshotFileHash(ctx, snapshot.CommitHash, content.Path)
+	if err != nil {
+		t.Fatalf("GetCommitSnapshotFileHash failed: %v", err)
+	}
+	if fileHash != content.Hash {
+		t.Fatalf("GetCommitSnapshotFileHash mismatch: got %s want %s", fileHash, content.Hash)
+	}
 	versioned, err := st.GetFileAtCommit(ctx, snapshot.CommitHash, content.Path)
 	if err != nil {
 		t.Fatalf("GetFileAtCommit failed: %v", err)
@@ -1849,6 +1856,26 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 	if len(filesAtCommit) != 1 || filesAtCommit[0] != content.Path {
 		t.Fatalf("ListFilesAtCommit mismatch: %#v", filesAtCommit)
+	}
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: snapshot.CommitHash,
+		SliceID:    slice.ID,
+		Files: map[string]string{
+			"src/replaced-" + suffix + ".go": content.Hash,
+		},
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveCommitSnapshot replacement failed: %v", err)
+	}
+	if _, err := st.GetCommitSnapshotFileHash(ctx, snapshot.CommitHash, content.Path); !errors.Is(err, ErrEntryNotFound) {
+		t.Fatalf("replaced snapshot should remove old path, got %v", err)
+	}
+	replacedFiles, err := st.ListFilesAtCommit(ctx, snapshot.CommitHash, "src/")
+	if err != nil {
+		t.Fatalf("ListFilesAtCommit replacement failed: %v", err)
+	}
+	if want := "src/replaced-" + suffix + ".go"; len(replacedFiles) != 1 || replacedFiles[0] != want {
+		t.Fatalf("ListFilesAtCommit replacement mismatch: %#v want %s", replacedFiles, want)
 	}
 
 	// Root slice init

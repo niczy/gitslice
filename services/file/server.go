@@ -480,20 +480,20 @@ func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID str
 	// consistent with the materialized directory tree and avoids stale legacy file
 	// IDs after deletes.
 	if commitHash != "" {
-		snapshot, err := s.storage.GetCommitSnapshot(ctx, commitHash)
+		paths, err := s.storage.ListFilesAtCommit(ctx, commitHash, "")
 		if err != nil {
 			log.Printf("WARN: snapshot lookup failed for commit %s: %v, falling back to file list", commitHash, err)
-		} else if snapshot != nil {
-			paths := make([]string, 0, len(snapshot.Files))
-			for raw := range snapshot.Files {
+		} else {
+			cleaned := make([]string, 0, len(paths))
+			for _, raw := range paths {
 				p := common.CleanRelativePath(raw)
 				if p == "" {
 					continue
 				}
-				paths = append(paths, p)
+				cleaned = append(cleaned, p)
 			}
-			sort.Strings(paths)
-			return paths, nil
+			sort.Strings(cleaned)
+			return cleaned, nil
 		}
 	}
 
@@ -1128,10 +1128,10 @@ func (s *fileServiceServer) resolveFileMetadata(
 
 	effectiveCommit := s.resolveEffectiveCommit(ctx, primarySliceID, resolvedCommit)
 	if effectiveCommit != "" {
-		if snapshot, err := s.storage.GetCommitSnapshot(ctx, effectiveCommit); err == nil && snapshot != nil {
-			if h := strings.TrimSpace(snapshot.Files[storedPath]); h != "" {
-				hash = h
-			}
+		if h, err := s.storage.GetCommitSnapshotFileHash(ctx, effectiveCommit, storedPath); err == nil {
+			hash = strings.TrimSpace(h)
+		} else if err != nil && !errors.Is(err, storage.ErrEntryNotFound) && !errors.Is(err, storage.ErrCommitNotFound) {
+			return "", 0, err
 		}
 	}
 
@@ -1218,6 +1218,66 @@ func (s *fileServiceServer) resolveFileContent(
 	}
 
 	return nil, storage.ErrEntryNotFound
+}
+
+func (s *fileServiceServer) getFileFromCommitSnapshot(
+	ctx context.Context,
+	primarySliceID, storedPath, responsePath, resolvedCommit string,
+) (*filev1.GetFileResponse, bool, error) {
+	effectiveCommit := s.resolveEffectiveCommit(ctx, primarySliceID, resolvedCommit)
+	if effectiveCommit == "" {
+		return nil, false, nil
+	}
+	hash, err := s.storage.GetCommitSnapshotFileHash(ctx, effectiveCommit, storedPath)
+	if err != nil {
+		if errors.Is(err, storage.ErrCommitNotFound) {
+			return nil, true, status.Error(codes.NotFound, "commit snapshot not found")
+		}
+		if errors.Is(err, storage.ErrEntryNotFound) {
+			return nil, true, status.Error(codes.NotFound, "file not found")
+		}
+		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to load file metadata: %v", err))
+	}
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return nil, true, status.Error(codes.NotFound, "file content not available")
+	}
+
+	manifest, err := s.storage.GetVersionedFileManifest(ctx, hash)
+	if err != nil {
+		if errors.Is(err, storage.ErrEntryNotFound) {
+			return nil, true, status.Error(codes.NotFound, "file content not available")
+		}
+		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to load file metadata: %v", err))
+	}
+	size := manifest.TotalSize
+	if notModifiedResp, matched := s.maybeSetNotModifiedHeader(ctx, responsePath, hash, size); matched {
+		return notModifiedResp, true, nil
+	}
+	if size > maxUnaryGetFileBytes {
+		return nil, true, status.Error(codes.ResourceExhausted, fmt.Sprintf("file is too large for GetFile (%d bytes > %d bytes); use a streamed download path", size, maxUnaryGetFileBytes))
+	}
+
+	content, err := storage.ReadManifestContent(ctx, s.storage, manifest)
+	if err != nil {
+		if errors.Is(err, storage.ErrEntryNotFound) {
+			return nil, true, status.Error(codes.NotFound, "file content not available")
+		}
+		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to load file content: %v", err))
+	}
+	if contentSize(content) > maxUnaryGetFileBytes {
+		return nil, true, status.Error(codes.ResourceExhausted, fmt.Sprintf("file is too large for GetFile (%d bytes > %d bytes); use a streamed download path", contentSize(content), maxUnaryGetFileBytes))
+	}
+	if size == 0 {
+		size = contentSize(content)
+	}
+
+	return &filev1.GetFileResponse{File: &filev1.File{
+		Path:    responsePath,
+		Content: content.Content,
+		Size:    size,
+		Hash:    hash,
+	}}, true, nil
 }
 
 func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequest) (*filev1.GetFileResponse, error) {
@@ -1362,6 +1422,12 @@ func (s *fileServiceServer) getFileResolved(ctx context.Context, sliceID, resolv
 		}
 		if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load file content: %v", err))
+		}
+	}
+
+	if preferSnapshots && (slice == nil || len(slice.FolderMounts) == 0) {
+		if resp, handled, err := s.getFileFromCommitSnapshot(ctx, sliceID, requestPath, requestPath, resolvedCommit); handled {
+			return resp, err
 		}
 	}
 

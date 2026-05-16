@@ -263,6 +263,7 @@ type Storage interface {
 	// Commit snapshot operations for versioned file access
 	GetCommitSnapshot(ctx context.Context, commitHash string) (*models.CommitSnapshot, error)
 	SaveCommitSnapshot(ctx context.Context, snapshot *models.CommitSnapshot) error
+	GetCommitSnapshotFileHash(ctx context.Context, commitHash, path string) (string, error)
 	GetFileAtCommit(ctx context.Context, commitHash, path string) (*models.FileContent, error)
 	ListFilesAtCommit(ctx context.Context, commitHash, pathPrefix string) ([]string, error)
 
