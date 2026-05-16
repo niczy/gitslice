@@ -17,7 +17,7 @@ export function SliceVisibilityCard({
   sliceVisibilitySuccess,
 }) {
   return (
-    <Card className="border-border/70">
+    <Card className="slice-settings-card slice-settings-card--visibility">
       <CardContent className="pt-6">
         <div className="slice-settings-card-header">
           <div>

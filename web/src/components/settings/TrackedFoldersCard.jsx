@@ -14,7 +14,7 @@ export function TrackedFoldersCard({
   onRemoveFolder,
 }) {
   return (
-    <Card className="border-border/70">
+    <Card className="slice-settings-card slice-settings-card--folders">
       <CardContent className="pt-6">
         <div className="slice-settings-card-header">
           <div>
