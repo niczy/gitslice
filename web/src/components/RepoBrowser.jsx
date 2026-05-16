@@ -141,6 +141,7 @@ export default function RepoBrowser({
     highlightedContent,
     historyError,
     historyLoading,
+    isCommittingFileEdit,
     isEditingFile,
     isLoading,
     isSelectedFileLoading,
@@ -217,6 +218,7 @@ export default function RepoBrowser({
   const sidebarVisible = sidebarOpen || isSidebarDismissing;
   const fileActionProps = useMemo(() => ({
     canEdit: Boolean(String(authUsername || '').trim()),
+    isCommittingFileEdit,
     isEditingFile,
     onCancelEdit: cancelFileEdit,
     onCommitEdit: confirmFileEdit,
@@ -231,6 +233,7 @@ export default function RepoBrowser({
     cancelFileEdit,
     closeCompactActions,
     confirmFileEdit,
+    isCommittingFileEdit,
     isEditingFile,
     openRawFile,
     selectedFile,

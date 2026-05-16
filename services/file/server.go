@@ -1121,9 +1121,17 @@ func (s *fileServiceServer) resolveFileMetadata(
 	ctx context.Context,
 	slice *models.Slice,
 	primarySliceID, storedPath, resolvedCommit string,
+	preferSnapshots bool,
 ) (hash string, size int64, err error) {
 	if strings.TrimSpace(primarySliceID) == "" || strings.TrimSpace(storedPath) == "" {
 		return "", 0, storage.ErrEntryNotFound
+	}
+
+	if manifest, handled, err := s.resolveHomePathHeadFileManifest(ctx, primarySliceID, storedPath, preferSnapshots); handled {
+		if err != nil {
+			return "", 0, err
+		}
+		return strings.TrimSpace(manifest.Hash), manifest.TotalSize, nil
 	}
 
 	effectiveCommit := s.resolveEffectiveCommit(ctx, primarySliceID, resolvedCommit)
@@ -1182,14 +1190,71 @@ func (s *fileServiceServer) resolveFileMetadata(
 	return strings.TrimSpace(hash), size, nil
 }
 
+func (s *fileServiceServer) resolveHomePathHeadFileManifest(
+	ctx context.Context,
+	primarySliceID, storedPath string,
+	preferSnapshots bool,
+) (*models.FileManifest, bool, error) {
+	if preferSnapshots {
+		return nil, false, nil
+	}
+	homeID := homeslice.UsernameFromSliceID(primarySliceID)
+	if homeID == "" {
+		return nil, false, nil
+	}
+	headStore, ok := s.storage.(storage.HomePathHeadStore)
+	if !ok {
+		return nil, false, nil
+	}
+	cleanedPath := cleanPath(storedPath)
+	if cleanedPath == "" {
+		return nil, false, nil
+	}
+	heads, err := headStore.GetHomePathHeads(ctx, homeID, []string{cleanedPath})
+	if err != nil {
+		return nil, true, err
+	}
+	head := heads[cleanedPath]
+	if head == nil {
+		return nil, false, nil
+	}
+	entryType := strings.TrimSpace(head.EntryType)
+	if head.Deleted || (entryType != "" && entryType != "file") {
+		return nil, true, storage.ErrEntryNotFound
+	}
+	manifestHash := strings.TrimSpace(head.ManifestHash)
+	if manifestHash == "" {
+		manifestHash = strings.TrimSpace(head.ContentHash)
+	}
+	if manifestHash == "" {
+		return nil, true, storage.ErrEntryNotFound
+	}
+	manifest, err := s.storage.GetVersionedFileManifest(ctx, manifestHash)
+	if err != nil {
+		return nil, true, err
+	}
+	copied := *manifest
+	copied.Path = cleanedPath
+	copied.Hash = manifestHash
+	return &copied, true, nil
+}
+
 func (s *fileServiceServer) resolveFileContent(
 	ctx context.Context,
 	sliceID string,
 	slice *models.Slice,
 	primarySliceID, storedPath, resolvedCommit string,
+	preferSnapshots bool,
 ) (*models.FileContent, error) {
 	if strings.TrimSpace(primarySliceID) == "" || strings.TrimSpace(storedPath) == "" {
 		return nil, storage.ErrEntryNotFound
+	}
+
+	if manifest, handled, err := s.resolveHomePathHeadFileManifest(ctx, primarySliceID, storedPath, preferSnapshots); handled {
+		if err != nil {
+			return nil, err
+		}
+		return storage.ReadManifestContent(ctx, s.storage, manifest)
 	}
 
 	effectiveCommit := s.resolveEffectiveCommit(ctx, primarySliceID, resolvedCommit)
@@ -1358,7 +1423,7 @@ func (s *fileServiceServer) getFileResolved(ctx context.Context, sliceID, resolv
 			responsePath = common.SliceDisplayPath(slice, storedPath)
 		}
 
-		hash, size, metaErr := s.resolveFileMetadata(ctx, slice, backingSliceID, storedPath, resolvedCommit)
+		hash, size, metaErr := s.resolveFileMetadata(ctx, slice, backingSliceID, storedPath, resolvedCommit, preferSnapshots)
 		if metaErr != nil && !errors.Is(metaErr, storage.ErrEntryNotFound) {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load file metadata: %v", metaErr))
 		}
@@ -1366,7 +1431,7 @@ func (s *fileServiceServer) getFileResolved(ctx context.Context, sliceID, resolv
 			return notModifiedResp, nil
 		}
 
-		content, err := s.resolveFileContent(ctx, sliceID, slice, backingSliceID, storedPath, resolvedCommit)
+		content, err := s.resolveFileContent(ctx, sliceID, slice, backingSliceID, storedPath, resolvedCommit, preferSnapshots)
 		if err != nil {
 			if errors.Is(err, storage.ErrEntryNotFound) {
 				return nil, status.Error(codes.NotFound, "file not found")
@@ -1395,14 +1460,14 @@ func (s *fileServiceServer) getFileResolved(ctx context.Context, sliceID, resolv
 	if homeBackingID, ok, err := s.rootHomeBackingForPath(ctx, slice, requestPath, preferSnapshots); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve root home backing: %v", err))
 	} else if ok {
-		hash, size, metaErr := s.resolveFileMetadata(ctx, slice, homeBackingID, requestPath, resolvedCommit)
+		hash, size, metaErr := s.resolveFileMetadata(ctx, slice, homeBackingID, requestPath, resolvedCommit, preferSnapshots)
 		if metaErr != nil && !errors.Is(metaErr, storage.ErrEntryNotFound) {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load file metadata: %v", metaErr))
 		}
 		if notModifiedResp, matched := s.maybeSetNotModifiedHeader(ctx, requestPath, hash, size); matched {
 			return notModifiedResp, nil
 		}
-		content, err := s.resolveFileContent(ctx, sliceID, slice, homeBackingID, requestPath, resolvedCommit)
+		content, err := s.resolveFileContent(ctx, sliceID, slice, homeBackingID, requestPath, resolvedCommit, preferSnapshots)
 		if err == nil && content != nil {
 			if size := contentSize(content); size > maxUnaryGetFileBytes {
 				return nil, status.Error(codes.ResourceExhausted, fmt.Sprintf("file is too large for GetFile (%d bytes > %d bytes); use a streamed download path", size, maxUnaryGetFileBytes))
@@ -1464,7 +1529,7 @@ func (s *fileServiceServer) getFileResolved(ctx context.Context, sliceID, resolv
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve backing slice: %v", err))
 	}
 
-	hash, size, metaErr := s.resolveFileMetadata(ctx, slice, backingSliceID, storedPath, resolvedCommit)
+	hash, size, metaErr := s.resolveFileMetadata(ctx, slice, backingSliceID, storedPath, resolvedCommit, preferSnapshots)
 	if metaErr != nil && !errors.Is(metaErr, storage.ErrEntryNotFound) {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load file metadata: %v", metaErr))
 	}
@@ -1472,7 +1537,7 @@ func (s *fileServiceServer) getFileResolved(ctx context.Context, sliceID, resolv
 		return notModifiedResp, nil
 	}
 
-	content, err := s.resolveFileContent(ctx, sliceID, slice, backingSliceID, storedPath, resolvedCommit)
+	content, err := s.resolveFileContent(ctx, sliceID, slice, backingSliceID, storedPath, resolvedCommit, preferSnapshots)
 	if err != nil {
 		if errors.Is(err, storage.ErrEntryNotFound) {
 			if sliceHasPath(pathMap, displayPath) {

@@ -11,6 +11,7 @@ import { Button } from '../ui/button.jsx';
 
 export default function RepoBrowserFileActions({
   canEdit = true,
+  isCommittingFileEdit = false,
   isEditingFile,
   onActionDone,
   onCancelEdit,
@@ -33,6 +34,7 @@ export default function RepoBrowserFileActions({
             type="button"
             variant="secondary"
             className={`history-toggle ${isEditingFile ? 'active' : ''}`}
+            disabled={isCommittingFileEdit}
             onClick={() => {
               if (isEditingFile) {
                 onCancelEdit();
@@ -50,13 +52,14 @@ export default function RepoBrowserFileActions({
               type="button"
               variant="default"
               className="history-toggle browser-commit-button"
-              onClick={() => {
-                onCommitEdit();
+              disabled={isCommittingFileEdit}
+              onClick={async () => {
+                await onCommitEdit?.();
                 onActionDone?.();
               }}
             >
               <Check size={15} aria-hidden="true" />
-              Commit Changes
+              {isCommittingFileEdit ? 'Committing...' : 'Commit Changes'}
             </Button>
           )}
         </>
@@ -65,6 +68,7 @@ export default function RepoBrowserFileActions({
         type="button"
         variant="secondary"
         className={`history-toggle ${showHistory ? 'active' : ''}`}
+        disabled={isCommittingFileEdit}
         onClick={() => {
           onToggleHistory();
           onActionDone?.();

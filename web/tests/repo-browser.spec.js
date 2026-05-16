@@ -228,6 +228,43 @@ test.describe('Slice-specific Browsing (real server)', () => {
     await expect(page.getByRole('button', { name: /^Edit$/i })).toHaveCount(0);
   });
 
+  test('commits edited file content through the web file editor', async ({ page, request }) => {
+    const fixture = await createSliceVisibilityFixture(request);
+    const editedContent = `${fixture.content}\ncommitted from web editor ${Date.now()}`;
+
+    await page.goto('/login');
+    await page.getByLabel('Username').fill(fixture.username);
+    await page.getByRole('button', { name: /login with username/i }).click();
+    await expect(page).toHaveURL(/\/slices(\?.*)?$/);
+
+    await page.goto(`/slices/${fixture.sliceId}?file=${encodeURIComponent(fixture.filePath)}`);
+    await expect(page.locator('.file-preview')).toContainText(fixture.content);
+
+    await page.getByRole('button', { name: /^Edit$/i }).click();
+    await page.locator('textarea.file-editor').fill(editedContent);
+
+    const commitResponsePromise = page.waitForResponse((response) => (
+      response.url().includes('/v1/changesets:createAndMerge')
+      && response.request().method() === 'POST'
+    ));
+    await page.getByRole('button', { name: /Commit Changes/i }).click();
+    const commitResponse = await commitResponsePromise;
+    expect(commitResponse.ok()).toBe(true);
+
+    await expect(page.locator('.file-preview')).toContainText(editedContent);
+    await page.reload();
+    await expect(page.locator('.file-preview')).toContainText(editedContent);
+
+    const fileRoutePath = fixture.filePath.split('/').map(encodeURIComponent).join('/');
+    const fileResponse = await request.get(`${E2E_API_BASE_URL}/v1/slices/${fixture.sliceId}/files/${fileRoutePath}`, {
+      headers: fixture.authHeaders,
+    });
+    await expectOk(fileResponse, 'read edited file');
+    const filePayload = await fileResponse.json();
+    const storedContent = Buffer.from(filePayload?.file?.content || '', 'base64').toString('utf8');
+    expect(storedContent).toBe(editedContent);
+  });
+
   test('renders public slice activity tabs for signed-out users', async ({ page, request }) => {
     const fixture = await createPublicSliceFixture(request);
 

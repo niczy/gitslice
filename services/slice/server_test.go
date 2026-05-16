@@ -5269,6 +5269,77 @@ jobs:
 	}
 }
 
+func TestCreateAndMergeMountedHomeSliceUpdatesFileServiceHeadRead(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	homeSliceID := homeslice.IDForUsername("alice")
+	filePath := "alice/public-demo/README.md"
+
+	home := &models.Slice{ID: homeSliceID, Name: "alice", Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, home); err != nil {
+		t.Fatalf("CreateSlice(home) failed: %v", err)
+	}
+	mounted := &models.Slice{
+		ID:          "alice-mounted-public-demo",
+		Name:        "Public Demo",
+		Owners:      []string{"alice"},
+		CreatedBy:   "alice",
+		ParentSlice: homeSliceID,
+		Files:       []string{filePath},
+		FolderMounts: []models.SliceFolderMount{{
+			SourcePath: "alice/public-demo",
+			Alias:      "public-demo",
+		}},
+	}
+	if err := st.CreateSlice(ctx, mounted); err != nil {
+		t.Fatalf("CreateSlice(mounted) failed: %v", err)
+	}
+	mustWriteSliceManifest(t, ctx, st, homeSliceID, filePath, []byte("old materialized\n"))
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(homeSliceID, filePath),
+		Path:     filePath,
+		Type:     "file",
+		ParentID: homeSliceID,
+		Size:     int64(len("old materialized\n")),
+	}); err != nil {
+		t.Fatalf("AddEntry(home file) failed: %v", err)
+	}
+	if err := storage.UpdateHomePathHeadsFromSlicePaths(ctx, st, homeSliceID, "cmt_old", time.Now(), []string{filePath}); err != nil {
+		t.Fatalf("UpdateHomePathHeadsFromSlicePaths failed: %v", err)
+	}
+
+	srv := NewService(st)
+	mergeResp, err := srv.CreateAndMergeChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:       mounted.ID,
+		ModifiedFiles: []string{filePath},
+		Message:       "Edit README",
+		FileContents: []*slicev1.FileContentChange{{
+			Path:    filePath,
+			Content: []byte("new path head\n"),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateAndMergeChangeset failed: %v", err)
+	}
+	if mergeResp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("merge status = %v, want success", mergeResp.GetStatus())
+	}
+
+	fileSvc := fileservice.NewService(st)
+	fileResp, err := fileSvc.GetFile(ctx, &filev1.GetFileRequest{
+		Path: filePath,
+		Version: &filev1.GetFileRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: mounted.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetFile failed: %v", err)
+	}
+	if got := string(fileResp.GetFile().GetContent()); got != "new path head\n" {
+		t.Fatalf("GetFile content = %q, want merged path-head content", got)
+	}
+}
+
 func TestMergeChangesetEnqueuesMergeRequestedRunWhenChecksMissing(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
 	st := storage.NewInMemoryStorage()

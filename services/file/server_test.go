@@ -985,6 +985,65 @@ func TestSliceMountAliasesAtSliceRoot(t *testing.T) {
 	}
 }
 
+func TestMountedHomeFileReadPrefersPathHeadManifest(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+
+	homeSliceID := homeslice.IDForUsername("alice")
+	home := &models.Slice{ID: homeSliceID, Name: "alice", Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, home); err != nil {
+		t.Fatalf("CreateSlice(home) failed: %v", err)
+	}
+	mounted := &models.Slice{
+		ID:          "alice-mounted-app",
+		Name:        "app",
+		Owners:      []string{"alice"},
+		CreatedBy:   "alice",
+		ParentSlice: homeSliceID,
+		FolderMounts: []models.SliceFolderMount{{
+			SourcePath: "alice/app",
+			Alias:      "app",
+		}},
+	}
+	if err := st.CreateSlice(ctx, mounted); err != nil {
+		t.Fatalf("CreateSlice(mounted) failed: %v", err)
+	}
+
+	const storedPath = "alice/app/main.go"
+	mustWriteSliceManifest(t, ctx, st, homeSliceID, storedPath, []byte("old materialized\n"))
+	newHash := mustWriteSliceManifest(t, ctx, st, mounted.ID, storedPath, []byte("new path head\n"))
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:           "alice",
+		Path:             storedPath,
+		EntryType:        "file",
+		PathVersion:      2,
+		ContentHash:      newHash,
+		ManifestHash:     newHash,
+		SourceSliceID:    mounted.ID,
+		SourceCommitHash: "cmt_new",
+		UpdatedAt:        time.Now(),
+	}}); err != nil {
+		t.Fatalf("UpsertHomePathHeads failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	resp, err := svc.GetFile(ctx, &filev1.GetFileRequest{
+		Path: "app/main.go",
+		Version: &filev1.GetFileRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: mounted.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetFile failed: %v", err)
+	}
+	if got := string(resp.GetFile().GetContent()); got != "new path head\n" {
+		t.Fatalf("GetFile content = %q, want latest path-head content", got)
+	}
+	if got := resp.GetFile().GetHash(); got != newHash {
+		t.Fatalf("GetFile hash = %q, want %q", got, newHash)
+	}
+}
+
 func TestSliceMountAliasesSkipMissingBackingFolders(t *testing.T) {
 	ctx := authCtx()
 	st := storage.NewInMemoryStorage()
