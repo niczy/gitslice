@@ -12,6 +12,7 @@ import {
   normalizeWorkspaceResultPath,
   readBrowserErrorMessage,
 } from './browserApi.js';
+import { getPinnedSliceHashFromListEntries } from './browserStateToken.js';
 
 test('normalizeWorkspaceResultPath removes leading slashes', () => {
   assert.equal(normalizeWorkspaceResultPath('/src/App.jsx'), 'src/App.jsx');
@@ -56,6 +57,27 @@ test('browser API URL helpers encode path segments and preserve slice hash query
       filePath: 'dir/a b.txt',
     }),
     '/api/v1/slices/slice_123/files/history/dir/a%20b.txt',
+  );
+});
+
+test('list entries slice hash is not pinning-safe when state cursors are present', () => {
+  assert.equal(
+    getPinnedSliceHashFromListEntries({
+      sliceHash: 'cmt_head',
+      stateToken: {
+        sliceHash: 'cmt_head',
+        cursors: [{ homeId: 'alice', mergeSeq: '7' }],
+      },
+    }),
+    '',
+  );
+
+  assert.equal(
+    getPinnedSliceHashFromListEntries({
+      slice_hash: 'cmt_snapshot',
+      state_token: { slice_hash: 'cmt_snapshot', cursors: [] },
+    }),
+    'cmt_snapshot',
   );
 });
 
