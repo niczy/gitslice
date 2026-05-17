@@ -50,6 +50,7 @@ type InMemoryStorage struct {
 	sliceChangesets           map[string][]string                  // sliceID -> []changesetID
 	changesetSnapshots        map[string]*models.ChangesetSnapshot // snapshotID -> snapshot
 	changesetSnapshotVersions map[string][]string                  // changesetID -> []snapshotID (newest first)
+	changesetConflicts        map[string]map[string]*models.ChangesetConflict
 	agentSessionChangesets    map[string]*models.AgentSessionChangeset
 	mergeEventsByShard        map[int32][]*models.MergeEvent      // shardID -> events ordered by merge_seq asc
 	mergeEventsByChangeset    map[string]*models.MergeEvent       // changesetID -> event
@@ -151,6 +152,7 @@ func NewInMemoryStorage() *InMemoryStorage {
 		sliceChangesets:                  make(map[string][]string),
 		changesetSnapshots:               make(map[string]*models.ChangesetSnapshot),
 		changesetSnapshotVersions:        make(map[string][]string),
+		changesetConflicts:               make(map[string]map[string]*models.ChangesetConflict),
 		agentSessionChangesets:           make(map[string]*models.AgentSessionChangeset),
 		mergeEventsByShard:               make(map[int32][]*models.MergeEvent),
 		mergeEventsByChangeset:           make(map[string]*models.MergeEvent),
@@ -252,6 +254,7 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.sliceChangesets = fresh.sliceChangesets
 	s.changesetSnapshots = fresh.changesetSnapshots
 	s.changesetSnapshotVersions = fresh.changesetSnapshotVersions
+	s.changesetConflicts = fresh.changesetConflicts
 	s.agentSessionChangesets = fresh.agentSessionChangesets
 	s.mergeEventsByShard = fresh.mergeEventsByShard
 	s.mergeEventsByChangeset = fresh.mergeEventsByChangeset

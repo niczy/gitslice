@@ -843,6 +843,7 @@ func (s *PostgresNativeStorage) Reset(ctx context.Context) error {
 			directory_moves,
 			projection_offsets,
 			merge_events,
+			changeset_conflicts,
 			changeset_snapshots,
 			changesets,
 			file_locks,

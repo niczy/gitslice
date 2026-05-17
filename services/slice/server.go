@@ -1858,11 +1858,10 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate path-head merge authority: %v", err))
 		}
 		if len(drifts) > 0 {
-			return &slicev1.MergeChangesetResponse{
-				Status:      slicev1.MergeStatus_MERGE_STATUS_STALE_BASE,
-				ChangesetId: cs.ID,
-				Message:     pathHeadDriftMergeMessage(drifts),
-			}, nil
+			return s.staleBaseMergeResponseFromDrifts(ctx, cs, drifts)
+		}
+		if err := s.replaceChangesetConflictArtifacts(ctx, cs.ID, nil); err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to clear changeset conflicts: %v", err))
 		}
 		if message, err := s.validateChangesetDirectoryMoves(ctx, pathHeadSnapshot); err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate directory move state: %v", err))
@@ -1971,11 +1970,7 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 			if driftErr != nil {
 				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate path-head conflict: %v", driftErr))
 			}
-			return &slicev1.MergeChangesetResponse{
-				Status:      slicev1.MergeStatus_MERGE_STATUS_STALE_BASE,
-				ChangesetId: cs.ID,
-				Message:     pathHeadDriftMergeMessage(drifts),
-			}, nil
+			return s.staleBaseMergeResponseFromDrifts(ctx, cs, drifts)
 		}
 		if _, ok := status.FromError(err); ok {
 			return nil, err
@@ -2069,6 +2064,9 @@ func (s *sliceServiceServer) tryMergeChangesetByIDFastPath(ctx context.Context, 
 	}
 	profile.sliceID = strings.TrimSpace(result.Changeset.SliceID)
 	profile.modifiedFiles = len(result.Event.TouchedPaths)
+	if err := s.replaceChangesetConflictArtifacts(ctx, result.Changeset.ID, nil); err != nil {
+		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to clear changeset conflicts: %v", err))
+	}
 
 	s.enqueueHistoryProjection(ctx, result.Event)
 	profile.markProjection(0)
@@ -2128,11 +2126,8 @@ func (s *sliceServiceServer) tryMergeChangesetFastPath(ctx context.Context, cs *
 			if driftErr != nil {
 				return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate path-head conflict: %v", driftErr))
 			}
-			return &slicev1.MergeChangesetResponse{
-				Status:      slicev1.MergeStatus_MERGE_STATUS_STALE_BASE,
-				ChangesetId: cs.ID,
-				Message:     pathHeadDriftMergeMessage(drifts),
-			}, true, nil
+			resp, respErr := s.staleBaseMergeResponseFromDrifts(ctx, cs, drifts)
+			return resp, true, respErr
 		}
 		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to accept changeset merge: %v", err))
 	}
@@ -2142,6 +2137,9 @@ func (s *sliceServiceServer) tryMergeChangesetFastPath(ctx context.Context, cs *
 
 	cs.Status = models.ChangesetStatusMerged
 	cs.MergedAt = &now
+	if err := s.replaceChangesetConflictArtifacts(ctx, cs.ID, nil); err != nil {
+		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to clear changeset conflicts: %v", err))
+	}
 	s.enqueueHistoryProjection(ctx, result.Event)
 
 	profile.markProjection(0)
@@ -5320,7 +5318,13 @@ func (s *sliceServiceServer) evaluateChangesetPathHeadReviewState(ctx context.Co
 		return false, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, nil
 	}
 	if len(drifts) == 0 {
+		if err := s.replaceChangesetConflictArtifacts(ctx, cs.ID, nil); err != nil {
+			return true, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, err
+		}
 		return true, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, nil
+	}
+	if err := s.replaceChangesetConflictArtifacts(ctx, cs.ID, s.changesetConflictArtifacts(ctx, cs, drifts)); err != nil {
+		return true, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, err
 	}
 
 	issues := make([]*slicev1.ReviewIssue, 0, len(drifts))
@@ -5346,6 +5350,9 @@ type changesetPathHeadDrift struct {
 	Path           string
 	BaseVersion    int64
 	CurrentVersion int64
+	BaseHash       string
+	OursHash       string
+	CurrentHash    string
 }
 
 func (s *sliceServiceServer) changesetPathHeadDrifts(ctx context.Context, cs *models.Changeset, snapshot *models.ChangesetSnapshot) ([]changesetPathHeadDrift, bool, error) {
@@ -5372,6 +5379,14 @@ func (s *sliceServiceServer) changesetPathHeadDrifts(ctx context.Context, cs *mo
 	if err != nil {
 		return nil, true, err
 	}
+	baseFiles := map[string]string{}
+	if baseCommitHash := strings.TrimSpace(cs.BaseCommitHash); baseCommitHash != "" {
+		if baseSnapshot, snapErr := s.storage.GetCommitSnapshot(ctx, baseCommitHash); snapErr == nil && baseSnapshot != nil {
+			baseFiles = baseSnapshot.Files
+		} else if snapErr != nil && !errors.Is(snapErr, storage.ErrCommitNotFound) {
+			return nil, true, snapErr
+		}
+	}
 
 	compared := 0
 	drifts := make([]changesetPathHeadDrift, 0)
@@ -5386,8 +5401,13 @@ func (s *sliceServiceServer) changesetPathHeadDrifts(ctx context.Context, cs *mo
 		}
 		compared++
 		currentVersion := int64(0)
+		currentHash := ""
 		if head := heads[filePath]; head != nil && head.PathVersion > 0 {
 			currentVersion = head.PathVersion
+			currentHash = strings.TrimSpace(head.ManifestHash)
+			if currentHash == "" {
+				currentHash = strings.TrimSpace(head.ContentHash)
+			}
 		}
 		if currentVersion == baseVersion {
 			continue
@@ -5396,6 +5416,9 @@ func (s *sliceServiceServer) changesetPathHeadDrifts(ctx context.Context, cs *mo
 			Path:           filePath,
 			BaseVersion:    baseVersion,
 			CurrentVersion: currentVersion,
+			BaseHash:       strings.TrimSpace(baseFiles[filePath]),
+			OursHash:       strings.TrimSpace(snapshot.FileHashes[filePath]),
+			CurrentHash:    currentHash,
 		})
 	}
 	return drifts, compared > 0, nil

@@ -122,6 +122,11 @@ type ChangesetSnapshotOptionLister interface {
 	ListChangesetSnapshotsWithOptions(ctx context.Context, changesetID string, opts ListChangesetSnapshotsOptions) ([]*models.ChangesetSnapshot, error)
 }
 
+type ChangesetConflictStore interface {
+	ReplaceChangesetConflicts(ctx context.Context, changesetID string, conflicts []*models.ChangesetConflict) error
+	ListChangesetConflicts(ctx context.Context, changesetID string) ([]*models.ChangesetConflict, error)
+}
+
 type ListSliceContentCommitsOptions struct {
 	Limit             int
 	FromCommitHash    string

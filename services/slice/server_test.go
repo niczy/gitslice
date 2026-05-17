@@ -4447,14 +4447,26 @@ func TestMergeChangesetPathHeadAuthorityRejectsDrift(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("failed to seed path head: %v", err)
 	}
+	baseCommitHash := "cmt_path_head_conflict_base"
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: baseCommitHash,
+		SliceID:    slice.ID,
+		Files: map[string]string{
+			filePath: manifestHash,
+		},
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("failed to save base commit snapshot: %v", err)
+	}
 
 	cs := &models.Changeset{
-		ID:            "chg_path-head-shadow",
-		SliceID:       slice.ID,
-		ModifiedFiles: []string{filePath},
-		Status:        models.ChangesetStatusPending,
-		Author:        "tester",
-		CreatedAt:     time.Now(),
+		ID:             "chg_path-head-shadow",
+		SliceID:        slice.ID,
+		BaseCommitHash: baseCommitHash,
+		ModifiedFiles:  []string{filePath},
+		Status:         models.ChangesetStatusPending,
+		Author:         "tester",
+		CreatedAt:      time.Now(),
 	}
 	if err := st.CreateChangeset(ctx, cs); err != nil {
 		t.Fatalf("failed to create changeset: %v", err)
@@ -4464,12 +4476,13 @@ func TestMergeChangesetPathHeadAuthorityRejectsDrift(t *testing.T) {
 	if err := srv.createChangesetSnapshot(ctx, cs); err != nil {
 		t.Fatalf("createChangesetSnapshot failed: %v", err)
 	}
+	currentHash := mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, []byte("package shadow\n\nconst Drift = true\n"))
 	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
 		HomeID:       "tester",
 		Path:         filePath,
 		PathVersion:  11,
-		ManifestHash: manifestHash,
-		ContentHash:  manifestHash,
+		ManifestHash: currentHash,
+		ContentHash:  currentHash,
 	}}); err != nil {
 		t.Fatalf("failed to advance path head: %v", err)
 	}
@@ -4480,6 +4493,29 @@ func TestMergeChangesetPathHeadAuthorityRejectsDrift(t *testing.T) {
 	}
 	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_STALE_BASE {
 		t.Fatalf("expected stale-base status from path-head drift, got %v", resp.GetStatus())
+	}
+	if len(resp.GetConflicts()) != 1 {
+		t.Fatalf("expected one conflict artifact, got %#v", resp.GetConflicts())
+	}
+	conflict := resp.GetConflicts()[0]
+	if conflict.GetChangesetId() != cs.ID || conflict.GetPath() != filePath || conflict.GetType() != slicev1.ConflictType_CONFLICT_TYPE_STALE_BASE {
+		t.Fatalf("unexpected conflict artifact: %#v", conflict)
+	}
+	if conflict.GetBaseVersion() != 10 || conflict.GetCurrentVersion() != 11 {
+		t.Fatalf("conflict versions = %d/%d, want 10/11", conflict.GetBaseVersion(), conflict.GetCurrentVersion())
+	}
+	if conflict.GetBaseHash() != manifestHash || conflict.GetOursHash() != manifestHash || conflict.GetTheirsHash() != currentHash {
+		t.Fatalf("conflict hashes = base %q ours %q theirs %q", conflict.GetBaseHash(), conflict.GetOursHash(), conflict.GetTheirsHash())
+	}
+	if !strings.Contains(conflict.GetPatch(), "const Drift = true") {
+		t.Fatalf("expected conflict patch to include current content, got %q", conflict.GetPatch())
+	}
+	listResp, err := srv.ListChangesetConflicts(ctx, &slicev1.ListChangesetConflictsRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("ListChangesetConflicts failed: %v", err)
+	}
+	if listResp.GetTotalConflicts() != 1 || listResp.GetConflicts()[0].GetConflictId() != conflict.GetConflictId() {
+		t.Fatalf("listed conflicts = %#v, want stored conflict %s", listResp.GetConflicts(), conflict.GetConflictId())
 	}
 	if _, err := st.GetMergeEventByChangeset(ctx, cs.ID); !errors.Is(err, storage.ErrMergeEventNotFound) {
 		t.Fatalf("expected no merge event for rejected path-head drift, got %v", err)

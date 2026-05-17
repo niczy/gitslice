@@ -181,6 +181,25 @@ CREATE TABLE changesets (
     merged_at timestamp with time zone
 );
 
+CREATE TABLE changeset_conflicts (
+    id text NOT NULL,
+    changeset_id text NOT NULL,
+    slice_id text DEFAULT ''::text NOT NULL,
+    path text NOT NULL,
+    type text DEFAULT 'stale_base'::text NOT NULL,
+    message text DEFAULT ''::text NOT NULL,
+    base_version bigint DEFAULT 0 NOT NULL,
+    current_version bigint DEFAULT 0 NOT NULL,
+    base_hash text DEFAULT ''::text NOT NULL,
+    ours_hash text DEFAULT ''::text NOT NULL,
+    theirs_hash text DEFAULT ''::text NOT NULL,
+    patch text DEFAULT ''::text NOT NULL,
+    resolved boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    resolved_at timestamp with time zone
+);
+
 CREATE TABLE ci_artifacts (
     id text NOT NULL,
     job_id text NOT NULL,
@@ -657,6 +676,9 @@ ALTER TABLE ONLY changeset_snapshots
 ALTER TABLE ONLY changeset_snapshots
     ADD CONSTRAINT changeset_snapshots_pkey PRIMARY KEY (id);
 
+ALTER TABLE ONLY changeset_conflicts
+    ADD CONSTRAINT changeset_conflicts_pkey PRIMARY KEY (id);
+
 ALTER TABLE ONLY changesets
     ADD CONSTRAINT changesets_pkey PRIMARY KEY (id);
 
@@ -843,6 +865,8 @@ CREATE INDEX idx_auth_sessions_username ON auth_sessions USING btree (username);
 
 CREATE INDEX idx_changeset_snapshots_changeset ON changeset_snapshots USING btree (changeset_id, version DESC);
 
+CREATE INDEX idx_changeset_conflicts_changeset_path ON changeset_conflicts USING btree (changeset_id, path);
+
 CREATE INDEX idx_changesets_slice ON changesets USING btree (slice_id);
 
 CREATE INDEX idx_changesets_slice_status ON changesets USING btree (slice_id, status);
@@ -969,6 +993,9 @@ ALTER TABLE ONLY agent_session_changesets
 
 ALTER TABLE ONLY changeset_snapshots
     ADD CONSTRAINT changeset_snapshots_changeset_id_fkey FOREIGN KEY (changeset_id) REFERENCES changesets(id) ON UPDATE CASCADE ON DELETE CASCADE;
+
+ALTER TABLE ONLY changeset_conflicts
+    ADD CONSTRAINT changeset_conflicts_changeset_id_fkey FOREIGN KEY (changeset_id) REFERENCES changesets(id) ON DELETE CASCADE;
 
 ALTER TABLE ONLY changesets
     ADD CONSTRAINT changesets_slice_id_fkey FOREIGN KEY (slice_id) REFERENCES slices(id) ON UPDATE CASCADE ON DELETE CASCADE;
