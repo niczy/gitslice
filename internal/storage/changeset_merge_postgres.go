@@ -237,7 +237,7 @@ func (s *PostgresNativeStorage) AcceptChangesetMergeByID(ctx context.Context, ch
 					AND (l.s_is_root OR l.s_created_by = l.username OR l.s_owners ? l.username)
 					AND ps.path_count > 0
 					AND l.snapshot_id <> ''
-					AND jsonb_object_length(l.rename_sources) = 0
+					AND l.rename_sources = '{}'::jsonb
 					AND jsonb_array_length(l.directory_moves) = 0
 					AND l.c_hash NOT LIKE l.revert_prefix || '%'
 					AND NOT ps.touches_config
