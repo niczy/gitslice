@@ -316,23 +316,37 @@ func runListSliceContentCommitsContract(ctx context.Context, t *testing.T, st St
 	oldSeq := appendContentHistoryEvent(t, ctx, store, "alice", sourceSlice.ID, "commit-shared-old", "alice/app/old.txt", baseTime.Add(time.Minute))
 	appendContentHistoryEvent(t, ctx, store, "alice", sourceSlice.ID, "commit-unmounted", "alice/other/file.txt", baseTime.Add(2*time.Minute))
 	appendContentHistoryEvent(t, ctx, store, "alice", sourceSlice.ID, "commit-shared-new", "alice/app/new.txt", baseTime.Add(3*time.Minute))
+	appendContentHistoryRenameEvent(t, ctx, store, "alice", sourceSlice.ID, "commit-file-rename", "alice/app/new.txt", "alice/lib/new.txt", "file", baseTime.Add(4*time.Minute))
+	appendContentHistoryRenameEvent(t, ctx, store, "alice", sourceSlice.ID, "commit-dir-move", "alice/lib", "alice/pkg", "directory", baseTime.Add(5*time.Minute))
 
 	commits, err := st.ListSliceContentCommits(ctx, viewSlice.ID, []ContentCommitScope{{HomeID: "alice", DirPath: "alice/app"}}, 10, "")
 	if err != nil {
 		t.Fatalf("ListSliceContentCommits failed: %v", err)
 	}
-	assertCommitHashes(t, commits, []string{"commit-shared-new", "commit-shared-old", "commit-view-initial"})
+	assertCommitHashes(t, commits, []string{"commit-file-rename", "commit-shared-new", "commit-shared-old", "commit-view-initial"})
+
+	commits, err = st.ListSliceContentCommits(ctx, viewSlice.ID, []ContentCommitScope{{HomeID: "alice", DirPath: "alice/lib"}}, 10, "")
+	if err != nil {
+		t.Fatalf("ListSliceContentCommits(rename target) failed: %v", err)
+	}
+	assertCommitHashes(t, commits, []string{"commit-dir-move", "commit-file-rename", "commit-view-initial"})
+
+	commits, err = st.ListSliceContentCommits(ctx, viewSlice.ID, []ContentCommitScope{{HomeID: "alice", DirPath: "alice/pkg"}}, 10, "")
+	if err != nil {
+		t.Fatalf("ListSliceContentCommits(directory move target) failed: %v", err)
+	}
+	assertCommitHashes(t, commits, []string{"commit-dir-move", "commit-view-initial"})
 
 	page1, err := st.ListSliceContentCommits(ctx, viewSlice.ID, []ContentCommitScope{{HomeID: "alice", DirPath: "alice/app"}}, 1, "")
 	if err != nil {
 		t.Fatalf("ListSliceContentCommits page1 failed: %v", err)
 	}
-	assertCommitHashes(t, page1, []string{"commit-shared-new"})
-	page2, err := st.ListSliceContentCommits(ctx, viewSlice.ID, []ContentCommitScope{{HomeID: "alice", DirPath: "alice/app"}}, 1, "commit-shared-new")
+	assertCommitHashes(t, page1, []string{"commit-file-rename"})
+	page2, err := st.ListSliceContentCommits(ctx, viewSlice.ID, []ContentCommitScope{{HomeID: "alice", DirPath: "alice/app"}}, 1, "commit-file-rename")
 	if err != nil {
 		t.Fatalf("ListSliceContentCommits page2 failed: %v", err)
 	}
-	assertCommitHashes(t, page2, []string{"commit-shared-old"})
+	assertCommitHashes(t, page2, []string{"commit-shared-new"})
 
 	optionLister, ok := st.(ContentCommitOptionLister)
 	if !ok {
@@ -372,6 +386,47 @@ func appendContentHistoryEvent(t *testing.T, ctx context.Context, store MergeEve
 		TouchedPaths:     []string{filePath},
 		PathUpdates: []*models.MergePathUpdate{{
 			Path:             filePath,
+			BaseVersion:      seq,
+			NewVersion:       seq + 1,
+			SourceSliceID:    sourceSliceID,
+			SourceCommitHash: commitHash,
+			ParentCommitHash: "parent-" + commitHash,
+			ManifestHash:     "sha256:" + commitHash,
+		}},
+		CreatedAt: createdAt,
+	}
+	if err := store.AppendMergeEvent(ctx, event); err != nil {
+		t.Fatalf("AppendMergeEvent(%s) failed: %v", commitHash, err)
+	}
+	return seq
+}
+
+func appendContentHistoryRenameEvent(t *testing.T, ctx context.Context, store MergeEventStore, homeID, sourceSliceID, commitHash, oldPath, newPath, entryType string, createdAt time.Time) int64 {
+	t.Helper()
+	shardID := int32(11)
+	if homeID == "alice" {
+		// Keep the shard deterministic without depending on the slice service package.
+		shardID = 1
+	}
+	seq, err := store.NextMergeEventSequence(ctx, shardID)
+	if err != nil {
+		t.Fatalf("NextMergeEventSequence failed: %v", err)
+	}
+	event := &models.MergeEvent{
+		HomeID:           homeID,
+		ShardID:          shardID,
+		MergeSeq:         seq,
+		EventID:          fmt.Sprintf("evt-%s", commitHash),
+		ChangesetID:      fmt.Sprintf("chg-%s", commitHash),
+		SourceSliceID:    sourceSliceID,
+		SourceCommitHash: commitHash,
+		Author:           "alice",
+		Message:          commitHash,
+		TouchedPaths:     []string{oldPath, newPath},
+		PathUpdates: []*models.MergePathUpdate{{
+			Path:             newPath,
+			OldPath:          oldPath,
+			EntryType:        entryType,
 			BaseVersion:      seq,
 			NewVersion:       seq + 1,
 			SourceSliceID:    sourceSliceID,
