@@ -148,8 +148,23 @@ CREATE TABLE changeset_snapshots (
     file_hashes jsonb,
     base_path_versions jsonb,
     rename_sources jsonb,
+    directory_moves jsonb,
     author text DEFAULT ''::text NOT NULL,
     message text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+CREATE TABLE directory_moves (
+    move_id text NOT NULL,
+    home_id text NOT NULL,
+    source_slice_id text DEFAULT ''::text NOT NULL,
+    source_commit_hash text DEFAULT ''::text NOT NULL,
+    old_prefix text NOT NULL,
+    new_prefix text NOT NULL,
+    base_subtree_version bigint DEFAULT 0 NOT NULL,
+    base_subtree_digest text DEFAULT ''::text NOT NULL,
+    new_subtree_version bigint DEFAULT 0 NOT NULL,
+    merge_seq bigint DEFAULT 0 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
@@ -732,6 +747,9 @@ ALTER TABLE ONLY global_state
 ALTER TABLE ONLY home_path_heads
     ADD CONSTRAINT home_path_heads_pkey PRIMARY KEY (home_id, path);
 
+ALTER TABLE ONLY directory_moves
+    ADD CONSTRAINT directory_moves_pkey PRIMARY KEY (move_id);
+
 ALTER TABLE ONLY merge_event_shard_sequences
     ADD CONSTRAINT merge_event_shard_sequences_pkey PRIMARY KEY (shard_id);
 
@@ -742,6 +760,8 @@ ALTER TABLE ONLY merge_events
     ADD CONSTRAINT merge_events_pkey PRIMARY KEY (shard_id, merge_seq);
 
 CREATE INDEX idx_merge_events_source_commit_hash ON merge_events USING btree (source_commit_hash, created_at DESC);
+
+CREATE INDEX idx_directory_moves_home_merge_seq ON directory_moves USING btree (home_id, merge_seq);
 
 ALTER TABLE ONLY organization_invites
     ADD CONSTRAINT organization_invites_pkey PRIMARY KEY (invite_id);

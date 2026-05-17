@@ -29,7 +29,6 @@ import {
   mergeResponseErrorMessage,
   normalizeTreeOperationName,
   pathExistsInEntries,
-  remapChildPathForRename,
   waitForCreatedTreeEntry,
 } from './browserTreeOperations.js';
 
@@ -105,7 +104,6 @@ function expectedPathBasesForFileRename(sourcePath, sourcePathBase, destinationP
 export function useRepoBrowserTreeActions({
   apiBaseUrl,
   buildEntriesUrl,
-  buildFileUrl,
   canLoad,
   clearFilePreview,
   currentSlice,
@@ -158,15 +156,6 @@ export function useRepoBrowserTreeActions({
     const payload = await response.json();
     return payload?.entries || [];
   }, [apiBaseUrl, buildEntriesUrl, sliceId]);
-
-  const fetchFileForAction = useCallback(async (path) => {
-    const response = await fetchWithAuth(buildFileUrl(path));
-    if (!response.ok) {
-      throw new Error(await readBrowserErrorMessage(response, 'Unable to load file content'));
-    }
-    const payload = await response.json();
-    return payload?.file || {};
-  }, [buildFileUrl]);
 
   const collectDirectoryFiles = useCallback(async (directoryPath) => {
     const collect = async (path) => {
@@ -235,7 +224,14 @@ export function useRepoBrowserTreeActions({
     writeBrowserState,
   ]);
 
-  const createAndMergeChangeset = useCallback(async ({ fileContents, message, modifiedFiles }) => {
+  const createAndMergeChangeset = useCallback(async ({
+    directoryRenames = [],
+    expectedPathBases = [],
+    fileContents,
+    fileRenames = [],
+    message,
+    modifiedFiles,
+  }) => {
     assertTreeMutationPathsAllowed({
       sliceId,
       currentSlice,
@@ -247,6 +243,9 @@ export function useRepoBrowserTreeActions({
       modifiedFiles: uniquePaths(modifiedFiles),
       message,
       fileContents,
+      expectedPathBases,
+      fileRenames,
+      directoryRenames,
     });
     if (!isSuccessfulMergeResponse(mergeResponse)) {
       throw new Error(mergeResponseErrorMessage(mergeResponse));
@@ -382,27 +381,11 @@ export function useRepoBrowserTreeActions({
     }
 
     if (entryKind === 'directory') {
-      const oldFilePaths = await collectDirectoryFiles(entryPath);
-      if (oldFilePaths.length === 0) {
-        throw new Error('This folder has no committed files to rename.');
-      }
-      const copiedContents = [];
-      for (const oldFilePath of oldFilePaths) {
-        const file = await fetchFileForAction(oldFilePath);
-        copiedContents.push({
-          path: remapChildPathForRename(entryPath, newPath, oldFilePath),
-          content: file?.content || '',
-        });
-      }
       await createAndMergeChangeset({
         message: `Rename ${entryPath} to ${newPath}`,
-        modifiedFiles: [
-          ...oldFilePaths,
-          ...copiedContents.map((change) => change.path),
-        ],
-        fileContents: [
-          ...copiedContents,
-          ...oldFilePaths.map((path) => ({ path, deleted: true })),
+        modifiedFiles: [entryPath, newPath],
+        directoryRenames: [
+          { sourcePath: entryPath, destinationPath: newPath },
         ],
       });
       await refreshTreeAfterMerge({
@@ -430,11 +413,9 @@ export function useRepoBrowserTreeActions({
     });
     return `Renamed ${oldName} to ${newName}.`;
   }, [
-    collectDirectoryFiles,
     createAndMergeChangeset,
     currentSlice,
     fetchEntriesForAction,
-    fetchFileForAction,
     refreshTreeAfterMerge,
     sliceId,
   ]);

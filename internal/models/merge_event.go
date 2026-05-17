@@ -5,6 +5,7 @@ import "time"
 // MergePathUpdate is the per-path payload stored in an accepted merge event.
 type MergePathUpdate struct {
 	Path             string `json:"path"`
+	EntryType        string `json:"entry_type,omitempty"`
 	BaseVersion      int64  `json:"base_version"`
 	NewVersion       int64  `json:"new_version"`
 	ContentHash      string `json:"content_hash,omitempty"`

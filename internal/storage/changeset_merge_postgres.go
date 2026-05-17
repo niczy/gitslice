@@ -190,13 +190,14 @@ func (s *PostgresNativeStorage) AcceptChangesetMergeByID(ctx context.Context, ch
 				COALESCE(snap.id, '') AS snapshot_id,
 				COALESCE(snap.file_hashes, '{}'::jsonb) AS file_hashes,
 				COALESCE(snap.base_path_versions, '{}'::jsonb) AS base_path_versions,
-				COALESCE(snap.rename_sources, '{}'::jsonb) AS rename_sources
+				COALESCE(snap.rename_sources, '{}'::jsonb) AS rename_sources,
+				COALESCE(snap.directory_moves, '[]'::jsonb) AS directory_moves
 			FROM input i
 			LEFT JOIN changesets c ON c.id = i.changeset_id
 			LEFT JOIN slices s ON s.id = c.slice_id
 			LEFT JOIN slice_metadata sm ON sm.slice_id = s.id
 			LEFT JOIN LATERAL (
-				SELECT id, file_hashes, base_path_versions, rename_sources
+				SELECT id, file_hashes, base_path_versions, rename_sources, directory_moves
 				FROM changeset_snapshots
 				WHERE changeset_id = c.id
 				ORDER BY version DESC
@@ -237,6 +238,7 @@ func (s *PostgresNativeStorage) AcceptChangesetMergeByID(ctx context.Context, ch
 					AND ps.path_count > 0
 					AND l.snapshot_id <> ''
 					AND jsonb_object_length(l.rename_sources) = 0
+					AND jsonb_array_length(l.directory_moves) = 0
 					AND l.c_hash NOT LIKE l.revert_prefix || '%'
 					AND NOT ps.touches_config
 				) AS basic_supported
@@ -643,10 +645,11 @@ func getLatestChangesetSnapshotForMerge(ctx context.Context, q queryable, change
 	var fileHashesJSON []byte
 	var basePathVersionsJSON []byte
 	var renameSourcesJSON []byte
+	var directoryMovesJSON []byte
 	err := q.QueryRow(ctx, `
 		SELECT id, changeset_id, version, hash, base_commit_hash, modified_files,
 		       COALESCE(file_hashes, 'null'::jsonb), COALESCE(base_path_versions, 'null'::jsonb),
-		       COALESCE(rename_sources, 'null'::jsonb), author, message, created_at
+		       COALESCE(rename_sources, 'null'::jsonb), COALESCE(directory_moves, 'null'::jsonb), author, message, created_at
 		FROM changeset_snapshots
 		WHERE changeset_id = $1
 		ORDER BY version DESC
@@ -661,6 +664,7 @@ func getLatestChangesetSnapshotForMerge(ctx context.Context, q queryable, change
 		&fileHashesJSON,
 		&basePathVersionsJSON,
 		&renameSourcesJSON,
+		&directoryMovesJSON,
 		&snapshot.Author,
 		&snapshot.Message,
 		&snapshot.CreatedAt,
@@ -683,6 +687,9 @@ func getLatestChangesetSnapshotForMerge(ctx context.Context, q queryable, change
 	if err := json.Unmarshal(renameSourcesJSON, &snapshot.RenameSources); err != nil {
 		snapshot.RenameSources = map[string]string{}
 	}
+	if err := json.Unmarshal(directoryMovesJSON, &snapshot.DirectoryMoves); err != nil {
+		snapshot.DirectoryMoves = nil
+	}
 	return &snapshot, nil
 }
 
@@ -691,6 +698,9 @@ func changesetSnapshotCoversFastMerge(snapshot *models.ChangesetSnapshot, paths 
 		return false
 	}
 	if len(snapshot.RenameSources) > 0 {
+		return false
+	}
+	if len(snapshot.DirectoryMoves) > 0 {
 		return false
 	}
 	for _, path := range paths {
@@ -730,6 +740,7 @@ func buildFastMergePathUpdates(cs *models.Changeset, snapshot *models.ChangesetS
 		manifestHash := strings.TrimSpace(snapshot.FileHashes[path])
 		updates = append(updates, &models.MergePathUpdate{
 			Path:             path,
+			EntryType:        "file",
 			BaseVersion:      baseVersion,
 			NewVersion:       baseVersion + 1,
 			ContentHash:      manifestHash,

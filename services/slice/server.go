@@ -1301,7 +1301,11 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 	if err != nil {
 		return nil, err
 	}
-	modifiedFiles := mergeModifiedFilesWithFileContentsAndRenames(req.ModifiedFiles, fileContents, fileRenames)
+	directoryRenames, err := normalizeChangesetDirectoryRenames(req.GetDirectoryRenames())
+	if err != nil {
+		return nil, err
+	}
+	modifiedFiles := mergeModifiedFilesWithFileContentsAndRenames(req.ModifiedFiles, fileContents, fileRenames, directoryRenames)
 
 	// Validate modified files
 	for _, fileID := range modifiedFiles {
@@ -1337,9 +1341,13 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		if !s.hasSliceViewAccess(ctx, slice, username) {
 			return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 		}
-		modifiedFiles, fileContents, fileRenames = filterChangesetChangesForSlice(slice, modifiedFiles, fileContents, fileRenames)
+		modifiedFiles, fileContents, fileRenames, directoryRenames = filterChangesetChangesForSlice(slice, modifiedFiles, fileContents, fileRenames, directoryRenames)
 		if len(modifiedFiles) == 0 {
 			return nil, status.Error(codes.InvalidArgument, "no modified files remain after filtering paths outside the slice tracked folders")
+		}
+		directoryMoves, err := s.expandChangesetDirectoryRenames(ctx, slice, directoryRenames, &fileRenames, &modifiedFiles)
+		if err != nil {
+			return nil, err
 		}
 		expectedPathBases := changesetExpectedPathBasesForFiles(slice, modifiedFiles, normalizeExpectedPathBases(req.GetExpectedPathBases()))
 		if drifts, err := s.validateExpectedChangesetPathBases(ctx, slice, modifiedFiles, expectedPathBases); err != nil {
@@ -1370,7 +1378,7 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		if err := s.storage.UpdateChangeset(ctx, existing); err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update changeset: %v", err))
 		}
-		if err := s.createChangesetSnapshotWithRenameSources(ctx, existing, changesetRenameSourcesForSnapshot(fileRenames), expectedPathBases); err != nil {
+		if err := s.createChangesetSnapshotWithMoveMetadata(ctx, existing, changesetRenameSourcesForSnapshot(fileRenames), directoryMoves, expectedPathBases); err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to save changeset snapshot: %v", err))
 		}
 		ciRunID, ciStatus := s.enqueueChangesetExportCI(ctx, existing.ID, username)
@@ -1396,9 +1404,13 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 	if !s.hasSliceViewAccess(ctx, slice, username) {
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
-	modifiedFiles, fileContents, fileRenames = filterChangesetChangesForSlice(slice, modifiedFiles, fileContents, fileRenames)
+	modifiedFiles, fileContents, fileRenames, directoryRenames = filterChangesetChangesForSlice(slice, modifiedFiles, fileContents, fileRenames, directoryRenames)
 	if len(modifiedFiles) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "no modified files remain after filtering paths outside the slice tracked folders")
+	}
+	directoryMoves, err := s.expandChangesetDirectoryRenames(ctx, slice, directoryRenames, &fileRenames, &modifiedFiles)
+	if err != nil {
+		return nil, err
 	}
 	expectedPathBases := changesetExpectedPathBasesForFiles(slice, modifiedFiles, normalizeExpectedPathBases(req.GetExpectedPathBases()))
 	if drifts, err := s.validateExpectedChangesetPathBases(ctx, slice, modifiedFiles, expectedPathBases); err != nil {
@@ -1431,7 +1443,7 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 	if err := s.storage.CreateChangeset(ctx, cs); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to create changeset: %v", err))
 	}
-	if err := s.createChangesetSnapshotWithRenameSources(ctx, cs, changesetRenameSourcesForSnapshot(fileRenames), expectedPathBases); err != nil {
+	if err := s.createChangesetSnapshotWithMoveMetadata(ctx, cs, changesetRenameSourcesForSnapshot(fileRenames), directoryMoves, expectedPathBases); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to save changeset snapshot: %v", err))
 	}
 	ciRunID, ciStatus := s.enqueueChangesetExportCI(ctx, cs.ID, username)
@@ -1471,7 +1483,15 @@ func (s *sliceServiceServer) CreateAndMergeChangeset(ctx context.Context, req *s
 		}
 	}
 	if !hasDirectFileTreeChange {
-		return nil, status.Error(codes.InvalidArgument, "file_contents or file_renames is required for direct file-tree commits")
+		for _, rename := range req.GetDirectoryRenames() {
+			if rename != nil {
+				hasDirectFileTreeChange = true
+				break
+			}
+		}
+	}
+	if !hasDirectFileTreeChange {
+		return nil, status.Error(codes.InvalidArgument, "file_contents, file_renames, or directory_renames is required for direct file-tree commits")
 	}
 
 	createResp, err := s.CreateChangeset(ctx, req)
@@ -1844,6 +1864,15 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 				Message:     pathHeadDriftMergeMessage(drifts),
 			}, nil
 		}
+		if message, err := s.validateChangesetDirectoryMoves(ctx, pathHeadSnapshot); err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate directory move state: %v", err))
+		} else if message != "" {
+			return &slicev1.MergeChangesetResponse{
+				Status:      slicev1.MergeStatus_MERGE_STATUS_STALE_BASE,
+				ChangesetId: cs.ID,
+				Message:     message,
+			}, nil
+		}
 	} else {
 		return &slicev1.MergeChangesetResponse{
 			Status:      slicev1.MergeStatus_MERGE_STATUS_STALE_BASE,
@@ -2159,16 +2188,22 @@ func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st st
 	}
 
 	renameSources := normalizeSnapshotRenameSources(snapshotRenameSources(snapshot))
+	directoryMoves := normalizeSnapshotDirectoryMoves(snapshotDirectoryMoves(snapshot))
+	directoryMovePaths := directoryMovePathSet(directoryMoves)
 	baseVersions, err := s.mergeEventBasePathVersions(ctx, st, homeID, paths, snapshot)
 	if err != nil {
 		return nil, err
 	}
 	pathUpdates := make([]*models.MergePathUpdate, 0, len(paths))
 	for _, filePath := range paths {
+		if _, isDirectoryMovePath := directoryMovePaths[filePath]; isDirectoryMovePath {
+			continue
+		}
 		hash := strings.TrimSpace(fileHashes[filePath])
 		baseVersion := baseVersions[filePath]
 		pathUpdates = append(pathUpdates, &models.MergePathUpdate{
 			Path:             filePath,
+			EntryType:        "file",
 			BaseVersion:      baseVersion,
 			NewVersion:       baseVersion + 1,
 			ContentHash:      hash,
@@ -2179,6 +2214,40 @@ func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st st
 			ParentCommitHash: strings.TrimSpace(parentHash),
 			Deleted:          !existingEntries[filePath],
 		})
+	}
+	for _, move := range directoryMoves {
+		if move == nil {
+			continue
+		}
+		oldPrefix := cleanDiffPath(move.OldPrefix)
+		newPrefix := cleanDiffPath(move.NewPrefix)
+		if oldPrefix == "" || newPrefix == "" {
+			continue
+		}
+		oldBaseVersion := baseVersions[oldPrefix]
+		newBaseVersion := baseVersions[newPrefix]
+		pathUpdates = append(pathUpdates,
+			&models.MergePathUpdate{
+				Path:             oldPrefix,
+				EntryType:        "directory",
+				BaseVersion:      oldBaseVersion,
+				NewVersion:       oldBaseVersion + 1,
+				SourceSliceID:    cs.SliceID,
+				SourceCommitHash: commitHash,
+				ParentCommitHash: strings.TrimSpace(parentHash),
+				Deleted:          true,
+			},
+			&models.MergePathUpdate{
+				Path:             newPrefix,
+				EntryType:        "directory",
+				BaseVersion:      newBaseVersion,
+				NewVersion:       newBaseVersion + 1,
+				OldPath:          oldPrefix,
+				SourceSliceID:    cs.SliceID,
+				SourceCommitHash: commitHash,
+				ParentCommitHash: strings.TrimSpace(parentHash),
+			},
+		)
 	}
 
 	author := strings.TrimSpace(cs.Author)
@@ -2216,6 +2285,9 @@ func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st st
 		if err := casStore.AppendMergeEventWithPathHeadCAS(ctx, event); err != nil {
 			return nil, err
 		}
+		if err := s.recordAcceptedDirectoryMoves(ctx, st, directoryMoves, event); err != nil {
+			return nil, err
+		}
 		return event, nil
 	}
 
@@ -2226,6 +2298,9 @@ func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st st
 		if err := headStore.UpsertHomePathHeads(ctx, mergeEventHomePathHeads(event)); err != nil {
 			return nil, err
 		}
+	}
+	if err := s.recordAcceptedDirectoryMoves(ctx, st, directoryMoves, event); err != nil {
+		return nil, err
 	}
 	return event, nil
 }
@@ -2321,6 +2396,7 @@ func mergeEventHomePathHeads(event *models.MergeEvent) []*models.HomePathHead {
 		heads = append(heads, &models.HomePathHead{
 			HomeID:           event.HomeID,
 			Path:             update.Path,
+			EntryType:        mergePathUpdateEntryType(update),
 			PathVersion:      update.NewVersion,
 			ContentHash:      update.ContentHash,
 			ManifestHash:     update.ManifestHash,
@@ -2332,6 +2408,101 @@ func mergeEventHomePathHeads(event *models.MergeEvent) []*models.HomePathHead {
 		})
 	}
 	return heads
+}
+
+func mergePathUpdateEntryType(update *models.MergePathUpdate) string {
+	if update == nil {
+		return "file"
+	}
+	switch strings.TrimSpace(update.EntryType) {
+	case "directory":
+		return "directory"
+	default:
+		return "file"
+	}
+}
+
+func directoryMovePathSet(moves []*models.DirectoryMove) map[string]struct{} {
+	out := make(map[string]struct{}, len(moves)*2)
+	for _, move := range moves {
+		if move == nil {
+			continue
+		}
+		if oldPrefix := cleanDiffPath(move.OldPrefix); oldPrefix != "" {
+			out[oldPrefix] = struct{}{}
+		}
+		if newPrefix := cleanDiffPath(move.NewPrefix); newPrefix != "" {
+			out[newPrefix] = struct{}{}
+		}
+	}
+	return out
+}
+
+func (s *sliceServiceServer) validateChangesetDirectoryMoves(ctx context.Context, snapshot *models.ChangesetSnapshot) (string, error) {
+	moves := normalizeSnapshotDirectoryMoves(snapshotDirectoryMoves(snapshot))
+	if len(moves) == 0 {
+		return "", nil
+	}
+	headStore, ok := s.storage.(storage.HomePathHeadStore)
+	if !ok {
+		return "directory rename requires path-head storage", nil
+	}
+	headsByHome := make(map[string][]*models.HomePathHead)
+	for _, move := range moves {
+		if move == nil {
+			continue
+		}
+		homeID := strings.TrimSpace(move.HomeID)
+		if homeID == "" {
+			return "directory rename is missing home state", nil
+		}
+		heads, ok := headsByHome[homeID]
+		if !ok {
+			loaded, err := headStore.ListHomePathHeads(ctx, homeID, directoryMoveHeadListLimit)
+			if err != nil {
+				return "", err
+			}
+			if len(loaded) >= directoryMoveHeadListLimit {
+				return "directory rename subtree is too large", nil
+			}
+			heads = loaded
+			headsByHome[homeID] = heads
+		}
+		if directoryMoveTargetOccupied(heads, move.NewPrefix) {
+			return fmt.Sprintf("directory rename destination already exists: %s", move.NewPrefix), nil
+		}
+		members := directoryMoveSourceMembers(heads, move.OldPrefix)
+		_, digest := directoryMoveSubtreeDigest(members)
+		if len(members) == 0 || digest != strings.TrimSpace(move.BaseSubtreeDigest) {
+			return fmt.Sprintf("directory %s changed since export. Sync the changeset before merging.", move.OldPrefix), nil
+		}
+	}
+	return "", nil
+}
+
+func (s *sliceServiceServer) recordAcceptedDirectoryMoves(ctx context.Context, st storage.Storage, moves []*models.DirectoryMove, event *models.MergeEvent) error {
+	if len(moves) == 0 || event == nil {
+		return nil
+	}
+	moveStore, ok := st.(storage.DirectoryMoveStore)
+	if !ok {
+		return nil
+	}
+	for _, move := range normalizeSnapshotDirectoryMoves(moves) {
+		if move == nil {
+			continue
+		}
+		stored := *move
+		stored.SourceSliceID = strings.TrimSpace(event.SourceSliceID)
+		stored.SourceCommitHash = strings.TrimSpace(event.SourceCommitHash)
+		stored.NewSubtreeVersion = event.MergeSeq
+		stored.MergeSeq = event.MergeSeq
+		stored.CreatedAt = event.CreatedAt
+		if err := moveStore.CreateDirectoryMove(ctx, &stored); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func pathHeadDriftMergeMessage(drifts []changesetPathHeadDrift) string {
@@ -2609,10 +2780,10 @@ func normalizeModifiedFiles(files []string) []string {
 	return normalized
 }
 
-func filterChangesetChangesForSlice(slice *models.Slice, modifiedFiles []string, fileContents []changesetFileContentChange, fileRenames []changesetFileRename) ([]string, []changesetFileContentChange, []changesetFileRename) {
+func filterChangesetChangesForSlice(slice *models.Slice, modifiedFiles []string, fileContents []changesetFileContentChange, fileRenames []changesetFileRename, directoryRenames []changesetDirectoryRename) ([]string, []changesetFileContentChange, []changesetFileRename, []changesetDirectoryRename) {
 	roots, restrictAdds := changesetAllowedAddRoots(slice)
 	if !restrictAdds {
-		return modifiedFiles, fileContents, fileRenames
+		return modifiedFiles, fileContents, fileRenames, directoryRenames
 	}
 	existingPaths := changesetExistingDisplayPathSet(slice)
 	keepPath := func(raw string) bool {
@@ -2644,7 +2815,13 @@ func filterChangesetChangesForSlice(slice *models.Slice, modifiedFiles []string,
 			filteredRenames = append(filteredRenames, rename)
 		}
 	}
-	return normalizeModifiedFiles(filteredFiles), filteredContents, filteredRenames
+	filteredDirectoryRenames := make([]changesetDirectoryRename, 0, len(directoryRenames))
+	for _, rename := range directoryRenames {
+		if keepPath(rename.sourcePath) && keepPath(rename.destinationPath) {
+			filteredDirectoryRenames = append(filteredDirectoryRenames, rename)
+		}
+	}
+	return normalizeModifiedFiles(filteredFiles), filteredContents, filteredRenames, filteredDirectoryRenames
 }
 
 func changesetAllowedAddRoots(slice *models.Slice) ([]string, bool) {
@@ -2733,6 +2910,11 @@ type changesetFileRename struct {
 	destinationPath string
 }
 
+type changesetDirectoryRename struct {
+	sourcePath      string
+	destinationPath string
+}
+
 func normalizeChangesetFileContentChanges(changes []*slicev1.FileContentChange) ([]changesetFileContentChange, error) {
 	if len(changes) == 0 {
 		return nil, nil
@@ -2812,7 +2994,48 @@ func normalizeChangesetFileRenames(renames []*slicev1.FileRename) ([]changesetFi
 	return normalized, nil
 }
 
-func mergeModifiedFilesWithFileContentsAndRenames(files []string, changes []changesetFileContentChange, renames []changesetFileRename) []string {
+func normalizeChangesetDirectoryRenames(renames []*slicev1.DirectoryRename) ([]changesetDirectoryRename, error) {
+	if len(renames) == 0 {
+		return nil, nil
+	}
+	seenSources := make(map[string]struct{}, len(renames))
+	seenDestinations := make(map[string]struct{}, len(renames))
+	normalized := make([]changesetDirectoryRename, 0, len(renames))
+	for _, rename := range renames {
+		if rename == nil {
+			continue
+		}
+		sourcePath := cleanDiffPath(rename.GetSourcePath())
+		destinationPath := cleanDiffPath(rename.GetDestinationPath())
+		if sourcePath == "" || destinationPath == "" {
+			return nil, status.Error(codes.InvalidArgument, "directory rename source_path and destination_path are required")
+		}
+		if sourcePath == destinationPath {
+			return nil, status.Error(codes.InvalidArgument, "directory rename source_path and destination_path must differ")
+		}
+		if strings.HasPrefix(destinationPath, sourcePath+"/") || strings.HasPrefix(sourcePath, destinationPath+"/") {
+			return nil, status.Error(codes.InvalidArgument, "directory rename source_path and destination_path must not overlap")
+		}
+		if err := common.ValidateFileID(sourcePath); err != nil {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid directory rename source path %s: %v", sourcePath, err))
+		}
+		if err := common.ValidateFileID(destinationPath); err != nil {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid directory rename destination path %s: %v", destinationPath, err))
+		}
+		if _, ok := seenSources[sourcePath]; ok {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("duplicate directory rename source path %s", sourcePath))
+		}
+		if _, ok := seenDestinations[destinationPath]; ok {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("duplicate directory rename destination path %s", destinationPath))
+		}
+		seenSources[sourcePath] = struct{}{}
+		seenDestinations[destinationPath] = struct{}{}
+		normalized = append(normalized, changesetDirectoryRename{sourcePath: sourcePath, destinationPath: destinationPath})
+	}
+	return normalized, nil
+}
+
+func mergeModifiedFilesWithFileContentsAndRenames(files []string, changes []changesetFileContentChange, renames []changesetFileRename, directoryRenameGroups ...[]changesetDirectoryRename) []string {
 	seen := make(map[string]struct{}, len(files)+len(changes)+(len(renames)*2))
 	out := make([]string, 0, len(files)+len(changes)+(len(renames)*2))
 	for _, filePath := range normalizeModifiedFiles(files) {
@@ -2848,6 +3071,20 @@ func mergeModifiedFilesWithFileContentsAndRenames(files []string, changes []chan
 			out = append(out, filePath)
 		}
 	}
+	for _, directoryRenames := range directoryRenameGroups {
+		for _, rename := range directoryRenames {
+			for _, filePath := range []string{rename.sourcePath, rename.destinationPath} {
+				if filePath == "" {
+					continue
+				}
+				if _, exists := seen[filePath]; exists {
+					continue
+				}
+				seen[filePath] = struct{}{}
+				out = append(out, filePath)
+			}
+		}
+	}
 	sort.Strings(out)
 	return out
 }
@@ -2866,6 +3103,196 @@ func changesetRenameSourcesForSnapshot(renames []changesetFileRename) map[string
 		sources[destinationPath] = sourcePath
 	}
 	return normalizeSnapshotRenameSources(sources)
+}
+
+const directoryMoveHeadListLimit = 100000
+
+func (s *sliceServiceServer) expandChangesetDirectoryRenames(ctx context.Context, slice *models.Slice, directoryRenames []changesetDirectoryRename, fileRenames *[]changesetFileRename, modifiedFiles *[]string) ([]*models.DirectoryMove, error) {
+	if len(directoryRenames) == 0 {
+		return nil, nil
+	}
+	headStore, ok := s.storage.(storage.HomePathHeadStore)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "directory rename requires path-head storage")
+	}
+	homeID := directoryRenameHomeID(slice, directoryRenames)
+	if strings.TrimSpace(homeID) == "" {
+		return nil, status.Error(codes.FailedPrecondition, "directory rename paths must belong to one home")
+	}
+	heads, err := headStore.ListHomePathHeads(ctx, homeID, directoryMoveHeadListLimit)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load directory rename path heads: %v", err))
+	}
+	if len(heads) >= directoryMoveHeadListLimit {
+		return nil, status.Error(codes.ResourceExhausted, "directory rename subtree is too large")
+	}
+
+	moves := make([]*models.DirectoryMove, 0, len(directoryRenames))
+	expandedRenames := make([]changesetFileRename, 0)
+	expandedDirectoryRenames := make([]changesetDirectoryRename, 0, len(directoryRenames))
+	for _, rename := range directoryRenames {
+		oldPrefix := directoryRenameStoredPath(slice, rename.sourcePath)
+		newPrefix := directoryRenameStoredPath(slice, rename.destinationPath)
+		if oldPrefix == "" || newPrefix == "" {
+			return nil, status.Error(codes.InvalidArgument, "directory rename paths are required")
+		}
+		if oldPrefix == newPrefix {
+			return nil, status.Error(codes.InvalidArgument, "directory rename source_path and destination_path must differ")
+		}
+		if strings.HasPrefix(newPrefix, oldPrefix+"/") || strings.HasPrefix(oldPrefix, newPrefix+"/") {
+			return nil, status.Error(codes.InvalidArgument, "directory rename source_path and destination_path must not overlap")
+		}
+		if directoryMoveTargetOccupied(heads, newPrefix) {
+			return nil, status.Error(codes.FailedPrecondition, fmt.Sprintf("directory rename destination already exists: %s", newPrefix))
+		}
+		members := directoryMoveSourceMembers(heads, oldPrefix)
+		if len(members) == 0 {
+			return nil, status.Error(codes.FailedPrecondition, fmt.Sprintf("directory rename source has no tracked files: %s", oldPrefix))
+		}
+		baseSubtreeVersion, baseSubtreeDigest := directoryMoveSubtreeDigest(members)
+		sourceSliceID := ""
+		if slice != nil {
+			sourceSliceID = strings.TrimSpace(slice.ID)
+		}
+		move := &models.DirectoryMove{
+			MoveID:             common.GenerateDirectoryMoveID(),
+			HomeID:             homeID,
+			SourceSliceID:      sourceSliceID,
+			OldPrefix:          oldPrefix,
+			NewPrefix:          newPrefix,
+			BaseSubtreeVersion: baseSubtreeVersion,
+			BaseSubtreeDigest:  baseSubtreeDigest,
+			CreatedAt:          time.Now(),
+		}
+		moves = append(moves, move)
+		expandedDirectoryRenames = append(expandedDirectoryRenames, changesetDirectoryRename{
+			sourcePath:      oldPrefix,
+			destinationPath: newPrefix,
+		})
+		for _, head := range members {
+			suffix := strings.TrimPrefix(cleanDiffPath(head.Path), oldPrefix+"/")
+			if suffix == "" {
+				continue
+			}
+			expandedRenames = append(expandedRenames, changesetFileRename{
+				sourcePath:      cleanDiffPath(head.Path),
+				destinationPath: cleanDiffPath(path.Join(newPrefix, suffix)),
+			})
+		}
+	}
+	if len(expandedRenames) > 0 {
+		*fileRenames = append(*fileRenames, expandedRenames...)
+	}
+	*modifiedFiles = mergeModifiedFilesWithFileContentsAndRenames(*modifiedFiles, nil, *fileRenames, expandedDirectoryRenames)
+	return normalizeSnapshotDirectoryMoves(moves), nil
+}
+
+func directoryRenameHomeID(slice *models.Slice, renames []changesetDirectoryRename) string {
+	if slice != nil {
+		if username := homeslice.UsernameFromSliceID(slice.ID); username != "" {
+			return username
+		}
+	}
+	paths := make([]string, 0, len(renames)*2)
+	for _, rename := range renames {
+		if source := directoryRenameStoredPath(slice, rename.sourcePath); source != "" {
+			paths = append(paths, source)
+		}
+		if destination := directoryRenameStoredPath(slice, rename.destinationPath); destination != "" {
+			paths = append(paths, destination)
+		}
+	}
+	return commonTopLevelPathFromFiles(paths)
+}
+
+func directoryRenameStoredPath(slice *models.Slice, rawPath string) string {
+	cleaned := cleanDiffPath(rawPath)
+	if cleaned == "" {
+		return ""
+	}
+	if storedPath := common.SliceStoredPath(slice, cleaned); storedPath != "" {
+		return storedPath
+	}
+	return cleaned
+}
+
+func directoryMoveSourceMembers(heads []*models.HomePathHead, sourcePrefix string) []*models.HomePathHead {
+	sourcePrefix = cleanDiffPath(sourcePrefix)
+	if sourcePrefix == "" {
+		return nil
+	}
+	prefix := sourcePrefix + "/"
+	members := make([]*models.HomePathHead, 0)
+	for _, head := range heads {
+		if head == nil || head.Deleted {
+			continue
+		}
+		if mergeHeadEntryType(head) != "file" {
+			continue
+		}
+		headPath := cleanDiffPath(head.Path)
+		if strings.HasPrefix(headPath, prefix) {
+			members = append(members, head)
+		}
+	}
+	sort.Slice(members, func(i, j int) bool {
+		return members[i].Path < members[j].Path
+	})
+	return members
+}
+
+func directoryMoveTargetOccupied(heads []*models.HomePathHead, destinationPrefix string) bool {
+	destinationPrefix = cleanDiffPath(destinationPrefix)
+	if destinationPrefix == "" {
+		return false
+	}
+	prefix := destinationPrefix + "/"
+	for _, head := range heads {
+		if head == nil || head.Deleted {
+			continue
+		}
+		headPath := cleanDiffPath(head.Path)
+		if headPath == destinationPrefix || strings.HasPrefix(headPath, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func directoryMoveSubtreeDigest(members []*models.HomePathHead) (int64, string) {
+	maxVersion := int64(0)
+	h := sha256.New()
+	for _, head := range members {
+		if head == nil {
+			continue
+		}
+		if head.PathVersion > maxVersion {
+			maxVersion = head.PathVersion
+		}
+		manifestHash := strings.TrimSpace(head.ManifestHash)
+		if manifestHash == "" {
+			manifestHash = strings.TrimSpace(head.ContentHash)
+		}
+		_, _ = h.Write([]byte(cleanDiffPath(head.Path)))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(fmt.Sprintf("%d", head.PathVersion)))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(manifestHash))
+		_, _ = h.Write([]byte{'\n'})
+	}
+	return maxVersion, hex.EncodeToString(h.Sum(nil))
+}
+
+func mergeHeadEntryType(head *models.HomePathHead) string {
+	if head == nil {
+		return "file"
+	}
+	switch strings.TrimSpace(head.EntryType) {
+	case "directory":
+		return "directory"
+	default:
+		return "file"
+	}
 }
 
 func normalizeExpectedPathBases(bases []*filev1.PathBase) map[string]*filev1.PathBase {
@@ -3094,12 +3521,25 @@ func (s *sliceServiceServer) applyChangesetFileRenames(ctx context.Context, slic
 			}
 			return fmt.Errorf("failed to load rename source %s: %w", sourcePath, err)
 		}
-		content, err := storage.ReadManifestContent(ctx, s.storage, manifest)
-		if err != nil {
-			return fmt.Errorf("failed to read rename source %s: %w", sourcePath, err)
+		destinationManifest := *manifest
+		destinationManifest.Path = destinationPath
+		if err := s.storage.PutFileManifest(ctx, sliceID, destinationPath, &destinationManifest); err != nil {
+			return fmt.Errorf("failed to write rename destination manifest %s: %w", destinationPath, err)
 		}
-		if err := s.upsertSliceFilePathWithMetadata(ctx, sliceID, destinationPath, strings.TrimSpace(manifest.Hash), content.Content, manifest.Executable, manifest.SymlinkTarget); err != nil {
-			return fmt.Errorf("failed to write rename destination %s: %w", destinationPath, err)
+		if err := s.storage.AddEntry(ctx, &models.DirectoryEntry{
+			ID:            common.GenerateEntryID(sliceID, destinationPath),
+			Path:          destinationPath,
+			Type:          "file",
+			ParentID:      sliceID,
+			Hash:          strings.TrimSpace(destinationManifest.Hash),
+			Size:          destinationManifest.TotalSize,
+			Executable:    destinationManifest.Executable,
+			SymlinkTarget: destinationManifest.SymlinkTarget,
+		}); err != nil {
+			return fmt.Errorf("failed to create rename destination entry %s: %w", destinationPath, err)
+		}
+		if err := s.storage.AddFileToSlice(ctx, destinationPath, sliceID); err != nil {
+			return fmt.Errorf("failed to mark rename destination ownership %s: %w", destinationPath, err)
 		}
 		if err := s.removeSliceFilePath(ctx, sliceID, sourcePath); err != nil {
 			return fmt.Errorf("failed to remove rename source %s: %w", sourcePath, err)
@@ -4053,6 +4493,10 @@ func (s *sliceServiceServer) createChangesetSnapshot(ctx context.Context, cs *mo
 }
 
 func (s *sliceServiceServer) createChangesetSnapshotWithRenameSources(ctx context.Context, cs *models.Changeset, renameSources map[string]string, expectedPathBases ...map[string]*filev1.PathBase) error {
+	return s.createChangesetSnapshotWithMoveMetadata(ctx, cs, renameSources, nil, expectedPathBases...)
+}
+
+func (s *sliceServiceServer) createChangesetSnapshotWithMoveMetadata(ctx context.Context, cs *models.Changeset, renameSources map[string]string, directoryMoves []*models.DirectoryMove, expectedPathBases ...map[string]*filev1.PathBase) error {
 	if cs == nil {
 		return nil
 	}
@@ -4102,6 +4546,7 @@ func (s *sliceServiceServer) createChangesetSnapshotWithRenameSources(ctx contex
 		FileHashes:       normalizeSnapshotFileHashes(snapshotFileHashes),
 		BasePathVersions: normalizeSnapshotBasePathVersions(basePathVersions),
 		RenameSources:    normalizeSnapshotRenameSources(renameSources),
+		DirectoryMoves:   normalizeSnapshotDirectoryMoves(directoryMoves),
 		Author:           cs.Author,
 		Message:          cs.Message,
 		CreatedAt:        time.Now(),
@@ -4413,11 +4858,59 @@ func normalizeSnapshotRenameSources(renameSources map[string]string) map[string]
 	return out
 }
 
+func normalizeSnapshotDirectoryMoves(moves []*models.DirectoryMove) []*models.DirectoryMove {
+	if len(moves) == 0 {
+		return nil
+	}
+	out := make([]*models.DirectoryMove, 0, len(moves))
+	for _, move := range moves {
+		if move == nil {
+			continue
+		}
+		clone := *move
+		clone.MoveID = strings.TrimSpace(clone.MoveID)
+		clone.HomeID = strings.TrimSpace(clone.HomeID)
+		clone.SourceSliceID = strings.TrimSpace(clone.SourceSliceID)
+		clone.SourceCommitHash = strings.TrimSpace(clone.SourceCommitHash)
+		clone.OldPrefix = cleanDiffPath(clone.OldPrefix)
+		clone.NewPrefix = cleanDiffPath(clone.NewPrefix)
+		clone.BaseSubtreeDigest = strings.TrimSpace(clone.BaseSubtreeDigest)
+		if clone.MoveID == "" ||
+			clone.HomeID == "" ||
+			clone.OldPrefix == "" ||
+			clone.NewPrefix == "" ||
+			clone.OldPrefix == clone.NewPrefix ||
+			clone.BaseSubtreeVersion < 0 ||
+			clone.NewSubtreeVersion < 0 ||
+			clone.MergeSeq < 0 {
+			continue
+		}
+		out = append(out, &clone)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].OldPrefix == out[j].OldPrefix {
+			return out[i].NewPrefix < out[j].NewPrefix
+		}
+		return out[i].OldPrefix < out[j].OldPrefix
+	})
+	return out
+}
+
 func snapshotRenameSources(snapshot *models.ChangesetSnapshot) map[string]string {
 	if snapshot == nil {
 		return nil
 	}
 	return snapshot.RenameSources
+}
+
+func snapshotDirectoryMoves(snapshot *models.ChangesetSnapshot) []*models.DirectoryMove {
+	if snapshot == nil {
+		return nil
+	}
+	return snapshot.DirectoryMoves
 }
 
 func (s *sliceServiceServer) resolveChangesetSnapshotForReview(ctx context.Context, cs *models.Changeset, requestedVersion int32) (*models.ChangesetSnapshot, error) {

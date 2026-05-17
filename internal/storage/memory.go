@@ -56,6 +56,7 @@ type InMemoryStorage struct {
 	mergeEventsByID           map[string]*models.MergeEvent       // eventID -> event
 	projectionOffsets         map[string]*models.ProjectionOffset // projectionName:shardID -> offset
 	homePathHeads             map[string]*models.HomePathHead     // homeID:path -> head
+	directoryMoves            map[string]*models.DirectoryMove    // moveID -> directory move
 	contentCommitDirs         map[string]*contentCommitDirRow     // homeID:dirPath:commitHash -> projected commit
 
 	// CI
@@ -156,6 +157,7 @@ func NewInMemoryStorage() *InMemoryStorage {
 		mergeEventsByID:                  make(map[string]*models.MergeEvent),
 		projectionOffsets:                make(map[string]*models.ProjectionOffset),
 		homePathHeads:                    make(map[string]*models.HomePathHead),
+		directoryMoves:                   make(map[string]*models.DirectoryMove),
 		contentCommitDirs:                make(map[string]*contentCommitDirRow),
 		ciRuns:                           make(map[string]*CIRun),
 		ciRunManifests:                   make(map[string]*CIRunManifest),
@@ -1292,6 +1294,7 @@ func (s *InMemoryStorage) CreateChangesetSnapshot(ctx context.Context, snapshot 
 	copySnapshot.FileHashes = cloneStringMap(snapshot.FileHashes)
 	copySnapshot.BasePathVersions = cloneInt64Map(snapshot.BasePathVersions)
 	copySnapshot.RenameSources = cloneStringMap(snapshot.RenameSources)
+	copySnapshot.DirectoryMoves = cloneDirectoryMoves(snapshot.DirectoryMoves)
 	s.changesetSnapshots[snapshot.ID] = &copySnapshot
 	s.changesetSnapshotVersions[snapshot.ChangesetID] = append(
 		[]string{snapshot.ID},
@@ -1320,6 +1323,7 @@ func (s *InMemoryStorage) GetChangesetSnapshot(ctx context.Context, changesetID 
 		copySnapshot.FileHashes = cloneStringMap(latest.FileHashes)
 		copySnapshot.BasePathVersions = cloneInt64Map(latest.BasePathVersions)
 		copySnapshot.RenameSources = cloneStringMap(latest.RenameSources)
+		copySnapshot.DirectoryMoves = cloneDirectoryMoves(latest.DirectoryMoves)
 		return &copySnapshot, nil
 	}
 
@@ -1337,6 +1341,7 @@ func (s *InMemoryStorage) GetChangesetSnapshot(ctx context.Context, changesetID 
 		copySnapshot.FileHashes = cloneStringMap(snapshot.FileHashes)
 		copySnapshot.BasePathVersions = cloneInt64Map(snapshot.BasePathVersions)
 		copySnapshot.RenameSources = cloneStringMap(snapshot.RenameSources)
+		copySnapshot.DirectoryMoves = cloneDirectoryMoves(snapshot.DirectoryMoves)
 		return &copySnapshot, nil
 	}
 
@@ -1368,6 +1373,7 @@ func (s *InMemoryStorage) GetChangesetSnapshotByHash(ctx context.Context, change
 		copySnapshot.FileHashes = cloneStringMap(snapshot.FileHashes)
 		copySnapshot.BasePathVersions = cloneInt64Map(snapshot.BasePathVersions)
 		copySnapshot.RenameSources = cloneStringMap(snapshot.RenameSources)
+		copySnapshot.DirectoryMoves = cloneDirectoryMoves(snapshot.DirectoryMoves)
 		return &copySnapshot, nil
 	}
 
@@ -1408,11 +1414,13 @@ func (s *InMemoryStorage) ListChangesetSnapshotsWithOptions(ctx context.Context,
 			copySnapshot.FileHashes = cloneStringMap(snapshot.FileHashes)
 			copySnapshot.BasePathVersions = cloneInt64Map(snapshot.BasePathVersions)
 			copySnapshot.RenameSources = cloneStringMap(snapshot.RenameSources)
+			copySnapshot.DirectoryMoves = cloneDirectoryMoves(snapshot.DirectoryMoves)
 		} else {
 			copySnapshot.ModifiedFiles = nil
 			copySnapshot.FileHashes = nil
 			copySnapshot.BasePathVersions = nil
 			copySnapshot.RenameSources = nil
+			copySnapshot.DirectoryMoves = nil
 		}
 		result = append(result, &copySnapshot)
 	}

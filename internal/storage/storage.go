@@ -141,6 +141,12 @@ type HomePathHeadStore interface {
 	ValidateHomePathHeads(ctx context.Context, homeID string) (*models.HomePathHeadValidationResult, error)
 }
 
+// DirectoryMoveStore persists accepted directory rename facts.
+type DirectoryMoveStore interface {
+	CreateDirectoryMove(ctx context.Context, move *models.DirectoryMove) error
+	ListDirectoryMoves(ctx context.Context, homeID string) ([]*models.DirectoryMove, error)
+}
+
 func normalizeSliceCommitLimit(limit int) int {
 	if limit <= 0 {
 		return defaultSliceCommitListLimit

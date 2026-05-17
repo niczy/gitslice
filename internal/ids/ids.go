@@ -16,6 +16,7 @@ const ChangesetVersionIDPrefix = "chgver_"
 const ChangesetSnapshotIDPrefix = "chgsnap_"
 const FileChangeIDPrefix = "fc_"
 const MergeEventIDPrefix = "me_"
+const DirectoryMoveIDPrefix = "dmv_"
 const AgentRunnerIDPrefix = "agr_"
 
 // GenerateSliceID creates a new opaque custom-slice ID.
@@ -57,6 +58,10 @@ func GenerateFileChangeID(commitID, filePath string) string {
 // GenerateMergeEventID creates an opaque durable merge event ID.
 func GenerateMergeEventID() string {
 	return MergeEventIDPrefix + strings.ReplaceAll(uuid.New().String(), "-", "")
+}
+
+func GenerateDirectoryMoveID() string {
+	return DirectoryMoveIDPrefix + strings.ReplaceAll(uuid.New().String(), "-", "")
 }
 
 func GenerateAgentRunnerID() string {
