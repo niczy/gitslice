@@ -740,7 +740,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 	// Fast path for mounted slices: the root entries are the mount aliases, which we can
 	// list without scanning all underlying files. For nested paths we can translate the
 	// display path to the stored path and use the directory-entry tree when available.
-	if slice != nil && len(slice.FolderMounts) > 0 {
+	if slice != nil && len(slice.FolderMounts) > 0 && !preferSnapshots {
 		if normalizedPath == "" {
 			entries := make([]*filev1.DirectoryEntry, 0, len(slice.FolderMounts))
 			seen := make(map[string]struct{}, len(slice.FolderMounts))
@@ -866,7 +866,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 
 	// Fast path for materialized directory trees: list direct children via directory entries
 	// instead of scanning all descendant file paths under a prefix.
-	{
+	if !preferSnapshots {
 		if normalizedPath != "" {
 			if homeBackingID, ok, err := s.rootHomeBackingForPath(ctx, slice, normalizedPath, preferSnapshots); err != nil {
 				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve root home backing: %v", err))
