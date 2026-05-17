@@ -1970,6 +1970,9 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 			if err != nil {
 				return fmt.Errorf("failed to append merge event: %w", err)
 			}
+			if _, err := s.promoteHomeHeadForMergeEvent(ctx, st, event); err != nil {
+				return fmt.Errorf("failed to promote home slice head: %w", err)
+			}
 			acceptedMergeEvent = event
 			return nil
 		}
@@ -1987,6 +1990,9 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		event, err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, newCommit, parentHash, modifiedFiles, now, eventPathHeadSnapshot, pathHeadAuthority, opts.gate)
 		if err != nil {
 			return fmt.Errorf("failed to append merge event: %w", err)
+		}
+		if _, err := s.promoteHomeHeadForMergeEvent(ctx, st, event); err != nil {
+			return fmt.Errorf("failed to promote home slice head: %w", err)
 		}
 		acceptedMergeEvent = event
 		return nil
@@ -2014,7 +2020,7 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		newCommit = projectionCommitHash
 	}
 	profile.markProjection(0)
-	if username := homeslice.UsernameFromSliceID(cs.SliceID); username != "" {
+	if username := mergeEventHomeIDFromEvent(acceptedMergeEvent); username != "" && username != "global" {
 		if err := ciservice.UpdateManifestIndexForHome(ctx, s.storage, username); err != nil {
 			log.Printf("Warning: failed to update CI manifest index for home %s: %v", username, err)
 		}
@@ -2089,6 +2095,9 @@ func (s *sliceServiceServer) tryMergeChangesetByIDFastPath(ctx context.Context, 
 	if result == nil || result.Event == nil || result.Changeset == nil {
 		return nil, false, nil
 	}
+	if _, err := s.promoteHomeHeadForMergeEvent(ctx, s.storage, result.Event); err != nil {
+		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to promote home slice head: %v", err))
+	}
 	profile.sliceID = strings.TrimSpace(result.Changeset.SliceID)
 	profile.modifiedFiles = len(result.Event.TouchedPaths)
 	if err := s.replaceChangesetConflictArtifacts(ctx, result.Changeset.ID, nil); err != nil {
@@ -2097,7 +2106,7 @@ func (s *sliceServiceServer) tryMergeChangesetByIDFastPath(ctx context.Context, 
 
 	s.enqueueHistoryProjection(ctx, result.Event)
 	profile.markProjection(0)
-	if username := homeslice.UsernameFromSliceID(result.Changeset.SliceID); username != "" {
+	if username := mergeEventHomeIDFromEvent(result.Event); username != "" && username != "global" {
 		if err := ciservice.UpdateManifestIndexForHome(ctx, s.storage, username); err != nil {
 			log.Printf("Warning: failed to update CI manifest index for home %s: %v", username, err)
 		}
@@ -2171,6 +2180,9 @@ func (s *sliceServiceServer) tryMergeChangesetFastPath(ctx context.Context, cs *
 	if result == nil || result.Event == nil {
 		return nil, false, nil
 	}
+	if _, err := s.promoteHomeHeadForMergeEvent(ctx, s.storage, result.Event); err != nil {
+		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to promote home slice head: %v", err))
+	}
 
 	cs.Status = models.ChangesetStatusMerged
 	cs.MergedAt = &now
@@ -2180,7 +2192,7 @@ func (s *sliceServiceServer) tryMergeChangesetFastPath(ctx context.Context, cs *
 	s.enqueueHistoryProjection(ctx, result.Event)
 
 	profile.markProjection(0)
-	if username := homeslice.UsernameFromSliceID(cs.SliceID); username != "" {
+	if username := mergeEventHomeIDFromEvent(result.Event); username != "" && username != "global" {
 		if err := ciservice.UpdateManifestIndexForHome(ctx, s.storage, username); err != nil {
 			log.Printf("Warning: failed to update CI manifest index for home %s: %v", username, err)
 		}
@@ -2199,6 +2211,41 @@ func (s *sliceServiceServer) tryMergeChangesetFastPath(ctx context.Context, cs *
 }
 
 const mergeEventShardCount = 1024
+
+func (s *sliceServiceServer) promoteHomeHeadForMergeEvent(ctx context.Context, st storage.Storage, event *models.MergeEvent) (*homeslice.PathHeadPromotionResult, error) {
+	if event == nil {
+		return nil, nil
+	}
+	homeID := strings.TrimSpace(event.HomeID)
+	if homeID == "" || homeID == "global" {
+		return nil, nil
+	}
+	opts := homeslice.PathHeadPromotionOptions{
+		Message:       event.Message,
+		ModifiedPaths: event.TouchedPaths,
+		CommittedAt:   event.CreatedAt,
+	}
+	if strings.TrimSpace(event.SourceSliceID) == homeslice.IDForUsername(homeID) {
+		opts.CommitHash = strings.TrimSpace(event.SourceCommitHash)
+		opts.ParentHash = mergeEventParentHash(event)
+	}
+	return homeslice.PromoteHomePathHeadsToSliceCommit(ctx, st, homeID, opts)
+}
+
+func mergeEventParentHash(event *models.MergeEvent) string {
+	if event == nil {
+		return ""
+	}
+	for _, update := range event.PathUpdates {
+		if update == nil {
+			continue
+		}
+		if parentHash := strings.TrimSpace(update.ParentCommitHash); parentHash != "" {
+			return parentHash
+		}
+	}
+	return ""
+}
 
 func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st storage.Storage, cs *models.Changeset, sourceSlice *models.Slice, commitHash string, parentHash string, modifiedFiles []string, mergedAt time.Time, snapshot *models.ChangesetSnapshot, requirePathHeadCAS bool, gate *ciservice.MergeGateResult) (*models.MergeEvent, error) {
 	eventStore, ok := st.(storage.MergeEventStore)
