@@ -89,6 +89,7 @@ func contentCommitDirRowsFromMergeEvent(event *models.MergeEvent) []*contentComm
 			continue
 		}
 		addContentCommitDirs(dirSet, update.Path)
+		addContentCommitDirs(dirSet, update.OldPath)
 	}
 	if len(dirSet) == 0 {
 		for _, touchedPath := range event.TouchedPaths {
