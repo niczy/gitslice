@@ -1,8 +1,8 @@
 # Slice State Consistency Plan
 
-**Status:** Not Started
+**Status:** Implemented and Verified
 **Created:** 2026-05-16
-**Last Updated:** 2026-05-16
+**Last Updated:** 2026-05-17
 
 ---
 
@@ -33,6 +33,27 @@ Core rule:
 Merge validity remains based on immutable base state plus path-head compare and
 set. Projections are allowed to lag, but they must expose freshness and must not
 decide whether a merge is valid.
+
+## Implementation Summary
+
+The staged rollout has been completed through the planned merge, read-model,
+rename, conflict, and auto-merge work. The final verification pass adds an
+end-to-end workflow regression test that exercises the consistency contract
+through the public gRPC services with shared storage.
+
+Verified coverage now includes:
+
+- file reads returning `PathBase` and `SliceStateToken`
+- commit history constrained by the read-time state token
+- stale browser-style saves rejected by expected path bases
+- non-overlapping same-file edits automatically three-way merged
+- overlapping same-file edits persisted as durable changeset conflicts
+- first-class file rename facts recorded in merge events
+- directory move records persisted for directory renames
+- search returning only after the index catches up to the required state token
+
+The Postgres CI job runs the consistency verification test so these guarantees
+are checked against the same storage backend used by staging.
 
 ---
 
@@ -511,14 +532,14 @@ overwrite a newer projected state.
 
 ## Rollout Plan
 
-### PR 1: State token types and plumbing
+### PR 1: State token types and plumbing - Done
 
 - Add proto messages for `SliceStateToken`, `StateCursor`, and `PathBase`.
 - Return state token from `ListEntries` and `GetFile`.
 - Include path base metadata for file entries and file content.
 - Keep existing clients working where possible.
 
-### PR 2: Stale web edit protection
+### PR 2: Stale web edit protection - Done
 
 - Store read-time `PathBase` in browser draft state.
 - Send expected base with direct file edit save.
@@ -526,52 +547,59 @@ overwrite a newer projected state.
 - Return stale-base if the path changed since the file was opened.
 - Add e2e test for stale tab overwrite prevention.
 
-### PR 3: Commit list state-token contract
+### PR 3: Commit list state-token contract - Done
 
 - Make slice commit list API accept state token.
 - Ensure `content_commit_dirs` is written synchronously for accepted merges.
 - Query commits up to requested merge seq.
 - Add tests proving tree state and commit list match.
 
-### PR 4: Search freshness contract
+### PR 4: Search freshness contract - Done
 
 - Add search state-token request/response fields.
 - Track search projection offsets by home/shard.
 - Return not-ready when index is behind required token.
 - Add small-scope slow fallback only if straightforward.
 
-### PR 5: First-class file rename
+### PR 5: First-class file rename - Done
 
 - Add rename operation to changeset API.
 - Stop browser copy/delete for file rename.
 - Record rename metadata in snapshot and merge event.
 - Add file rename conflict tests.
 
-### PR 6: Directory move records
+### PR 6: Directory move records - Done
 
 - Add `directory_moves` storage model.
 - Add path resolver that applies active move records.
 - Switch directory rename to create move records.
 - Add subtree version/digest checks.
 
-### PR 7: Rename-aware commit/search projections
+### PR 7: Rename-aware commit/search projections - Done
 
 - Teach commit visibility index about old and new paths.
 - Teach search index to update visible paths for moves without reindexing
   unchanged content.
 - Add UI rendering for rename/move history.
 
-### PR 8: Rich conflict artifacts
+### PR 8: Rich conflict artifacts - Done
 
 - Add durable merge conflict records.
 - Include base/ours/theirs metadata and patches.
 - Add conflict detail UI and resolution APIs.
 
-### PR 9: Three-way content merge
+### PR 9: Three-way content merge - Done
 
 - For text files, attempt automatic three-way merge before returning conflict.
 - Keep binary files and unsupported encodings as explicit conflicts.
 - Add tests for non-overlapping same-file edits.
+
+### Verification PR - Done
+
+- Add `TestSliceStateConsistencyVerification` under `workflow_test`.
+- Run it locally with in-memory storage and in CI against Postgres.
+- Verify the combined state-token, stale-base, auto-merge, conflict artifact,
+  rename, directory move, and search freshness behavior in one workflow.
 
 ---
 
