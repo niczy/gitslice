@@ -124,6 +124,12 @@ func GenerateDirectoryMoveID() string {
 	return ids.GenerateDirectoryMoveID()
 }
 
+// GenerateChangesetConflictID creates a stable conflict artifact ID for a
+// changeset/path pair.
+func GenerateChangesetConflictID(changesetID, filePath string) string {
+	return ids.GenerateChangesetConflictID(changesetID, filePath)
+}
+
 // NormalizeSlicePath prefixes a repo-relative file path with the genesis mount path.
 func NormalizeSlicePath(filePath string) string {
 	slicePath := path.Join(GenesisMountPath, filePath)

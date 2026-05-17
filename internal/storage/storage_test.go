@@ -289,6 +289,79 @@ func TestListSliceContentCommitsCompliance(t *testing.T) {
 	}
 }
 
+func TestChangesetConflictStoreCompliance(t *testing.T) {
+	ctx := context.Background()
+
+	for _, tc := range storageTestCases(ctx) {
+		t.Run(tc.name, func(t *testing.T) {
+			st := tc.factory(t)
+			store, ok := st.(ChangesetConflictStore)
+			if !ok {
+				t.Fatalf("storage implementation does not implement ChangesetConflictStore")
+			}
+			runChangesetConflictStoreContract(ctx, t, st, store)
+		})
+	}
+}
+
+func runChangesetConflictStoreContract(ctx context.Context, t *testing.T, st Storage, store ChangesetConflictStore) {
+	t.Helper()
+	slice := &models.Slice{ID: "slice-conflicts", Name: "slice-conflicts", Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	cs := &models.Changeset{
+		ID:            "chg_conflicts",
+		SliceID:       slice.ID,
+		ModifiedFiles: []string{"alice/app/main.go"},
+		Status:        models.ChangesetStatusPending,
+		Author:        "alice",
+		CreatedAt:     time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("CreateChangeset failed: %v", err)
+	}
+
+	conflicts := []*models.ChangesetConflict{{
+		ChangesetID:    cs.ID,
+		SliceID:        slice.ID,
+		Path:           "alice/app/main.go",
+		Type:           models.ChangesetConflictTypeStaleBase,
+		Message:        "path changed",
+		BaseVersion:    4,
+		CurrentVersion: 5,
+		BaseHash:       "hash-base",
+		OursHash:       "hash-ours",
+		TheirsHash:     "hash-theirs",
+		Patch:          "--- a/alice/app/main.go\n+++ b/alice/app/main.go\n",
+	}}
+	if err := store.ReplaceChangesetConflicts(ctx, cs.ID, conflicts); err != nil {
+		t.Fatalf("ReplaceChangesetConflicts failed: %v", err)
+	}
+	listed, err := store.ListChangesetConflicts(ctx, cs.ID)
+	if err != nil {
+		t.Fatalf("ListChangesetConflicts failed: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("listed conflicts = %#v, want 1", listed)
+	}
+	got := listed[0]
+	if got.ID == "" || got.Path != "alice/app/main.go" || got.BaseVersion != 4 || got.CurrentVersion != 5 || got.OursHash != "hash-ours" || got.TheirsHash != "hash-theirs" {
+		t.Fatalf("listed conflict = %#v", got)
+	}
+
+	if err := store.ReplaceChangesetConflicts(ctx, cs.ID, nil); err != nil {
+		t.Fatalf("ReplaceChangesetConflicts(clear) failed: %v", err)
+	}
+	listed, err = store.ListChangesetConflicts(ctx, cs.ID)
+	if err != nil {
+		t.Fatalf("ListChangesetConflicts(after clear) failed: %v", err)
+	}
+	if len(listed) != 0 {
+		t.Fatalf("listed conflicts after clear = %#v, want none", listed)
+	}
+}
+
 func runListSliceContentCommitsContract(ctx context.Context, t *testing.T, st Storage) {
 	t.Helper()
 	store, ok := st.(MergeEventStore)

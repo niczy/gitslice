@@ -71,6 +71,13 @@ service SliceService {
     };
   }
 
+  // List durable merge conflicts for one changeset.
+  rpc ListChangesetConflicts(ListChangesetConflictsRequest) returns (ListChangesetConflictsResponse) {
+    option (google.api.http) = {
+      get: "/v1/changesets/{changeset_id}/conflicts"
+    };
+  }
+
   // Inspect or wait for a projection to catch up to a merge sequence.
   rpc GetProjectionStatus(GetProjectionStatusRequest) returns (ProjectionStatus) {
     option (google.api.http) = {
@@ -584,12 +591,33 @@ message Conflict {
   repeated string conflicting_slice_ids = 2;
   ConflictType type = 3;
   string message = 4;
+  string conflict_id = 5;
+  string changeset_id = 6;
+  string path = 7;
+  int64 base_version = 8;
+  int64 current_version = 9;
+  string base_hash = 10;
+  string ours_hash = 11;
+  string theirs_hash = 12;
+  string patch = 13;
+  bool resolved = 14;
 }
 
 enum ConflictType {
   CONFLICT_TYPE_UNSPECIFIED = 0;
   CONFLICT_TYPE_CONTENT = 1;
   CONFLICT_TYPE_OWNERSHIP = 2;
+  CONFLICT_TYPE_STALE_BASE = 3;
+}
+
+message ListChangesetConflictsRequest {
+  string changeset_id = 1;
+}
+
+message ListChangesetConflictsResponse {
+  string changeset_id = 1;
+  repeated Conflict conflicts = 2;
+  int32 total_conflicts = 3;
 }
 
 message RebaseChangesetRequest {
