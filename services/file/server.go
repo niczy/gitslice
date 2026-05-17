@@ -1359,6 +1359,71 @@ func (s *fileServiceServer) getFileFromCommitSnapshot(
 	}, true, nil
 }
 
+func (s *fileServiceServer) getFileFromLiveHomePathHead(
+	ctx context.Context,
+	sliceID string,
+	slice *models.Slice,
+	backingSliceID, requestPath, responseSliceHash string,
+) (*filev1.GetFileResponse, bool, error) {
+	manifest, handled, err := s.resolveHomePathHeadFileManifest(ctx, backingSliceID, requestPath, false)
+	if !handled {
+		return nil, false, nil
+	}
+	if err != nil {
+		if errors.Is(err, storage.ErrEntryNotFound) {
+			return nil, true, status.Error(codes.NotFound, "file not found")
+		}
+		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to load file metadata: %v", err))
+	}
+	if manifest == nil {
+		return nil, true, status.Error(codes.NotFound, "file content not available")
+	}
+
+	hash := strings.TrimSpace(manifest.Hash)
+	size := manifest.TotalSize
+	if notModifiedResp, matched := s.maybeSetNotModifiedHeader(ctx, requestPath, hash, size); matched {
+		return notModifiedResp, true, nil
+	}
+	if size > maxUnaryGetFileBytes {
+		return nil, true, status.Error(codes.ResourceExhausted, fmt.Sprintf("file is too large for GetFile (%d bytes > %d bytes); use a streamed download path", size, maxUnaryGetFileBytes))
+	}
+
+	content, err := storage.ReadManifestContent(ctx, s.storage, manifest)
+	if err != nil {
+		if errors.Is(err, storage.ErrEntryNotFound) {
+			return nil, true, status.Error(codes.NotFound, "file content not available")
+		}
+		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to load file content: %v", err))
+	}
+	if contentSize(content) > maxUnaryGetFileBytes {
+		return nil, true, status.Error(codes.ResourceExhausted, fmt.Sprintf("file is too large for GetFile (%d bytes > %d bytes); use a streamed download path", contentSize(content), maxUnaryGetFileBytes))
+	}
+	if size == 0 {
+		size = contentSize(content)
+	}
+	if hash == "" {
+		hash = strings.TrimSpace(content.Hash)
+	}
+
+	file := &filev1.File{
+		Path:    requestPath,
+		Content: content.Content,
+		Size:    size,
+		Hash:    hash,
+	}
+	info, err := s.pathBaseInfoForPath(ctx, slice, backingSliceID, requestPath, requestPath, hash, responseSliceHash, false)
+	if err != nil {
+		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to resolve file base: %v", err))
+	}
+	if info != nil {
+		file.PathBase = info.base
+	}
+	return &filev1.GetFileResponse{
+		File:       file,
+		StateToken: sliceStateToken(sliceID, responseSliceHash, []*pathBaseInfo{info}),
+	}, true, nil
+}
+
 func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequest) (*filev1.GetFileResponse, error) {
 	if req.Path == "" {
 		return nil, status.Error(codes.InvalidArgument, "path is required")
@@ -1523,6 +1588,18 @@ func (s *fileServiceServer) getFileResolved(ctx context.Context, sliceID, resolv
 		}
 		if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load file content: %v", err))
+		}
+	}
+
+	if !preferSnapshots {
+		backingSliceID, err := s.resolveBackingSliceID(ctx, sliceID, slice, false)
+		if err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve backing slice: %v", err))
+		}
+		if s.homeIDForPathBase(slice, backingSliceID, requestPath) != "" {
+			if resp, handled, err := s.getFileFromLiveHomePathHead(ctx, sliceID, slice, backingSliceID, requestPath, responseSliceHash); handled {
+				return resp, err
+			}
 		}
 	}
 

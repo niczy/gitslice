@@ -1754,6 +1754,20 @@ func TestPinnedHomeListEntriesUseCommitSnapshotNotLiveTree(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AddEntry(new file) failed: %v", err)
 	}
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:           "alice",
+		Path:             newPath,
+		EntryType:        "file",
+		PathVersion:      2,
+		ContentHash:      newHash,
+		ManifestHash:     newHash,
+		SourceSliceID:    "custom-slice",
+		SourceCommitHash: "cmt_live",
+		LastMergeSeq:     7,
+		UpdatedAt:        time.Now().UTC(),
+	}}); err != nil {
+		t.Fatalf("UpsertHomePathHeads failed: %v", err)
+	}
 
 	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
 		CommitHash: commitHash,
@@ -1794,6 +1808,42 @@ func TestPinnedHomeListEntriesUseCommitSnapshotNotLiveTree(t *testing.T) {
 	})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("expected new live-only file to be absent from snapshot, got %v", err)
+	}
+
+	liveListResp, err := svc.ListEntries(ctx, &filev1.ListEntriesRequest{
+		Path: dirPath,
+		Version: &filev1.ListEntriesRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: home.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("live ListEntries failed: %v", err)
+	}
+	foundLivePath := false
+	for _, entry := range liveListResp.GetEntries() {
+		if entry.GetPath() == newPath {
+			foundLivePath = true
+			break
+		}
+	}
+	if !foundLivePath {
+		t.Fatalf("expected live tree to include %q, got %#v", newPath, liveListResp.GetEntries())
+	}
+
+	fileResp, err := svc.GetFile(ctx, &filev1.GetFileRequest{
+		Path: newPath,
+		Version: &filev1.GetFileRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: home.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("live GetFile failed: %v", err)
+	}
+	if got := string(fileResp.GetFile().GetContent()); got != "new\n" {
+		t.Fatalf("live GetFile content = %q, want new path head content", got)
+	}
+	if got := fileResp.GetFile().GetPathBase().GetSourceCommitHash(); got != "cmt_live" {
+		t.Fatalf("live path base source commit = %q, want cmt_live", got)
 	}
 }
 

@@ -8,6 +8,7 @@ import {
   normalizeDiffResponse,
   normalizeSliceInfo,
 } from '../src/utils/normalize.js';
+import { getPinnedSliceHashFromListEntries } from '../src/features/browser/browserStateToken.js';
 
 const SLICE_LIST_LIMIT = 200;
 const COMMIT_PAGE_SIZE = 100;
@@ -268,7 +269,7 @@ async function loadBrowserData(request, session, routeInfo, data, setCookies, op
     setCookies.push(...cookies);
     data.rootEntries = payload?.entries || [];
     if (canPinEntriesSliceHash) {
-      data.sliceHash = payload?.sliceHash || payload?.slice_hash || data.sliceHash || '';
+      data.sliceHash = getPinnedSliceHashFromListEntries(payload) || '';
     }
   } catch (error) {
     recordRouteError(data, setCookies, error);

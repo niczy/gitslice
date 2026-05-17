@@ -12,10 +12,7 @@ import {
   getParentDirectoryPath,
   getTreeFileSize,
 } from './browserModel.js';
-
-function getListEntriesSliceHash(payload) {
-  return String(payload?.sliceHash || payload?.slice_hash || '').trim();
-}
+import { getPinnedSliceHashFromListEntries } from './browserStateToken.js';
 
 export function useRepoBrowserTreeLoader({
   buildEntriesUrl,
@@ -89,8 +86,8 @@ export function useRepoBrowserTreeLoader({
         }
 
         const rootEntries = payload.entries || [];
-        const resolvedSliceHash = getListEntriesSliceHash(payload);
-        if (canPinEntriesSliceHash && resolvedSliceHash && resolvedSliceHash !== sliceHash) {
+        const resolvedSliceHash = getPinnedSliceHashFromListEntries(payload);
+        if (canPinEntriesSliceHash && resolvedSliceHash !== sliceHash) {
           setSliceHash(resolvedSliceHash);
         }
         const pendingFile = pendingFileRef.current;
@@ -110,8 +107,8 @@ export function useRepoBrowserTreeLoader({
               const dirResp = await fetchWithAuth(buildEntriesUrl(parentPath), { signal: controller.signal });
               if (dirResp.ok) {
                 const dirData = await dirResp.json();
-                const dirSliceHash = getListEntriesSliceHash(dirData);
-                if (canPinEntriesSliceHash && dirSliceHash && dirSliceHash !== sliceHash) {
+                const dirSliceHash = getPinnedSliceHashFromListEntries(dirData);
+                if (canPinEntriesSliceHash && dirSliceHash !== sliceHash) {
                   setSliceHash(dirSliceHash);
                 }
                 allEntries[parentPath] = dirData.entries || [];
@@ -229,8 +226,8 @@ export function useRepoBrowserTreeLoader({
         throw new Error(`Request failed (${response.status})`);
       }
       const payload = await response.json();
-      const resolvedSliceHash = getListEntriesSliceHash(payload);
-      if (canPinEntriesSliceHash && resolvedSliceHash && resolvedSliceHash !== sliceHash) {
+      const resolvedSliceHash = getPinnedSliceHashFromListEntries(payload);
+      if (canPinEntriesSliceHash && resolvedSliceHash !== sliceHash) {
         setSliceHash(resolvedSliceHash);
       }
       setTreeEntries((prev) => ({
@@ -286,8 +283,8 @@ export function useRepoBrowserTreeLoader({
           if (!active) {
             return;
           }
-          const resolvedSliceHash = getListEntriesSliceHash(payload);
-          if (canPinEntriesSliceHash && resolvedSliceHash && resolvedSliceHash !== sliceHash) {
+          const resolvedSliceHash = getPinnedSliceHashFromListEntries(payload);
+          if (canPinEntriesSliceHash && resolvedSliceHash !== sliceHash) {
             setSliceHash(resolvedSliceHash);
           }
           const entries = payload.entries || [];
