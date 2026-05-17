@@ -19,6 +19,7 @@ const CommitIDPrefix = ids.CommitIDPrefix
 const ChangesetVersionIDPrefix = ids.ChangesetVersionIDPrefix
 const ChangesetSnapshotIDPrefix = ids.ChangesetSnapshotIDPrefix
 const FileChangeIDPrefix = ids.FileChangeIDPrefix
+const DirectoryMoveIDPrefix = ids.DirectoryMoveIDPrefix
 
 // EnsureRootSliceInitialized initializes the root slice if it doesn't exist.
 // It returns an error only if initialization fails critically.
@@ -116,6 +117,11 @@ func GenerateFileChangeID(commitID, filePath string) string {
 // GenerateMergeEventID creates an opaque durable merge event ID.
 func GenerateMergeEventID() string {
 	return ids.GenerateMergeEventID()
+}
+
+// GenerateDirectoryMoveID creates an opaque durable directory move ID.
+func GenerateDirectoryMoveID() string {
+	return ids.GenerateDirectoryMoveID()
 }
 
 // NormalizeSlicePath prefixes a repo-relative file path with the genesis mount path.

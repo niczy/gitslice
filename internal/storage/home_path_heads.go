@@ -269,7 +269,7 @@ func homePathHeadsFromMergeEvent(event *models.MergeEvent) ([]*models.HomePathHe
 		head, err := normalizeHomePathHead(&models.HomePathHead{
 			HomeID:           normalized.HomeID,
 			Path:             path,
-			EntryType:        homePathHeadEntryTypeFile,
+			EntryType:        normalizeHomePathHeadEntryType(update.EntryType),
 			PathVersion:      update.NewVersion,
 			ContentHash:      update.ContentHash,
 			ManifestHash:     update.ManifestHash,

@@ -5701,6 +5701,218 @@ func TestCreateAndMergeChangesetFileRenameRejectsStaleTargetBase(t *testing.T) {
 	}
 }
 
+func TestCreateAndMergeChangesetDirectoryRenameExpandsAndRecordsMove(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	homeSliceID := homeslice.IDForUsername("alice")
+	oldPrefix := "alice/app"
+	newPrefix := "alice/lib"
+	firstOldPath := "alice/app/main.go"
+	secondOldPath := "alice/app/internal/util.go"
+	firstNewPath := "alice/lib/main.go"
+	secondNewPath := "alice/lib/internal/util.go"
+	baseCommitHash := "cmt_loaded"
+
+	slice := &models.Slice{ID: homeSliceID, Name: "alice", Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	firstHash := mustWriteSliceManifest(t, ctx, st, homeSliceID, firstOldPath, []byte("package app\n"))
+	secondHash := mustWriteSliceManifest(t, ctx, st, homeSliceID, secondOldPath, []byte("package internal\n"))
+	for filePath, hash := range map[string]string{
+		firstOldPath:  firstHash,
+		secondOldPath: secondHash,
+	} {
+		if err := st.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       common.GenerateEntryID(homeSliceID, filePath),
+			Path:     filePath,
+			Type:     "file",
+			ParentID: homeSliceID,
+			Hash:     hash,
+		}); err != nil {
+			t.Fatalf("AddEntry(%s) failed: %v", filePath, err)
+		}
+		if err := st.AddFileToSlice(ctx, filePath, homeSliceID); err != nil {
+			t.Fatalf("AddFileToSlice(%s) failed: %v", filePath, err)
+		}
+	}
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{
+		{
+			HomeID:           "alice",
+			Path:             firstOldPath,
+			PathVersion:      3,
+			ContentHash:      firstHash,
+			ManifestHash:     firstHash,
+			SourceSliceID:    homeSliceID,
+			SourceCommitHash: baseCommitHash,
+		},
+		{
+			HomeID:           "alice",
+			Path:             secondOldPath,
+			PathVersion:      4,
+			ContentHash:      secondHash,
+			ManifestHash:     secondHash,
+			SourceSliceID:    homeSliceID,
+			SourceCommitHash: baseCommitHash,
+		},
+	}); err != nil {
+		t.Fatalf("UpsertHomePathHeads failed: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	mergeResp, err := srv.CreateAndMergeChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:        homeSliceID,
+		BaseCommitHash: baseCommitHash,
+		ModifiedFiles:  []string{oldPrefix, newPrefix},
+		Message:        "rename app directory",
+		DirectoryRenames: []*slicev1.DirectoryRename{{
+			SourcePath:      oldPrefix,
+			DestinationPath: newPrefix,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateAndMergeChangeset failed: %v", err)
+	}
+	if mergeResp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("merge status = %v, want success: %s", mergeResp.GetStatus(), mergeResp.GetMessage())
+	}
+	if _, err := st.GetEntryByPath(ctx, homeSliceID, firstOldPath); !errors.Is(err, storage.ErrEntryNotFound) {
+		t.Fatalf("old first path entry error = %v, want ErrEntryNotFound", err)
+	}
+	firstContent, err := storage.ReadSliceFileContent(ctx, st, homeSliceID, firstNewPath)
+	if err != nil {
+		t.Fatalf("ReadSliceFileContent(first new path) failed: %v", err)
+	}
+	if got := string(firstContent.Content); got != "package app\n" {
+		t.Fatalf("first renamed content = %q", got)
+	}
+	secondContent, err := storage.ReadSliceFileContent(ctx, st, homeSliceID, secondNewPath)
+	if err != nil {
+		t.Fatalf("ReadSliceFileContent(second new path) failed: %v", err)
+	}
+	if got := string(secondContent.Content); got != "package internal\n" {
+		t.Fatalf("second renamed content = %q", got)
+	}
+
+	snapshot, err := st.GetChangesetSnapshot(ctx, mergeResp.GetChangesetId(), 0)
+	if err != nil {
+		t.Fatalf("GetChangesetSnapshot failed: %v", err)
+	}
+	if len(snapshot.DirectoryMoves) != 1 {
+		t.Fatalf("snapshot directory moves = %#v, want 1", snapshot.DirectoryMoves)
+	}
+	move := snapshot.DirectoryMoves[0]
+	if move.OldPrefix != oldPrefix || move.NewPrefix != newPrefix || move.BaseSubtreeVersion != 4 || move.BaseSubtreeDigest == "" {
+		t.Fatalf("snapshot directory move = %#v, want %s -> %s", move, oldPrefix, newPrefix)
+	}
+	if snapshot.RenameSources[firstNewPath] != firstOldPath || snapshot.RenameSources[secondNewPath] != secondOldPath {
+		t.Fatalf("snapshot rename sources = %#v", snapshot.RenameSources)
+	}
+
+	event, err := st.GetMergeEventByChangeset(ctx, mergeResp.GetChangesetId())
+	if err != nil {
+		t.Fatalf("GetMergeEventByChangeset failed: %v", err)
+	}
+	updates := mergeEventPathUpdatesByPath(event)
+	if update := updates[oldPrefix]; update == nil || update.EntryType != "directory" || !update.Deleted || update.BaseVersion != 0 || update.NewVersion != 1 {
+		t.Fatalf("old directory update = %#v", update)
+	}
+	if update := updates[newPrefix]; update == nil || update.EntryType != "directory" || update.Deleted || update.OldPath != oldPrefix || update.BaseVersion != 0 || update.NewVersion != 1 {
+		t.Fatalf("new directory update = %#v", update)
+	}
+	if update := updates[firstNewPath]; update == nil || update.OldPath != firstOldPath || update.ManifestHash != firstHash {
+		t.Fatalf("first file rename update = %#v", update)
+	}
+	moves, err := st.ListDirectoryMoves(ctx, "alice")
+	if err != nil {
+		t.Fatalf("ListDirectoryMoves failed: %v", err)
+	}
+	if len(moves) != 1 || moves[0].OldPrefix != oldPrefix || moves[0].NewPrefix != newPrefix || moves[0].MergeSeq != event.MergeSeq {
+		t.Fatalf("stored directory moves = %#v", moves)
+	}
+}
+
+func TestMergeChangesetDirectoryRenameRejectsStaleSubtree(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	homeSliceID := homeslice.IDForUsername("alice")
+	oldPrefix := "alice/app"
+	newPrefix := "alice/lib"
+	oldPath := "alice/app/main.go"
+	baseCommitHash := "cmt_loaded"
+
+	slice := &models.Slice{ID: homeSliceID, Name: "alice", Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	oldHash := mustWriteSliceManifest(t, ctx, st, homeSliceID, oldPath, []byte("package app\n"))
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(homeSliceID, oldPath),
+		Path:     oldPath,
+		Type:     "file",
+		ParentID: homeSliceID,
+		Hash:     oldHash,
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+	if err := st.AddFileToSlice(ctx, oldPath, homeSliceID); err != nil {
+		t.Fatalf("AddFileToSlice failed: %v", err)
+	}
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:           "alice",
+		Path:             oldPath,
+		PathVersion:      3,
+		ContentHash:      oldHash,
+		ManifestHash:     oldHash,
+		SourceSliceID:    homeSliceID,
+		SourceCommitHash: baseCommitHash,
+	}}); err != nil {
+		t.Fatalf("UpsertHomePathHeads failed: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	createResp, err := srv.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:        homeSliceID,
+		BaseCommitHash: baseCommitHash,
+		ModifiedFiles:  []string{oldPrefix, newPrefix},
+		Message:        "rename app directory",
+		DirectoryRenames: []*slicev1.DirectoryRename{{
+			SourcePath:      oldPrefix,
+			DestinationPath: newPrefix,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset failed: %v", err)
+	}
+
+	concurrentPath := "alice/app/new.go"
+	concurrentHash := mustWriteSliceManifest(t, ctx, st, homeSliceID, concurrentPath, []byte("package app\n"))
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:           "alice",
+		Path:             concurrentPath,
+		PathVersion:      1,
+		ContentHash:      concurrentHash,
+		ManifestHash:     concurrentHash,
+		SourceSliceID:    homeSliceID,
+		SourceCommitHash: "cmt_concurrent",
+	}}); err != nil {
+		t.Fatalf("UpsertHomePathHeads(concurrent) failed: %v", err)
+	}
+
+	mergeResp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{
+		ChangesetId: createResp.GetChangesetId(),
+	})
+	if err != nil {
+		t.Fatalf("MergeChangeset returned error instead of stale response: %v", err)
+	}
+	if mergeResp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_STALE_BASE {
+		t.Fatalf("merge status = %v, want stale base", mergeResp.GetStatus())
+	}
+	if !strings.Contains(mergeResp.GetMessage(), oldPrefix) {
+		t.Fatalf("stale message = %q, want source directory", mergeResp.GetMessage())
+	}
+}
+
 func TestCreateAndMergeMountedHomeSliceUpdatesFileServiceHeadRead(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
 	st := storage.NewInMemoryStorage()

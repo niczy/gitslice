@@ -365,6 +365,7 @@ message CreateChangesetRequest {
   repeated FileContentChange file_contents = 8; // Optional: file payloads for local checkout changes.
   repeated file.v1.PathBase expected_path_bases = 9; // Optional: reject writes if these read-time bases are stale.
   repeated FileRename file_renames = 10; // Optional: first-class file rename intents.
+  repeated DirectoryRename directory_renames = 11; // Optional: first-class directory rename intents.
 }
 
 message CreateChangesetResponse {
@@ -384,6 +385,11 @@ message FileContentChange {
 }
 
 message FileRename {
+  string source_path = 1;
+  string destination_path = 2;
+}
+
+message DirectoryRename {
   string source_path = 1;
   string destination_path = 2;
 }

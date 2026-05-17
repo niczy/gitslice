@@ -18,7 +18,10 @@ type ChangesetSnapshot struct {
 	// RenameSources maps destination path -> source path for explicit file
 	// rename intents captured in this snapshot.
 	RenameSources map[string]string
-	Author        string
-	Message       string
-	CreatedAt     time.Time
+	// DirectoryMoves records compact directory rename facts captured in this
+	// snapshot. Child file renames are still expanded for the first merge path.
+	DirectoryMoves []*DirectoryMove
+	Author         string
+	Message        string
+	CreatedAt      time.Time
 }
