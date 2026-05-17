@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,6 +22,23 @@ type BackfillResult struct {
 	Seeded            bool
 	FilesCopied       int
 	DirectoriesCopied int
+}
+
+type PathHeadPromotionOptions struct {
+	CommitHash    string
+	ParentHash    string
+	Message       string
+	ModifiedPaths []string
+	CommittedAt   time.Time
+}
+
+type PathHeadPromotionResult struct {
+	HomeID        string
+	HomeSliceID   string
+	CommitHash    string
+	ParentHash    string
+	ModifiedPaths []string
+	Changed       bool
 }
 
 // IDForUsername returns the deterministic home-slice ID for a user.
@@ -263,6 +281,217 @@ func BackfillUserHomeSlice(ctx context.Context, st storage.Storage, username str
 		FilesCopied:       filesCopied,
 		DirectoriesCopied: directoriesCopied,
 	}, nil
+}
+
+// PromoteHomePathHeadsToSliceCommit records the current path-head view as the
+// trusted home slice head. Path heads are the merge-time authority; this commit
+// snapshot is the stable read cursor used by file listing, pinned reads, and CI.
+func PromoteHomePathHeadsToSliceCommit(ctx context.Context, st storage.Storage, homeID string, opts PathHeadPromotionOptions) (*PathHeadPromotionResult, error) {
+	if st == nil {
+		return nil, fmt.Errorf("storage is nil")
+	}
+	headStore, ok := st.(storage.HomePathHeadStore)
+	if !ok {
+		return nil, nil
+	}
+	homeID = normalizePromotionHomeID(homeID)
+	if homeID == "" {
+		return nil, nil
+	}
+	homeSliceID := IDForUsername(homeID)
+	result := &PathHeadPromotionResult{
+		HomeID:      homeID,
+		HomeSliceID: homeSliceID,
+	}
+
+	homeSlice, err := st.GetSlice(ctx, homeSliceID)
+	if err != nil {
+		if errors.Is(err, storage.ErrSliceNotFound) {
+			return result, nil
+		}
+		return nil, err
+	}
+	if homeSlice == nil {
+		return result, nil
+	}
+
+	meta, err := st.GetSliceMetadata(ctx, homeSliceID)
+	if err != nil {
+		return nil, err
+	}
+	parentHash := strings.TrimSpace(opts.ParentHash)
+	if parentHash == "" {
+		parentHash = strings.TrimSpace(meta.HeadCommitHash)
+	}
+	result.ParentHash = parentHash
+
+	heads, err := headStore.ListHomePathHeads(ctx, homeID, 100000)
+	if err != nil {
+		return nil, err
+	}
+	if len(heads) >= 100000 {
+		return nil, fmt.Errorf("home %s has too many path heads to promote in one commit", homeID)
+	}
+
+	snapshotFiles := make(map[string]string, len(heads))
+	for _, head := range heads {
+		if head == nil || head.Deleted {
+			continue
+		}
+		if strings.TrimSpace(head.EntryType) != "file" {
+			continue
+		}
+		filePath := common.CleanRelativePath(head.Path)
+		if filePath == "" {
+			continue
+		}
+		contentHash := strings.TrimSpace(head.ManifestHash)
+		if contentHash == "" {
+			contentHash = strings.TrimSpace(head.ContentHash)
+		}
+		if contentHash == "" {
+			continue
+		}
+		snapshotFiles[filePath] = contentHash
+	}
+
+	var parentFiles map[string]string
+	if parentHash != "" {
+		parentSnapshot, err := st.GetCommitSnapshot(ctx, parentHash)
+		if err != nil {
+			if !errors.Is(err, storage.ErrCommitNotFound) && !errors.Is(err, storage.ErrEntryNotFound) {
+				return nil, err
+			}
+		} else if parentSnapshot != nil {
+			parentFiles = parentSnapshot.Files
+		}
+	}
+	if parentFiles == nil {
+		parentFiles = map[string]string{}
+	}
+
+	commitHash := strings.TrimSpace(opts.CommitHash)
+	if commitHash == "" && snapshotFileMapsEqual(parentFiles, snapshotFiles) {
+		result.CommitHash = parentHash
+		result.ModifiedPaths = normalizePromotionModifiedPaths(opts.ModifiedPaths)
+		return result, nil
+	}
+	if commitHash == "" {
+		commitHash = common.GenerateCommitID()
+	}
+	result.CommitHash = commitHash
+
+	if existingSnapshot, err := st.GetCommitSnapshot(ctx, commitHash); err == nil && existingSnapshot != nil && snapshotFileMapsEqual(existingSnapshot.Files, snapshotFiles) && strings.TrimSpace(meta.HeadCommitHash) == commitHash {
+		result.ModifiedPaths = normalizePromotionModifiedPaths(opts.ModifiedPaths)
+		return result, nil
+	} else if err != nil && !errors.Is(err, storage.ErrCommitNotFound) && !errors.Is(err, storage.ErrEntryNotFound) {
+		return nil, err
+	}
+
+	committedAt := opts.CommittedAt
+	if committedAt.IsZero() {
+		committedAt = time.Now()
+	}
+	message := strings.TrimSpace(opts.Message)
+	if message == "" {
+		message = "sync home slice from path heads"
+	}
+	modifiedPaths := normalizePromotionModifiedPaths(opts.ModifiedPaths)
+	if len(modifiedPaths) == 0 {
+		modifiedPaths = diffSnapshotFilePaths(parentFiles, snapshotFiles)
+	}
+
+	if err := st.AddSliceCommit(ctx, homeSliceID, &models.Commit{
+		CommitHash: commitHash,
+		ParentHash: parentHash,
+		Timestamp:  committedAt,
+		Message:    message,
+	}); err != nil {
+		return nil, err
+	}
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: commitHash,
+		SliceID:    homeSliceID,
+		Files:      snapshotFiles,
+		Timestamp:  committedAt,
+	}); err != nil {
+		return nil, err
+	}
+	if err := st.UpdateSliceMetadata(ctx, homeSliceID, &models.SliceMetadata{
+		SliceID:            homeSliceID,
+		HeadCommitHash:     commitHash,
+		ModifiedFiles:      modifiedPaths,
+		LastModified:       committedAt,
+		ModifiedFilesCount: len(modifiedPaths),
+	}); err != nil {
+		return nil, err
+	}
+
+	result.ModifiedPaths = modifiedPaths
+	result.Changed = true
+	return result, nil
+}
+
+func normalizePromotionHomeID(homeID string) string {
+	homeID = strings.Trim(strings.TrimSpace(homeID), "/")
+	if homeID == "" || homeID == "global" {
+		return ""
+	}
+	if username := UsernameFromSliceID(homeID); username != "" {
+		return username
+	}
+	return homeID
+}
+
+func normalizePromotionModifiedPaths(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, rawPath := range paths {
+		filePath := common.CleanRelativePath(rawPath)
+		if filePath == "" {
+			continue
+		}
+		if _, ok := seen[filePath]; ok {
+			continue
+		}
+		seen[filePath] = struct{}{}
+		out = append(out, filePath)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func snapshotFileMapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for path, aHash := range a {
+		if strings.TrimSpace(aHash) != strings.TrimSpace(b[path]) {
+			return false
+		}
+	}
+	return true
+}
+
+func diffSnapshotFilePaths(before, after map[string]string) []string {
+	seen := make(map[string]struct{}, len(before)+len(after))
+	for filePath := range before {
+		seen[filePath] = struct{}{}
+	}
+	for filePath := range after {
+		seen[filePath] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for filePath := range seen {
+		if strings.TrimSpace(before[filePath]) != strings.TrimSpace(after[filePath]) {
+			out = append(out, filePath)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func ensureHomeRootPathHead(ctx context.Context, st storage.Storage, username, homeSliceID, rootPath string) error {

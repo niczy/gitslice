@@ -4634,6 +4634,20 @@ func TestMergeChangesetPathHeadCASUpdatesHeadAndEventVersions(t *testing.T) {
 	st := storage.NewInMemoryStorage()
 
 	filePath := "tester/app/cas.go"
+	homeSliceID := homeslice.IDForUsername("tester")
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        homeSliceID,
+		Name:      "tester",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+	}); err != nil {
+		t.Fatalf("failed to create home slice: %v", err)
+	}
+	homeMetaBefore, err := st.GetSliceMetadata(ctx, homeSliceID)
+	if err != nil {
+		t.Fatalf("GetSliceMetadata(home before) failed: %v", err)
+	}
+
 	slice := &models.Slice{
 		ID:        "slice-path-head-cas",
 		Name:      "slice-path-head-cas",
@@ -4714,6 +4728,24 @@ func TestMergeChangesetPathHeadCASUpdatesHeadAndEventVersions(t *testing.T) {
 	head := heads[filePath]
 	if head == nil || head.PathVersion != 5 || head.ManifestHash != manifestHash || head.LastMergeSeq != event.MergeSeq {
 		t.Fatalf("unexpected updated path head: %#v", head)
+	}
+
+	homeMetaAfter, err := st.GetSliceMetadata(ctx, homeSliceID)
+	if err != nil {
+		t.Fatalf("GetSliceMetadata(home after) failed: %v", err)
+	}
+	if homeMetaAfter.HeadCommitHash == homeMetaBefore.HeadCommitHash {
+		t.Fatalf("home slice head did not advance: %q", homeMetaAfter.HeadCommitHash)
+	}
+	homeSnapshot, err := st.GetCommitSnapshot(ctx, homeMetaAfter.HeadCommitHash)
+	if err != nil {
+		t.Fatalf("GetCommitSnapshot(home head) failed: %v", err)
+	}
+	if homeSnapshot.SliceID != homeSliceID {
+		t.Fatalf("home snapshot slice_id = %q, want %q", homeSnapshot.SliceID, homeSliceID)
+	}
+	if got := homeSnapshot.Files[filePath]; got != manifestHash {
+		t.Fatalf("home snapshot file hash = %q, want %q", got, manifestHash)
 	}
 }
 
