@@ -1858,7 +1858,34 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate path-head merge authority: %v", err))
 		}
 		if len(drifts) > 0 {
-			return s.staleBaseMergeResponseFromDrifts(ctx, cs, drifts)
+			merged, err := s.tryAutoMergeChangesetDrifts(ctx, cs, drifts)
+			if err != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to auto-merge changeset: %v", err))
+			}
+			if !merged {
+				return s.staleBaseMergeResponseFromDrifts(ctx, cs, drifts)
+			}
+			if err := s.createChangesetSnapshot(ctx, cs); err != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to snapshot auto-merged changeset: %v", err))
+			}
+			pathHeadSnapshot, pathHeadAuthority, err = s.loadPathHeadMergeAuthority(ctx, cs, modifiedFiles)
+			if err != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to reload path-head merge authority: %v", err))
+			}
+			if !pathHeadAuthority {
+				return &slicev1.MergeChangesetResponse{
+					Status:      slicev1.MergeStatus_MERGE_STATUS_STALE_BASE,
+					ChangesetId: cs.ID,
+					Message:     missingPathHeadAuthorityMessage(),
+				}, nil
+			}
+			drifts, _, err = s.changesetPathHeadDrifts(ctx, cs, pathHeadSnapshot)
+			if err != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate auto-merged path-head state: %v", err))
+			}
+			if len(drifts) > 0 {
+				return s.staleBaseMergeResponseFromDrifts(ctx, cs, drifts)
+			}
 		}
 		if err := s.replaceChangesetConflictArtifacts(ctx, cs.ID, nil); err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to clear changeset conflicts: %v", err))
@@ -2125,6 +2152,16 @@ func (s *sliceServiceServer) tryMergeChangesetFastPath(ctx context.Context, cs *
 			drifts, _, driftErr := s.changesetPathHeadDrifts(ctx, cs, snapshot)
 			if driftErr != nil {
 				return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate path-head conflict: %v", driftErr))
+			}
+			merged, mergeErr := s.tryAutoMergeChangesetDrifts(ctx, cs, drifts)
+			if mergeErr != nil {
+				return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to auto-merge changeset: %v", mergeErr))
+			}
+			if merged {
+				if err := s.createChangesetSnapshot(ctx, cs); err != nil {
+					return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to snapshot auto-merged changeset: %v", err))
+				}
+				return nil, false, nil
 			}
 			resp, respErr := s.staleBaseMergeResponseFromDrifts(ctx, cs, drifts)
 			return resp, true, respErr

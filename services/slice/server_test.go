@@ -4426,7 +4426,7 @@ func TestMergeChangesetPathHeadAuthorityRejectsDrift(t *testing.T) {
 	if err := st.CreateSlice(ctx, slice); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}
-	content := []byte("package shadow\n")
+	content := []byte("package shadow\nconst Value = 0\n")
 	manifestHash := mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, content)
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
 		ID:       common.GenerateEntryID(slice.ID, filePath),
@@ -4473,10 +4473,11 @@ func TestMergeChangesetPathHeadAuthorityRejectsDrift(t *testing.T) {
 	}
 
 	srv := newSliceServiceServer(st)
+	oursHash := mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, []byte("package shadow\nconst Value = 1\n"))
 	if err := srv.createChangesetSnapshot(ctx, cs); err != nil {
 		t.Fatalf("createChangesetSnapshot failed: %v", err)
 	}
-	currentHash := mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, []byte("package shadow\n\nconst Drift = true\n"))
+	currentHash := mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, []byte("package shadow\nconst Value = 2\n"))
 	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
 		HomeID:       "tester",
 		Path:         filePath,
@@ -4504,10 +4505,10 @@ func TestMergeChangesetPathHeadAuthorityRejectsDrift(t *testing.T) {
 	if conflict.GetBaseVersion() != 10 || conflict.GetCurrentVersion() != 11 {
 		t.Fatalf("conflict versions = %d/%d, want 10/11", conflict.GetBaseVersion(), conflict.GetCurrentVersion())
 	}
-	if conflict.GetBaseHash() != manifestHash || conflict.GetOursHash() != manifestHash || conflict.GetTheirsHash() != currentHash {
+	if conflict.GetBaseHash() != manifestHash || conflict.GetOursHash() != oursHash || conflict.GetTheirsHash() != currentHash {
 		t.Fatalf("conflict hashes = base %q ours %q theirs %q", conflict.GetBaseHash(), conflict.GetOursHash(), conflict.GetTheirsHash())
 	}
-	if !strings.Contains(conflict.GetPatch(), "const Drift = true") {
+	if !strings.Contains(conflict.GetPatch(), "const Value = 2") {
 		t.Fatalf("expected conflict patch to include current content, got %q", conflict.GetPatch())
 	}
 	listResp, err := srv.ListChangesetConflicts(ctx, &slicev1.ListChangesetConflictsRequest{ChangesetId: cs.ID})
@@ -4519,6 +4520,112 @@ func TestMergeChangesetPathHeadAuthorityRejectsDrift(t *testing.T) {
 	}
 	if _, err := st.GetMergeEventByChangeset(ctx, cs.ID); !errors.Is(err, storage.ErrMergeEventNotFound) {
 		t.Fatalf("expected no merge event for rejected path-head drift, got %v", err)
+	}
+}
+
+func TestMergeChangesetAutoMergesDisjointPathHeadDrift(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	filePath := "tester/app/automerge.go"
+	slice := &models.Slice{
+		ID:        "slice-path-head-automerge",
+		Name:      "slice-path-head-automerge",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files:     []string{filePath},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+	baseContent := []byte("package app\nconst A = 0\nconst B = 0\n")
+	baseHash := mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, baseContent)
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(slice.ID, filePath),
+		Path:     filePath,
+		Type:     "file",
+		ParentID: slice.ID,
+		Hash:     baseHash,
+		Size:     int64(len(baseContent)),
+	}); err != nil {
+		t.Fatalf("failed to add entry: %v", err)
+	}
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:       "tester",
+		Path:         filePath,
+		PathVersion:  10,
+		ManifestHash: baseHash,
+		ContentHash:  baseHash,
+	}}); err != nil {
+		t.Fatalf("failed to seed path head: %v", err)
+	}
+	baseCommitHash := "cmt_path_head_automerge_base"
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: baseCommitHash,
+		SliceID:    slice.ID,
+		Files: map[string]string{
+			filePath: baseHash,
+		},
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("failed to save base commit snapshot: %v", err)
+	}
+
+	cs := &models.Changeset{
+		ID:             "chg_path-head-automerge",
+		SliceID:        slice.ID,
+		BaseCommitHash: baseCommitHash,
+		ModifiedFiles:  []string{filePath},
+		Status:         models.ChangesetStatusPending,
+		Author:         "tester",
+		CreatedAt:      time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, []byte("package app\nconst A = 1\nconst B = 0\n"))
+	if err := srv.createChangesetSnapshot(ctx, cs); err != nil {
+		t.Fatalf("createChangesetSnapshot failed: %v", err)
+	}
+	theirsHash := mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, []byte("package app\nconst A = 0\nconst B = 2\n"))
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:       "tester",
+		Path:         filePath,
+		PathVersion:  11,
+		ManifestHash: theirsHash,
+		ContentHash:  theirsHash,
+	}}); err != nil {
+		t.Fatalf("failed to advance path head: %v", err)
+	}
+
+	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("MergeChangeset failed: %v", err)
+	}
+	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("merge status = %v, want success: %s", resp.GetStatus(), resp.GetMessage())
+	}
+	if len(resp.GetConflicts()) != 0 {
+		t.Fatalf("expected auto-merge without conflicts, got %#v", resp.GetConflicts())
+	}
+	mergedContent, err := storage.ReadSliceFileContent(ctx, st, slice.ID, filePath)
+	if err != nil {
+		t.Fatalf("ReadSliceFileContent failed: %v", err)
+	}
+	if got := string(mergedContent.Content); got != "package app\nconst A = 1\nconst B = 2\n" {
+		t.Fatalf("merged content = %q", got)
+	}
+	conflicts, err := srv.ListChangesetConflicts(ctx, &slicev1.ListChangesetConflictsRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("ListChangesetConflicts failed: %v", err)
+	}
+	if conflicts.GetTotalConflicts() != 0 {
+		t.Fatalf("expected no stored conflicts, got %#v", conflicts.GetConflicts())
 	}
 }
 
