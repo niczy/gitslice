@@ -1708,6 +1708,95 @@ func TestSnapshotPathsExcludeStaleFileIDs(t *testing.T) {
 	}
 }
 
+func TestPinnedHomeListEntriesUseCommitSnapshotNotLiveTree(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+
+	home, err := homeslice.EnsureUserHomeSlice(ctx, st, "alice")
+	if err != nil {
+		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
+	}
+
+	const (
+		commitHash = "cmt_home_snapshot"
+		dirPath    = "alice/test4"
+		oldPath    = "alice/test4/hello.txt"
+		newPath    = "alice/test4/test.md"
+	)
+
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(home.ID, dirPath),
+		Path:     dirPath,
+		Type:     "directory",
+		ParentID: common.GenerateEntryID(home.ID, "alice"),
+	}); err != nil {
+		t.Fatalf("AddEntry(dir) failed: %v", err)
+	}
+	oldHash := mustWriteSliceManifest(t, ctx, st, home.ID, oldPath, []byte("old\n"))
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(home.ID, oldPath),
+		Path:     oldPath,
+		Type:     "file",
+		ParentID: common.GenerateEntryID(home.ID, dirPath),
+		Size:     int64(len("old\n")),
+		Hash:     oldHash,
+	}); err != nil {
+		t.Fatalf("AddEntry(old file) failed: %v", err)
+	}
+	newHash := mustWriteSliceManifest(t, ctx, st, home.ID, newPath, []byte("new\n"))
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(home.ID, newPath),
+		Path:     newPath,
+		Type:     "file",
+		ParentID: common.GenerateEntryID(home.ID, dirPath),
+		Size:     int64(len("new\n")),
+		Hash:     newHash,
+	}); err != nil {
+		t.Fatalf("AddEntry(new file) failed: %v", err)
+	}
+
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: commitHash,
+		SliceID:    home.ID,
+		Files: map[string]string{
+			oldPath: oldHash,
+		},
+		Timestamp: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("SaveCommitSnapshot failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	listResp, err := svc.ListEntries(ctx, &filev1.ListEntriesRequest{
+		Path: dirPath,
+		Version: &filev1.ListEntriesRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: home.ID, SliceHash: commitHash},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ListEntries failed: %v", err)
+	}
+	if got := len(listResp.GetEntries()); got != 1 {
+		t.Fatalf("expected only snapshot entry, got %d: %#v", got, listResp.GetEntries())
+	}
+	if got := listResp.GetEntries()[0].GetPath(); got != oldPath {
+		t.Fatalf("ListEntries returned %q, want %q", got, oldPath)
+	}
+	if got := listResp.GetEntries()[0].GetPathBase().GetSourceCommitHash(); got != commitHash {
+		t.Fatalf("path base source commit = %q, want %q", got, commitHash)
+	}
+
+	_, err = svc.GetFile(ctx, &filev1.GetFileRequest{
+		Path: newPath,
+		Version: &filev1.GetFileRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: home.ID, SliceHash: commitHash},
+		},
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("expected new live-only file to be absent from snapshot, got %v", err)
+	}
+}
+
 func TestGetCommitChangesSkipsBinaryPatchContent(t *testing.T) {
 	ctx := authCtx()
 	st := storage.NewInMemoryStorage()
