@@ -1847,6 +1847,36 @@ func TestPinnedHomeListEntriesUseCommitSnapshotNotLiveTree(t *testing.T) {
 	}
 }
 
+func TestPinnedListEntriesMissingSnapshotReturnsNotFound(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+
+	home, err := homeslice.EnsureUserHomeSlice(ctx, st, "alice")
+	if err != nil {
+		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
+	}
+
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(home.ID, "alice/docs"),
+		Path:     "alice/docs",
+		Type:     "directory",
+		ParentID: common.GenerateEntryID(home.ID, "alice"),
+	}); err != nil {
+		t.Fatalf("AddEntry(dir) failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	_, err = svc.ListEntries(ctx, &filev1.ListEntriesRequest{
+		Path: "alice",
+		Version: &filev1.ListEntriesRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: home.ID, SliceHash: "cmt_missing"},
+		},
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("expected NotFound for missing pinned snapshot, got %v", err)
+	}
+}
+
 func TestGetCommitChangesSkipsBinaryPatchContent(t *testing.T) {
 	ctx := authCtx()
 	st := storage.NewInMemoryStorage()

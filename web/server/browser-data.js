@@ -139,6 +139,10 @@ function shouldTreatBrowserRouteAsNotFound(routeInfo, sliceId, error) {
   return [401, 403, 404].includes(Number(error?.status));
 }
 
+function isMissingPinnedSnapshotError(error) {
+  return Number(error?.status) === 404 && /commit snapshot not found/i.test(String(error?.message || ''));
+}
+
 function changesetStatusQueryValue(statusFilter) {
   switch (statusFilter) {
     case 'pending':
@@ -160,6 +164,7 @@ function createRouteData(routeInfo) {
     slicesError: '',
     selectedSliceId: routeInfo?.browserState?.slice || '',
     sliceHash: routeInfo?.browserState?.sliceHash || '',
+    sliceHashCleared: false,
     rootEntries: null,
     rootEntriesError: '',
     selectedFile: routeInfo?.browserState?.file || '',
@@ -252,12 +257,13 @@ async function loadBrowserData(request, session, routeInfo, data, setCookies, op
   }
 
   const canPinEntriesSliceHash = !selectedSliceHasFolderMounts(data);
+  const requestedSliceHash = routeInfo.browserState?.sliceHash || '';
 
   try {
     const params = new URLSearchParams();
     const pathname = `/v1/slices/${encodeURIComponent(data.selectedSliceId)}/entries`;
-    if (routeInfo.browserState?.sliceHash) {
-      params.set('slice_version.slice_hash', routeInfo.browserState.sliceHash);
+    if (requestedSliceHash) {
+      params.set('slice_version.slice_hash', requestedSliceHash);
     }
     const { payload, setCookies: cookies } = await fetchJSON(
       request,
@@ -272,9 +278,40 @@ async function loadBrowserData(request, session, routeInfo, data, setCookies, op
       data.sliceHash = getPinnedSliceHashFromListEntries(payload) || '';
     }
   } catch (error) {
-    recordRouteError(data, setCookies, error);
-    data.rootEntriesError = error?.message || 'Unable to load entries.';
-    data.routeNotFound = data.routeNotFound || shouldTreatBrowserRouteAsNotFound(routeInfo, data.selectedSliceId, error);
+    if (requestedSliceHash && isMissingPinnedSnapshotError(error)) {
+      let recoveredPinnedSnapshot = false;
+      try {
+        const pathname = `/v1/slices/${encodeURIComponent(data.selectedSliceId)}/entries`;
+        const { payload, setCookies: cookies } = await fetchJSON(
+          request,
+          session,
+          pathname,
+          new URLSearchParams(),
+          options,
+        );
+        setCookies.push(...cookies);
+        data.rootEntries = payload?.entries || [];
+        data.sliceHashCleared = true;
+        if (canPinEntriesSliceHash) {
+          data.sliceHash = getPinnedSliceHashFromListEntries(payload) || '';
+        } else {
+          data.sliceHash = '';
+        }
+        data.rootEntriesError = '';
+        recoveredPinnedSnapshot = true;
+      } catch (retryError) {
+        recordRouteError(data, setCookies, retryError);
+        data.rootEntriesError = retryError?.message || 'Unable to load entries.';
+        data.routeNotFound = data.routeNotFound || shouldTreatBrowserRouteAsNotFound(routeInfo, data.selectedSliceId, retryError);
+      }
+      if (!recoveredPinnedSnapshot) {
+        return;
+      }
+    } else {
+      recordRouteError(data, setCookies, error);
+      data.rootEntriesError = error?.message || 'Unable to load entries.';
+      data.routeNotFound = data.routeNotFound || shouldTreatBrowserRouteAsNotFound(routeInfo, data.selectedSliceId, error);
+    }
   }
 
   if (!data.selectedFile) {
@@ -285,7 +322,9 @@ async function loadBrowserData(request, session, routeInfo, data, setCookies, op
     const params = new URLSearchParams();
     const encodedFile = encodePath(data.selectedFile);
     const pathname = `/v1/slices/${encodeURIComponent(data.selectedSliceId)}/files/${encodedFile}`;
-    const effectiveSliceHash = routeInfo.browserState?.sliceHash || (canPinEntriesSliceHash ? data.sliceHash : '') || '';
+    const effectiveSliceHash = data.sliceHashCleared
+      ? (canPinEntriesSliceHash ? data.sliceHash : '')
+      : routeInfo.browserState?.sliceHash || (canPinEntriesSliceHash ? data.sliceHash : '') || '';
     if (effectiveSliceHash) {
       params.set('slice_version.slice_hash', effectiveSliceHash);
     }
