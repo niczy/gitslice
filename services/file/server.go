@@ -483,6 +483,9 @@ func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID str
 	if commitHash != "" {
 		paths, err := s.storage.ListFilesAtCommit(ctx, commitHash, "")
 		if err != nil {
+			if preferSnapshots {
+				return nil, err
+			}
 			log.Printf("WARN: snapshot lookup failed for commit %s: %v, falling back to file list", commitHash, err)
 		} else {
 			cleaned := make([]string, 0, len(paths))
@@ -914,6 +917,9 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 
 	pathMap, displayPaths, err := s.cachedSlicePathMap(ctx, sliceID, slice, resolvedCommit, preferSnapshots)
 	if err != nil {
+		if errors.Is(err, storage.ErrCommitNotFound) {
+			return nil, status.Error(codes.NotFound, "commit snapshot not found")
+		}
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get slice metadata: %v", err))
 	}
 

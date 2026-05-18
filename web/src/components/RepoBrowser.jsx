@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { apiBaseUrl } from '../utils/api.js';
 import {
@@ -10,6 +10,7 @@ import { useBrowserSidebar } from '../features/browser/useBrowserSidebar.js';
 import { useRepoBrowserChrome } from '../features/browser/useRepoBrowserChrome.js';
 import { useRepoBrowserData } from '../features/browser/useRepoBrowserData.js';
 import { useInitialBrowserState, useRepoBrowserSlice } from '../features/browser/useRepoBrowserSlice.js';
+import { buildBrowserPath, parseLocation } from '../utils/routing.js';
 import SliceDetailNav from './SliceDetailNav.jsx';
 import RepoBrowserHeader from './browser/RepoBrowserHeader.jsx';
 import RepoBrowserSidebar from './browser/RepoBrowserSidebar.jsx';
@@ -36,9 +37,11 @@ export default function RepoBrowser({
 }) {
   const initialBrowserState = useInitialBrowserState();
   const initialRouteSliceHash = initialBrowserState?.sliceHash || '';
+  const initialSliceHashCleared = Boolean(initialBrowserData?.sliceHashCleared);
   const initialDataMatchesRawSlice = initialBrowserData?.selectedSliceId === currentSliceId
     && (
       !initialRouteSliceHash
+      || initialSliceHashCleared
       || String(initialBrowserData?.sliceHash || '') === String(initialRouteSliceHash)
     );
   const initialResolvedSliceHash = initialDataMatchesRawSlice
@@ -53,6 +56,34 @@ export default function RepoBrowser({
     : String(initialBrowserState?.dir || '').replace(/^\/+/, '');
   const hasInitialSelectedFilePayload = Boolean(initialSelectedFilePayload?.content);
   const [sliceHash, setSliceHash] = useState(initialResolvedSliceHash);
+  useEffect(() => {
+    if (!initialSliceHashCleared || typeof window === 'undefined') {
+      return;
+    }
+    const route = parseLocation(window.location);
+    if (route.page !== 'browser' || !route.browserState?.sliceHash) {
+      return;
+    }
+    const nextPath = buildBrowserPath({
+      slice: route.browserState.slice || currentSliceId,
+      file: route.browserState.file || '',
+      dir: route.browserState.dir || '',
+      sliceHash: '',
+    });
+    const currentPath = `${window.location.pathname}${window.location.search}`;
+    if (nextPath === currentPath) {
+      return;
+    }
+    window.history.replaceState({
+      gitsliceBrowserState: true,
+      browserState: {
+        slice: route.browserState.slice || currentSliceId,
+        file: route.browserState.file || '',
+        dir: route.browserState.dir || '',
+        sliceHash: '',
+      },
+    }, '', nextPath);
+  }, [currentSliceId, initialSliceHashCleared]);
   const {
     closeSidebar,
     handleSidebarResizeKeyDown,
