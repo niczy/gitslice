@@ -1,0 +1,4 @@
+interface:
+  display_name: "Start Dev Servers"
+  short_description: "Start local gitslice services and local Nginx proxy."
+  default_prompt: "Start local dev servers via ops scripts, start local Nginx, and verify listeners and health."
